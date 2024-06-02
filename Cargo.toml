@@ -5,6 +5,9 @@ edition = "2021"
 
 [dependencies]
 
+[dev-dependencies]
+paste = "1.0.15"
+
 [lib]
 proc-macro = true
 test = false

@@ -1,4 +1,5 @@
 use metamatch::metamatch;
+use paste::paste;
 
 #[derive(Debug, PartialEq)]
 enum DynVec {
@@ -47,6 +48,23 @@ fn multi_expand() {
         #[expand(T in [F32, F64])]
         #[allow(clippy::unnecessary_cast)]
         DynSlice::T(v) => DynVec::F64(v.iter().map(|v| *v as f64).collect()),
+    });
+    assert_eq!(res, DynVec::F64(vec![42.0]));
+}
+
+#[cfg(any())]
+#[test]
+fn multi_pattern() {
+    let src = DynSlice::F32(&[42.0]);
+    let res = metamatch!(match src {
+        #[expand((SRC, TGT) in [
+            (I32, I64),
+            (I64, I64),
+            (F32, F64),
+            (F64, F64)
+        ])]
+        #[allow(clippy::unnecessary_cast)]
+        DynSlice::SRC(v) => DynVec::TGT(v.iter().map(|v| *v as paste!([< TGT:lower >])).collect()),
     });
     assert_eq!(res, DynVec::F64(vec![42.0]));
 }
