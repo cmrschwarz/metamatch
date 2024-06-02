@@ -50,11 +50,9 @@ impl DynVec {
 #[test]
 fn current() {
     let f = DynVec::I32(vec![]);
-    let len = metamatch!(
-        match f {
-            #[expand( T in [I32, I64, F32, F64] ) ]
-            Self::~T(v) => v.len(),
-        }
-    );
+    let len = metamatch!(match f {
+        #[expand( T in [I32, I64, F32, F64] ) ]
+        DynVec::T(v) => v.len(),
+    });
     assert_eq!(len, 0);
 }
