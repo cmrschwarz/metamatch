@@ -32,7 +32,9 @@ fn multi_type() {
     let f = DynVec::I64(vec![]);
     let res = metamatch!(match &f {
         #[expand( T in [I32, I64, F32, F64] ) ]
-        DynVec::T(v) => DynSlice::T(v),
+        DynVec::T(v) => {
+            DynSlice::T(v)
+        }
     });
     assert_eq!(res, DynSlice::I64(&[]));
 }
@@ -52,10 +54,9 @@ fn multi_expand() {
     assert_eq!(res, DynVec::F64(vec![42.0]));
 }
 
-#[cfg(any())]
 #[test]
 fn multi_pattern() {
-    let src = DynSlice::F32(&[42.0]);
+    let src = DynVec::F32(vec![42.0]);
     let res = metamatch!(match src {
         #[expand((SRC, TGT) in [
             (I32, I64),
@@ -64,7 +65,7 @@ fn multi_pattern() {
             (F64, F64)
         ])]
         #[allow(clippy::unnecessary_cast)]
-        DynSlice::SRC(v) => DynVec::TGT(v.iter().map(|v| *v as paste!([< TGT:lower >])).collect()),
+        DynVec::SRC(v) => DynVec::TGT(v.iter().map(|v| *v as paste!([< TGT:lower >])).collect()),
     });
     assert_eq!(res, DynVec::F64(vec![42.0]));
 }

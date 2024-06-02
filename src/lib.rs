@@ -5,11 +5,12 @@ use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenSt
 type ExpansionIdentIndex = usize;
 type TokenPos = usize;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct ExpansionVariant {
     ident_replacements: Vec<Vec<TokenTree>>,
 }
 
+#[derive(Debug)]
 struct ExpandAttribute {
     ident_names: HashMap<String, usize>,
     ident_tuple: bool,
@@ -33,7 +34,7 @@ struct SubstitutionLevel {
     points: Vec<SubstitutionPoint>,
     sublevels: Vec<SubstitutionLevel>,
 }
-
+#[derive(Debug)]
 struct Template {
     substitutions: SubstitutionLevel,
     add_trailing_comma: bool,
@@ -42,35 +43,73 @@ struct Template {
 
 #[proc_macro]
 pub fn metamatch(body: TokenStream) -> TokenStream {
-    match metamatch_impl(body, true) {
-        Ok(body) => body,
-        Err(err) => err.into_compile_error(),
+    // TODO: make sure we have exactly one match body, throw an error
+    // otherwise. no need to support any kind of `match match` BS for now
+
+    let mut tokens = Vec::from_iter(body);
+
+    let mut tokens_iter = tokens.iter_mut();
+
+    match tokens_iter.next() {
+        Some(TokenTree::Ident(ident)) if ident.to_string() == "match" => {}
+        other => {
+            return compile_error(
+                "expected `match`",
+                other.map(|t| t.span()).unwrap_or_else(Span::call_site),
+            );
+        }
+    };
+
+    loop {
+        match tokens_iter.next() {
+            Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Brace => {
+                match process_match_body(group.stream()) {
+                    Err(err) => {
+                        return compile_error(&err.message, err.span);
+                    }
+                    Ok(body) => {
+                        let mut body_replacement = Group::new(group.delimiter(), body);
+                        body_replacement.set_span(group.span());
+                        *group = body_replacement;
+                    }
+                };
+                if let Some(stray_tok) = tokens_iter.next() {
+                    return compile_error(
+                        "unexpected token after suspected match body",
+                        stray_tok.span(),
+                    );
+                }
+                return TokenStream::from_iter(tokens);
+            }
+            Some(_) => continue,
+            None => {
+                return compile_error("no match body found", Span::call_site());
+            }
+        };
     }
 }
 
-impl SyntaxError {
-    fn into_compile_error(self) -> TokenStream {
-        // compile_error! { $message }
-        TokenStream::from_iter(vec![
-            TokenTree::Ident(Ident::new("compile_error", self.span)),
-            TokenTree::Punct({
-                let mut punct = Punct::new('!', Spacing::Alone);
-                punct.set_span(self.span);
-                punct
-            }),
-            TokenTree::Group({
-                let mut group = Group::new(Delimiter::Brace, {
-                    TokenStream::from_iter(vec![TokenTree::Literal({
-                        let mut string = Literal::string(&self.message);
-                        string.set_span(self.span);
-                        string
-                    })])
-                });
-                group.set_span(self.span);
-                group
-            }),
-        ])
-    }
+fn compile_error(message: &str, span: Span) -> TokenStream {
+    TokenStream::from_iter(vec![
+        TokenTree::Ident(Ident::new("compile_error", span)),
+        TokenTree::Punct({
+            let mut punct = Punct::new('!', Spacing::Alone);
+            punct.set_span(span);
+            punct
+        }),
+        TokenTree::Group({
+            let mut group = Group::new(Delimiter::Brace, {
+                TokenStream::from_iter(vec![TokenTree::Literal({
+                    let mut string =
+                        Literal::string(&format!("`metamatch!` macro expansion: {}", message));
+                    string.set_span(span);
+                    string
+                })])
+            });
+            group.set_span(span);
+            group
+        }),
+    ])
 }
 
 fn tok_span_or_parent_close(tok: &Option<TokenTree>, parent: &Group) -> Span {
@@ -80,11 +119,11 @@ fn tok_span_or_parent_close(tok: &Option<TokenTree>, parent: &Group) -> Span {
 }
 
 fn parse_comma_separated_token_tree_lists(
-    variants_group: &Group,
+    group: &Group,
 ) -> Result<Vec<Vec<TokenTree>>, SyntaxError> {
     let mut variants = Vec::new();
     let mut curr_variant = Vec::new();
-    for tt in variants_group.stream().into_iter() {
+    for tt in group.stream().into_iter() {
         if let TokenTree::Punct(p) = &tt {
             if p.as_char() == ',' {
                 if curr_variant.is_empty() {
@@ -107,21 +146,58 @@ fn parse_comma_separated_token_tree_lists(
 }
 
 fn parse_expand_variants(
+    expand_attrib: &mut ExpandAttribute,
     variants_group: &Group,
-    ident_tuple: bool,
-) -> Result<Vec<ExpansionVariant>, SyntaxError> {
-    let mut res = Vec::new();
-    if !ident_tuple {
-        let variants = parse_comma_separated_token_tree_lists(variants_group)?;
-        for v in variants {
-            res.push(ExpansionVariant {
-                ident_replacements: vec![v],
+) -> Result<(), SyntaxError> {
+    let ident_count = expand_attrib.ident_names.len();
+
+    if !expand_attrib.ident_tuple {
+        debug_assert_eq!(ident_count, 1);
+        let replacements = parse_comma_separated_token_tree_lists(variants_group)?;
+        for r in replacements {
+            expand_attrib.variants.push(ExpansionVariant {
+                ident_replacements: vec![r],
             })
         }
-        return Ok(res);
+        return Ok(());
     }
-    todo!();
-    Ok(res)
+    let mut group_iter = variants_group.stream().into_iter();
+    loop {
+        let group = match group_iter.next() {
+            Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Parenthesis => group,
+            Some(other) => {
+                return Err(SyntaxError {
+                    message: "expected `(` or `]`".to_string(),
+                    span: other.span(),
+                });
+            }
+            None => break,
+        };
+        let ident_replacements = parse_comma_separated_token_tree_lists(&group)?;
+        let replacements_len = ident_replacements.len();
+        if replacements_len != ident_count {
+            return Err(SyntaxError {
+                message: format!("expected {ident_count} replacements, got {replacements_len}",),
+                span: group.span(),
+            });
+        }
+        expand_attrib
+            .variants
+            .push(ExpansionVariant { ident_replacements });
+        match group_iter.next() {
+            Some(TokenTree::Punct(p)) if p.as_char() == ',' => {
+                continue;
+            }
+            Some(other) => {
+                return Err(SyntaxError {
+                    message: "expected `,` or `]`".to_string(),
+                    span: other.span(),
+                });
+            }
+            None => break,
+        }
+    }
+    Ok(())
 }
 
 fn parse_expand_ident_names(
@@ -140,7 +216,7 @@ fn parse_expand_ident_names(
         _ => {
             return Err(SyntaxError {
                 message: "expected `(` or identifier".to_string(),
-                span: tok_span_or_parent_close(tok, &expand_group),
+                span: tok_span_or_parent_close(tok, expand_group),
             });
         }
     };
@@ -162,7 +238,7 @@ fn parse_expand_ident_names(
         };
         if names.insert(ident.to_string(), name_count).is_some() {
             return Err(SyntaxError {
-                message: format!("same identifier used again"),
+                message: "same identifier used again".to_string(),
                 span: ident.span(),
             });
         }
@@ -277,7 +353,7 @@ fn parse_expand_attribute(
         }
     };
 
-    expand_attrib.variants = parse_expand_variants(&variants_group, expand_attrib.ident_tuple)?;
+    parse_expand_variants(&mut expand_attrib, &variants_group)?;
 
     Ok(Some(expand_attrib))
 }
@@ -296,14 +372,14 @@ fn find_substitution_points(
         if let TokenTree::Ident(ident) = tt {
             if let Some(ident_idx) = expand.ident_names.get(&ident.to_string()) {
                 level.points.push(SubstitutionPoint {
-                    pos: offset + i,
+                    pos: i,
                     ident_idx: *ident_idx,
                 });
             }
             continue;
         }
         if let TokenTree::Group(g) = tt {
-            if let Some(substs) = find_substitution_points(expand, offset + i, &g) {
+            if let Some(substs) = find_substitution_points(expand, i, &g) {
                 level.sublevels.push(substs);
             }
             continue;
@@ -342,7 +418,7 @@ fn parse_match_arm_pattern(
             continue;
         }
         if let TokenTree::Group(g) = tt {
-            if let Some(substs) = find_substitution_points(expand, i, g) {
+            if let Some(substs) = find_substitution_points(expand, tok_idx, g) {
                 substitutions.sublevels.push(substs);
             }
             continue;
@@ -404,7 +480,7 @@ fn parse_match_arm_body(
             continue;
         }
         if let TokenTree::Group(g) = tt {
-            if let Some(substs) = find_substitution_points(expand, i, g) {
+            if let Some(substs) = find_substitution_points(expand, tok_idx, g) {
                 substitutions.sublevels.push(substs);
             }
             continue;
@@ -436,6 +512,7 @@ fn expand_template(
         expansion,
         &template.substitutions,
         variant,
+        template.substitutions.offset,
     );
     if template.add_trailing_comma {
         expansion.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
@@ -447,8 +524,9 @@ fn expand_substitution(
     expansion: &mut Vec<TokenTree>,
     subst: &SubstitutionLevel,
     variant: &ExpansionVariant,
+    initial_offset: usize,
 ) {
-    let mut template_pos = subst.offset;
+    let mut template_pos = initial_offset;
 
     let mut sublevel_idx = 0;
     let mut point_idx = 0;
@@ -477,23 +555,24 @@ fn expand_substitution(
             point_idx += 1;
             continue;
         }
-        let TokenTree::Group(souuce_group) = &source[next_sublevel_pos] else {
-            panic!("expected group found {:?}", source[next_sublevel_pos]);
+        let TokenTree::Group(source_group) = &source[next_sublevel_pos] else {
+            unreachable!()
         };
-        let group_body = souuce_group.stream().into_iter().collect::<Vec<_>>();
+        let group_body = source_group.stream().into_iter().collect::<Vec<_>>();
         let mut group_target = Vec::new();
         expand_substitution(
             &group_body,
             &mut group_target,
             &subst.sublevels[sublevel_idx],
             variant,
+            0,
         );
         expansion.extend(source[template_pos..next_sublevel_pos].iter().cloned());
         let mut group = Group::new(
-            souuce_group.delimiter(),
+            source_group.delimiter(),
             TokenStream::from_iter(group_target),
         );
-        group.set_span(souuce_group.span());
+        group.set_span(source_group.span());
         expansion.push(TokenTree::Group(group));
         sublevel_idx += 1;
         template_pos = next_sublevel_pos + 1;
@@ -501,25 +580,12 @@ fn expand_substitution(
     expansion.extend(source[template_pos..].iter().cloned());
 }
 
-fn metamatch_impl(body: TokenStream, recurse: bool) -> Result<TokenStream, SyntaxError> {
-    let mut input_tokens = Vec::from_iter(body);
+fn process_match_body(body: TokenStream) -> Result<TokenStream, SyntaxError> {
+    let input_tokens = Vec::from_iter(body);
+    let mut output_tokens = Vec::new();
     let mut i = 0;
+    let mut last_directive_end = 0;
     while i < input_tokens.len() {
-        let tt = &mut input_tokens[i];
-
-        if let TokenTree::Group(group) = tt {
-            if !recurse {
-                i += 1;
-                continue;
-            }
-            let content = metamatch_impl(group.stream(), false)?;
-            let original_span = group.span();
-            *group = Group::new(group.delimiter(), content);
-            group.set_span(original_span);
-            i += 1;
-            continue;
-        }
-
         if i + 1 == input_tokens.len() {
             break;
         }
@@ -537,17 +603,24 @@ fn metamatch_impl(body: TokenStream, recurse: bool) -> Result<TokenStream, Synta
         let body_template =
             parse_match_arm_body(&expand_attribute, &input_tokens, pattern_template.end)?;
 
-        let expand_directive_end = body_template.end;
-
-        let mut expansion = Vec::new();
+        output_tokens.extend(
+            input_tokens[last_directive_end..expand_directive_start]
+                .iter()
+                .cloned(),
+        );
+        last_directive_end = body_template.end;
+        i = last_directive_end;
 
         for variant in &expand_attribute.variants {
-            expand_template(&input_tokens, &mut expansion, &pattern_template, variant);
-            expand_template(&input_tokens, &mut expansion, &body_template, variant);
+            expand_template(
+                &input_tokens,
+                &mut output_tokens,
+                &pattern_template,
+                variant,
+            );
+            expand_template(&input_tokens, &mut output_tokens, &body_template, variant);
         }
-
-        i = expand_directive_start + expansion.len();
-        input_tokens.splice(expand_directive_start..expand_directive_end, expansion);
     }
-    Ok(TokenStream::from_iter(input_tokens))
+    output_tokens.extend(input_tokens[last_directive_end..].iter().cloned());
+    Ok(TokenStream::from_iter(output_tokens))
 }
