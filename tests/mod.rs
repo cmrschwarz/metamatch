@@ -16,39 +16,18 @@ enum DynSlice<'a> {
     F64(&'a [f64]),
 }
 
-fn slice_baseline(f: &DynVec) -> DynSlice {
-    match f {
-        DynVec::I32(v) => DynSlice::I32(&v),
-        DynVec::I64(v) => DynSlice::I64(&v),
-        DynVec::F32(v) => DynSlice::F32(&v),
-        DynVec::F64(v) => DynSlice::F64(&v),
-    }
-}
-
-#[cfg(any())]
-fn slice_metamatch(f: &DynVec) -> DynSlice {
-    metamatch! {
-        match f {
-            #[expand(T, [I32, I64, F32, F64])]
-            DynVec::T(v) => DynSlice::T(&v),
-        }
-    }
-}
-
-#[cfg(any())]
-impl DynVec {
-    pub fn len(&self) -> usize {
-        metamatch!(
-            match self {
-                #[expand(T in [I32, I64, F32, F64])]
-                Self::~T(v) => v.len(),
-            }
-        );
-    }
+#[test]
+fn basic() {
+    let f = DynVec::I32(vec![]);
+    let len = metamatch!(match f {
+        #[expand( T in [I32, I64, F32, F64] ) ]
+        DynVec::T(v) => v.len(),
+    });
+    assert_eq!(len, 0);
 }
 
 #[test]
-fn current() {
+fn multi_type() {
     let f = DynVec::I32(vec![]);
     let len = metamatch!(match f {
         #[expand( T in [I32, I64, F32, F64] ) ]
