@@ -17,7 +17,7 @@ enum DynSlice<'a> {
 }
 
 #[test]
-fn basic() {
+fn basic_len() {
     let f = DynVec::I32(vec![]);
     let len = metamatch!(match f {
         #[expand( T in [I32, I64, F32, F64] ) ]
@@ -28,10 +28,25 @@ fn basic() {
 
 #[test]
 fn multi_type() {
-    let f = DynVec::I32(vec![]);
-    let len = metamatch!(match f {
+    let f = DynVec::I64(vec![]);
+    let res = metamatch!(match &f {
         #[expand( T in [I32, I64, F32, F64] ) ]
-        DynVec::T(v) => v.len(),
+        DynVec::T(v) => DynSlice::T(v),
     });
-    assert_eq!(len, 0);
+    assert_eq!(res, DynSlice::I64(&[]));
+}
+
+#[test]
+fn multi_expand() {
+    let src = DynSlice::F32(&[42.0]);
+    let res = metamatch!(match src {
+        #[expand(T in [I32, I64])]
+        #[allow(clippy::unnecessary_cast)]
+        DynSlice::T(v) => DynVec::I64(v.iter().map(|v| *v as i64).collect()),
+
+        #[expand(T in [F32, F64])]
+        #[allow(clippy::unnecessary_cast)]
+        DynSlice::T(v) => DynVec::F64(v.iter().map(|v| *v as f64).collect()),
+    });
+    assert_eq!(res, DynVec::F64(vec![42.0]));
 }
