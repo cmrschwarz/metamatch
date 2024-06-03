@@ -1,11 +1,22 @@
 [package]
 name = "metamatch"
+
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.65.0" # due to let .. else statements
+
+authors = ["Christian Schwarz <cmrs@cmrs.io>"]
 license = "MIT"
 
-# defined by let .. else statements
-rust-version = "1.65.0"
+readme = "README.md"
+repository = "https://github.com/cmrschwarz/metamatch"
+
+description = """
+A rust proc-macro for generating repetitive match arms.
+"""
+categories = ["development-tools", "no-std", "no-std::no-alloc"]
+keywords = ["match", "macro", "generator", "boilerplate", "repetition"]
+
 
 [dependencies]
 
