@@ -7,7 +7,7 @@
 [<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-metamatch-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/metamatch)
 
 
-A rust proc-macro for generating repetitive match arms.
+A proc-macro for generating repetitive match arms.
 
 ## Example
 

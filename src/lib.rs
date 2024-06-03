@@ -12,7 +12,6 @@
 //! ## Example
 //!
 //! ```rust
-//!
 //! use metamatch::metamatch;
 //!
 //! enum Number {
