@@ -21,7 +21,7 @@ enum DynSlice<'a> {
 fn basic_len() {
     let f = DynVec::I32(vec![]);
     let len = metamatch!(match f {
-        #[expand( T in [I32, I64, F32, F64] ) ]
+        #[expand(T in [I32, I64, F32, F64])]
         DynVec::T(v) => v.len(),
     });
     assert_eq!(len, 0);
@@ -31,9 +31,20 @@ fn basic_len() {
 fn multi_type() {
     let f = DynVec::I64(vec![]);
     let res = metamatch!(match &f {
-        #[expand( T in [I32, I64, F32, F64] ) ]
+        #[expand(T in [I32, I64, F32, F64])]
+        DynVec::T(v) => DynSlice::T(v),
+    });
+    assert_eq!(res, DynSlice::I64(&[]));
+}
+
+#[test]
+fn multi_type_nested() {
+    let f = DynVec::I64(vec![]);
+    let res = metamatch!(match &f {
+        #[expand(T in [I32, I64, F32, F64])]
         DynVec::T(v) => {
-            DynSlice::T(v)
+            let res = { DynSlice::T(v) };
+            res
         }
     });
     assert_eq!(res, DynSlice::I64(&[]));
@@ -58,11 +69,27 @@ fn multi_expand() {
 fn multi_pattern() {
     let src = DynVec::F32(vec![42.0]);
     let res = metamatch!(match src {
+        #[expand((SRC, TGT, CAST) in [
+            (I32, I64, i64),
+            (I64, I64, i64),
+            (F32, F64, f64),
+            (F64, F64, f64)
+        ])]
+        #[allow(clippy::unnecessary_cast)]
+        DynVec::SRC(v) => DynVec::TGT(v.iter().map(|v| *v as CAST).collect()),
+    });
+    assert_eq!(res, DynVec::F64(vec![42.0]));
+}
+
+#[test]
+fn paste_macro_interaction() {
+    let src = DynVec::F32(vec![42.0]);
+    let res = metamatch!(match src {
         #[expand((SRC, TGT) in [
             (I32, I64),
             (I64, I64),
             (F32, F64),
-            (F64, F64)
+            (F64, F64),
         ])]
         #[allow(clippy::unnecessary_cast)]
         DynVec::SRC(v) => DynVec::TGT(v.iter().map(|v| *v as paste!([< TGT:lower >])).collect()),
