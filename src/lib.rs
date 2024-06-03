@@ -98,9 +98,6 @@ struct Template {
 
 #[proc_macro]
 pub fn metamatch(body: TokenStream) -> TokenStream {
-    // TODO: make sure we have exactly one match body, throw an error
-    // otherwise. no need to support any kind of `match match` BS for now
-
     let mut tokens = Vec::from_iter(body);
 
     let mut tokens_iter = tokens.iter_mut();
@@ -115,33 +112,34 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
         }
     };
 
-    loop {
-        match tokens_iter.next() {
-            Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Brace => {
-                match process_match_body(group.stream()) {
-                    Err(err) => {
-                        return compile_error(&err.message, err.span);
-                    }
-                    Ok(body) => {
-                        let mut body_replacement = Group::new(group.delimiter(), body);
-                        body_replacement.set_span(group.span());
-                        *group = body_replacement;
-                    }
-                };
-                if let Some(stray_tok) = tokens_iter.next() {
-                    return compile_error(
-                        "unexpected token after suspected match body",
-                        stray_tok.span(),
-                    );
+    let mut match_body_found = false;
+
+    for tt in tokens_iter {
+        if let TokenTree::Group(group) = tt {
+            if group.delimiter() != Delimiter::Brace {
+                continue;
+            }
+            match process_match_body(group.stream()) {
+                Err(err) => {
+                    return compile_error(&err.message, err.span);
                 }
-                return TokenStream::from_iter(tokens);
-            }
-            Some(_) => continue,
-            None => {
-                return compile_error("no match body found", Span::call_site());
-            }
-        };
+                Ok(body) => {
+                    let mut body_replacement = Group::new(group.delimiter(), body);
+                    body_replacement.set_span(group.span());
+                    *group = body_replacement;
+                    // we allow multiple bodies. something like
+                    // `match {42} { x => x}` is legal Rust.
+                    // we don't do the work to figure out the 'correct'
+                    // match body, but just do each of them (non recursive though)
+                    match_body_found = true;
+                }
+            };
+        }
     }
+    if !match_body_found {
+        return compile_error("no match body found", Span::call_site());
+    }
+    TokenStream::from_iter(tokens)
 }
 
 fn compile_error(message: &str, span: Span) -> TokenStream {

@@ -112,3 +112,14 @@ fn consecutive_no_comma() {
     });
     assert_eq!(res, DynSlice::F32(&[42.0]));
 }
+
+#[test]
+fn braced_match_expression() {
+    let f = DynVec::I32(vec![1, 2, 3]);
+    #[allow(clippy::blocks_in_conditions)]
+    let len = metamatch!(match { f } {
+        #[expand(T in [I32, I64, F32, F64])]
+        DynVec::T(v) => v.len(),
+    });
+    assert_eq!(len, 3);
+}
