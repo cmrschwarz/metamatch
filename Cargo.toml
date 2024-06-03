@@ -2,6 +2,7 @@
 name = "metamatch"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 # defined by let .. else statements
 rust-version = "1.65.0"
