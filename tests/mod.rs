@@ -96,3 +96,19 @@ fn paste_macro_interaction() {
     });
     assert_eq!(res, DynVec::F64(vec![42.0]));
 }
+
+#[test]
+fn consecutive_no_comma() {
+    let src = DynVec::F32(vec![42.0]);
+    let res = metamatch!(match &src {
+        #[expand(T in [I32, I64])]
+        DynVec::T(v) => {
+            DynSlice::T(v)
+        }
+        #[expand(T in [F32, F64])]
+        DynVec::T(v) => {
+            DynSlice::T(v)
+        }
+    });
+    assert_eq!(res, DynSlice::F32(&[42.0]));
+}

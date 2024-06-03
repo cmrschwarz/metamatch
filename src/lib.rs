@@ -495,6 +495,21 @@ fn try_add_substitutions(
 fn parse_match_arm_body(expand: &ExpandAttribute, tokens: &[TokenTree], offset: usize) -> Template {
     let mut substitutions = Vec::new();
     let mut i = offset;
+
+    if let Some(TokenTree::Group(group)) = tokens.get(i) {
+        if group.delimiter() == Delimiter::Brace {
+            return Template {
+                offset,
+                add_trailing_comma: false,
+                substitutions: vec![Substitution {
+                    pos: i,
+                    kind: SubstitutionKind::Nested(find_substitutions(expand, group)),
+                }],
+                end: i + 1,
+            };
+        }
+    }
+
     let mut add_trailing_comma = true;
     while i < tokens.len() {
         let tok_idx = i;
