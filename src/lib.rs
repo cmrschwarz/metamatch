@@ -170,6 +170,14 @@ fn tok_span_or_parent_close(tok: &Option<TokenTree>, parent: &Group) -> Span {
         .map_or_else(|| parent.span_close(), TokenTree::span)
 }
 
+fn tok_span_open_or_parent_close(tok: &Option<TokenTree>, parent: &Group) -> Span {
+    match tok {
+        Some(TokenTree::Group(g)) => g.span_open(),
+        Some(other) => other.span(),
+        None => parent.span_close(),
+    }
+}
+
 fn parse_comma_separated_token_tree_lists(
     group: &Group,
 ) -> Result<Vec<Vec<TokenTree>>, SyntaxError> {
@@ -384,7 +392,7 @@ fn parse_expand_attribute(
         _ => {
             return Err(SyntaxError {
                 message: "expand `in` after expand identifier".to_string(),
-                span: tok_span_or_parent_close(&kw_in_tok, &expand_body),
+                span: tok_span_open_or_parent_close(&kw_in_tok, &expand_body),
             });
         }
     };
@@ -400,7 +408,7 @@ fn parse_expand_attribute(
         _ => {
             return Err(SyntaxError {
                 message: "expected `[` to begin expand variants".to_string(),
-                span: tok_span_or_parent_close(&variants_group_tok, attrib_group),
+                span: tok_span_open_or_parent_close(&variants_group_tok, attrib_group),
             });
         }
     };
