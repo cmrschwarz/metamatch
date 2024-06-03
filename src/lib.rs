@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
 type ExpansionIdentIndex = usize;
-type TokenPos = usize;
 
 #[derive(Debug, Default)]
 struct ExpansionVariant {
@@ -23,20 +22,21 @@ struct SyntaxError {
 }
 
 #[derive(Debug)]
-struct SubstitutionPoint {
-    pos: TokenPos,
-    ident_idx: ExpansionIdentIndex,
+struct Substitution {
+    pos: usize,
+    kind: SubstitutionKind,
 }
 
 #[derive(Debug)]
-struct SubstitutionLevel {
-    offset: TokenPos,
-    points: Vec<SubstitutionPoint>,
-    sublevels: Vec<SubstitutionLevel>,
+enum SubstitutionKind {
+    Inline(ExpansionIdentIndex),
+    Nested(Vec<Substitution>),
 }
+
 #[derive(Debug)]
 struct Template {
-    substitutions: SubstitutionLevel,
+    offset: usize,
+    substitutions: Vec<Substitution>,
     add_trailing_comma: bool,
     end: usize,
 }
@@ -358,37 +358,12 @@ fn parse_expand_attribute(
     Ok(Some(expand_attrib))
 }
 
-fn find_substitution_points(
-    expand: &ExpandAttribute,
-    offset: usize,
-    group: &Group,
-) -> Option<SubstitutionLevel> {
-    let mut level = SubstitutionLevel {
-        offset,
-        points: vec![],
-        sublevels: vec![],
-    };
+fn find_substitutions(expand: &ExpandAttribute, group: &Group) -> Vec<Substitution> {
+    let mut substitutions = Vec::new();
     for (i, tt) in group.stream().into_iter().enumerate() {
-        if let TokenTree::Ident(ident) = tt {
-            if let Some(ident_idx) = expand.ident_names.get(&ident.to_string()) {
-                level.points.push(SubstitutionPoint {
-                    pos: i,
-                    ident_idx: *ident_idx,
-                });
-            }
-            continue;
-        }
-        if let TokenTree::Group(g) = tt {
-            if let Some(substs) = find_substitution_points(expand, i, &g) {
-                level.sublevels.push(substs);
-            }
-            continue;
-        }
+        try_add_substitutions(&tt, expand, &mut substitutions, i);
     }
-    if level.points.is_empty() && level.sublevels.is_empty() {
-        return None;
-    }
-    Some(level)
+    substitutions
 }
 
 fn parse_match_arm_pattern(
@@ -396,31 +371,13 @@ fn parse_match_arm_pattern(
     tokens: &[TokenTree],
     offset: usize,
 ) -> Result<Template, SyntaxError> {
-    let mut substitutions = SubstitutionLevel {
-        offset,
-        points: vec![],
-        sublevels: vec![],
-    };
+    let mut substitutions = Vec::new();
     let mut i = offset;
     while i < tokens.len() {
         let tok_idx = i;
         i += 1;
-
         let tt = &tokens[tok_idx];
-
-        if let TokenTree::Ident(ident) = tt {
-            if let Some(&ident_idx) = expand.ident_names.get(&ident.to_string()) {
-                substitutions.points.push(SubstitutionPoint {
-                    pos: tok_idx,
-                    ident_idx,
-                });
-            }
-            continue;
-        }
-        if let TokenTree::Group(g) = tt {
-            if let Some(substs) = find_substitution_points(expand, tok_idx, g) {
-                substitutions.sublevels.push(substs);
-            }
+        if try_add_substitutions(tt, expand, &mut substitutions, tok_idx) {
             continue;
         }
         let TokenTree::Punct(p) = tt else {
@@ -447,21 +404,46 @@ fn parse_match_arm_pattern(
         break;
     }
     Ok(Template {
+        offset,
         add_trailing_comma: false,
         substitutions,
         end: i,
     })
+}
+
+fn try_add_substitutions(
+    tt: &TokenTree,
+    expand: &ExpandAttribute,
+    substitutions: &mut Vec<Substitution>,
+    tok_idx: usize,
+) -> bool {
+    if let TokenTree::Ident(ident) = tt {
+        if let Some(&ident_idx) = expand.ident_names.get(&ident.to_string()) {
+            substitutions.push(Substitution {
+                pos: tok_idx,
+                kind: SubstitutionKind::Inline(ident_idx),
+            });
+            return true;
+        }
+    }
+    if let TokenTree::Group(g) = tt {
+        let nested = find_substitutions(expand, g);
+        if !nested.is_empty() {
+            substitutions.push(Substitution {
+                pos: tok_idx,
+                kind: SubstitutionKind::Nested(nested),
+            });
+        }
+        return true;
+    }
+    false
 }
 fn parse_match_arm_body(
     expand: &ExpandAttribute,
     tokens: &[TokenTree],
     offset: usize,
 ) -> Result<Template, SyntaxError> {
-    let mut substitutions = SubstitutionLevel {
-        offset,
-        points: vec![],
-        sublevels: vec![],
-    };
+    let mut substitutions = Vec::new();
     let mut i = offset;
     let mut add_trailing_comma = true;
     while i < tokens.len() {
@@ -469,20 +451,7 @@ fn parse_match_arm_body(
         i += 1;
 
         let tt = &tokens[tok_idx];
-
-        if let TokenTree::Ident(ident) = tt {
-            if let Some(&ident_idx) = expand.ident_names.get(&ident.to_string()) {
-                substitutions.points.push(SubstitutionPoint {
-                    pos: tok_idx,
-                    ident_idx,
-                });
-            }
-            continue;
-        }
-        if let TokenTree::Group(g) = tt {
-            if let Some(substs) = find_substitution_points(expand, tok_idx, g) {
-                substitutions.sublevels.push(substs);
-            }
+        if try_add_substitutions(tt, expand, &mut substitutions, tok_idx) {
             continue;
         }
         let TokenTree::Punct(p) = tt else {
@@ -495,6 +464,7 @@ fn parse_match_arm_body(
         break;
     }
     Ok(Template {
+        offset,
         add_trailing_comma,
         substitutions,
         end: i,
@@ -512,7 +482,7 @@ fn expand_template(
         expansion,
         &template.substitutions,
         variant,
-        template.substitutions.offset,
+        template.offset,
     );
     if template.add_trailing_comma {
         expansion.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
@@ -522,60 +492,35 @@ fn expand_template(
 fn expand_substitution(
     source: &[TokenTree],
     expansion: &mut Vec<TokenTree>,
-    subst: &SubstitutionLevel,
+    substitutions: &[Substitution],
     variant: &ExpansionVariant,
     initial_offset: usize,
 ) {
     let mut template_pos = initial_offset;
 
-    let mut sublevel_idx = 0;
-    let mut point_idx = 0;
-    loop {
-        if sublevel_idx == subst.sublevels.len() && point_idx == subst.points.len() {
-            break;
+    for subst in substitutions {
+        match &subst.kind {
+            SubstitutionKind::Inline(ident_idx) => {
+                expansion.extend(source[template_pos..subst.pos].iter().cloned());
+                expansion.extend(variant.ident_replacements[*ident_idx].iter().cloned());
+            }
+            SubstitutionKind::Nested(nested_substs) => {
+                let TokenTree::Group(source_group) = &source[subst.pos] else {
+                    unreachable!()
+                };
+                let group_body = source_group.stream().into_iter().collect::<Vec<_>>();
+                let mut group_target = Vec::new();
+                expand_substitution(&group_body, &mut group_target, nested_substs, variant, 0);
+                expansion.extend(source[template_pos..subst.pos].iter().cloned());
+                let mut group = Group::new(
+                    source_group.delimiter(),
+                    TokenStream::from_iter(group_target),
+                );
+                group.set_span(source_group.span());
+                expansion.push(TokenTree::Group(group));
+            }
         }
-        let next_sublevel_pos = subst
-            .sublevels
-            .get(sublevel_idx)
-            .map(|sl| sl.offset)
-            .unwrap_or(usize::MAX);
-        let next_subst_point = subst.points.get(point_idx).unwrap_or(&SubstitutionPoint {
-            pos: usize::MAX,
-            ident_idx: 0,
-        });
-
-        if next_subst_point.pos < next_sublevel_pos {
-            expansion.extend(source[template_pos..next_subst_point.pos].iter().cloned());
-            template_pos = next_subst_point.pos + 1;
-            expansion.extend(
-                variant.ident_replacements[next_subst_point.ident_idx]
-                    .iter()
-                    .cloned(),
-            );
-            point_idx += 1;
-            continue;
-        }
-        let TokenTree::Group(source_group) = &source[next_sublevel_pos] else {
-            unreachable!()
-        };
-        let group_body = source_group.stream().into_iter().collect::<Vec<_>>();
-        let mut group_target = Vec::new();
-        expand_substitution(
-            &group_body,
-            &mut group_target,
-            &subst.sublevels[sublevel_idx],
-            variant,
-            0,
-        );
-        expansion.extend(source[template_pos..next_sublevel_pos].iter().cloned());
-        let mut group = Group::new(
-            source_group.delimiter(),
-            TokenStream::from_iter(group_target),
-        );
-        group.set_span(source_group.span());
-        expansion.push(TokenTree::Group(group));
-        sublevel_idx += 1;
-        template_pos = next_sublevel_pos + 1;
+        template_pos = subst.pos + 1;
     }
     expansion.extend(source[template_pos..].iter().cloned());
 }
