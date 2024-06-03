@@ -9,6 +9,19 @@
 
 A proc-macro for generating repetitive match arms.
 
+Match arms for enum variants of *different types* cannot be combined,
+even if the match arm bodies are *syntactically* identical.
+
+This macro implements a simple templating attribute (`#[expand]`) 
+to automatically stamp out the neccessary copies.
+
+Due to limitations on attributes in stable rust, a functional macro
+(`metamatch!`) is currently required around the full match expression. 
+
+Rustfmt and rust-analyzer are fully able to reason about the macro. 
+Even auto refactorings affecting the `#[expand]`, 
+like changing the name of an enum variant, work correctly.
+
 ## Example
 
 ```rust
@@ -31,15 +44,14 @@ impl Number {
             #[expand(T in [I64, U32, U64])]
             Self::T(v) => (*v).try_into().ok(),
 
+            // multiple expands in the same match possible
             #[expand(T in [F32, F64])]
             Self::T(v) => Some(*v as i32)
         })
     }
     fn promote_to_64(&mut self) {
         metamatch!(match self {
-            #[expand(T in [I64, U64, F64])]
-            Self::T(_) => (),
-
+            // multiple replacement expressions supported 
             #[expand((SRC, TGT, TYPE) in [
                 (I32, I64, i64),
                 (U32, U64, u64),
@@ -48,6 +60,9 @@ impl Number {
             Self::SRC(v) => {
                 *self = Self::TGT(*v as TYPE)
             }
+
+            // no #[expand] needed, types are unused
+            Self::I64(_) | Self::U64(_) | Self::F64() => (),
         })
     }
 }
