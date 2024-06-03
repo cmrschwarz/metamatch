@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+#![warn(clippy::pedantic)]
 
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
+use std::collections::HashMap;
 
 type ExpansionIdentIndex = usize;
 
@@ -55,7 +56,7 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
         other => {
             return compile_error(
                 "expected `match`",
-                other.map(|t| t.span()).unwrap_or_else(Span::call_site),
+                other.map_or_else(Span::call_site, |t| t.span()),
             );
         }
     };
@@ -101,7 +102,7 @@ fn compile_error(message: &str, span: Span) -> TokenStream {
             let mut group = Group::new(Delimiter::Brace, {
                 TokenStream::from_iter(vec![TokenTree::Literal({
                     let mut string =
-                        Literal::string(&format!("`metamatch!` macro expansion: {}", message));
+                        Literal::string(&format!("`metamatch!` macro expansion: {message}"));
                     string.set_span(span);
                     string
                 })])
@@ -114,8 +115,7 @@ fn compile_error(message: &str, span: Span) -> TokenStream {
 
 fn tok_span_or_parent_close(tok: &Option<TokenTree>, parent: &Group) -> Span {
     tok.as_ref()
-        .map(|t| t.span())
-        .unwrap_or(parent.span_close())
+        .map_or_else(|| parent.span_close(), TokenTree::span)
 }
 
 fn parse_comma_separated_token_tree_lists(
@@ -123,7 +123,7 @@ fn parse_comma_separated_token_tree_lists(
 ) -> Result<Vec<Vec<TokenTree>>, SyntaxError> {
     let mut variants = Vec::new();
     let mut curr_variant = Vec::new();
-    for tt in group.stream().into_iter() {
+    for tt in group.stream() {
         if let TokenTree::Punct(p) = &tt {
             if p.as_char() == ',' {
                 if curr_variant.is_empty() {
@@ -157,7 +157,7 @@ fn parse_expand_variants(
         for r in replacements {
             expand_attrib.variants.push(ExpansionVariant {
                 ident_replacements: vec![r],
-            })
+            });
         }
         return Ok(());
     }
@@ -370,7 +370,7 @@ fn parse_match_arm_pattern(
     expand: &ExpandAttribute,
     tokens: &[TokenTree],
     offset: usize,
-) -> Result<Template, SyntaxError> {
+) -> Template {
     let mut substitutions = Vec::new();
     let mut i = offset;
     while i < tokens.len() {
@@ -403,12 +403,12 @@ fn parse_match_arm_pattern(
         // paste that anyways
         break;
     }
-    Ok(Template {
+    Template {
         offset,
         add_trailing_comma: false,
         substitutions,
         end: i,
-    })
+    }
 }
 
 fn try_add_substitutions(
@@ -438,11 +438,7 @@ fn try_add_substitutions(
     }
     false
 }
-fn parse_match_arm_body(
-    expand: &ExpandAttribute,
-    tokens: &[TokenTree],
-    offset: usize,
-) -> Result<Template, SyntaxError> {
+fn parse_match_arm_body(expand: &ExpandAttribute, tokens: &[TokenTree], offset: usize) -> Template {
     let mut substitutions = Vec::new();
     let mut i = offset;
     let mut add_trailing_comma = true;
@@ -463,12 +459,12 @@ fn parse_match_arm_body(
         add_trailing_comma = false;
         break;
     }
-    Ok(Template {
+    Template {
         offset,
         add_trailing_comma,
         substitutions,
         end: i,
-    })
+    }
 }
 
 fn expand_template(
@@ -544,9 +540,9 @@ fn process_match_body(body: TokenStream) -> Result<TokenStream, SyntaxError> {
 
         let expand_directive_start = i;
         let pattern_template =
-            parse_match_arm_pattern(&expand_attribute, &input_tokens, expand_directive_start + 2)?;
+            parse_match_arm_pattern(&expand_attribute, &input_tokens, expand_directive_start + 2);
         let body_template =
-            parse_match_arm_body(&expand_attribute, &input_tokens, pattern_template.end)?;
+            parse_match_arm_body(&expand_attribute, &input_tokens, pattern_template.end);
 
         output_tokens.extend(
             input_tokens[last_directive_end..expand_directive_start]
