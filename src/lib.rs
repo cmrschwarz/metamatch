@@ -24,7 +24,7 @@
 //! Even auto refactorings affecting the `#[expand]`,
 //! like changing the name of an enum variant, work correctly.
 //!
-//! ## Example
+//! # Example
 //!
 //! ```rust
 //! use metamatch::metamatch;
