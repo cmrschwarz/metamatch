@@ -62,9 +62,8 @@ jobs:
       - uses: dtolnay/install@cargo-outdated
       - run: cargo outdated --workspace --exit-code 1
 
-  cargo_readme_autocommit:
-    if: "github.event_name == 'push'"
-    needs: doc
+  readme:
+    name: "Readme"
     runs-on: ubuntu-latest
 
     steps:
@@ -72,15 +71,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install cargo-readme
       - run: cargo readme > README.md
-      - run: git diff # just for the log output
-      - id: git_diff_check
-        run: git diff --quiet
-        continue-on-error: true
-      - if: steps.git_diff_check.outcome == 'failure'
-        name: commit updated readme
-        run: |
-          git config --global user.email "cmrs@cmrs.io"
-          git config --global user.name "Github Action (@cmrschwarz)"
-          git add README.md
-          git commit -m "update README.md (cargo readme)"
-          git push
+      - run: git diff --exit-code
