@@ -1,7 +1,7 @@
 # `metamatch!`
 
-[![github]](https://img.shields.io/badge/cmrschwarz/metamatch)&ensp;
-[![github-build]](https://img.shields.io/badge/cmrschwarz/metamatch)&ensp;
+[![github]](https://github.com/cmrschwarz/metamatch)&ensp;
+[![github-build]](https://github.com/cmrschwarz/metamatch/actions/workflows/ci.yml)&ensp;
 [![crates-io]](https://crates.io/crates/metamatch)&ensp;
 [![msrv]](https://crates.io/crates/metamatch)&ensp;
 [![docs-rs]](https://docs.rs/metamatch)&ensp;
