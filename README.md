@@ -62,7 +62,7 @@ impl Number {
             }
 
             // no #[expand] needed, types are unused
-            Self::I64(_) | Self::U64(_) | Self::F64() => (),
+            Self::I64(_) | Self::U64(_) | Self::F64(_) => (),
         })
     }
 }
