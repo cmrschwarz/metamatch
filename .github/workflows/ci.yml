@@ -6,12 +6,6 @@ on:
   pull_request:
     branches: ["main"]
 
-permissions:
-  contents: read
-
-env:
-  RUSTFLAGS: -Dwarnings
-
 jobs:
   test:
     name: Rust ${{matrix.rust}}
@@ -67,3 +61,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: dtolnay/install@cargo-outdated
       - run: cargo outdated --workspace --exit-code 1
+
+  cargo_readme_autocommit:
+    if: "github.event_name == 'push'"
+    needs: doc
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-readme
+      - run: cargo readme --no-indent-headings -t readme.tpl > README.md
+      - id: git_diff_check
+        run: git diff-files --quiet
+        continue-on-error: true
+      - if: steps.git_diff_check.outcome == 'failure'
+        name: commit updated readme
+        run: |
+          git config --global user.email "cmrs@cmrs.io"
+          git config --global user.name "Github Action (@cmrschwarz)"
+          git add README.md
+          git commit -m "update README.md (cargo readme)"
+          git push

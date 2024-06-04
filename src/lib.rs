@@ -20,7 +20,6 @@
 //!
 //! Due to limitations on attributes in stable rust, a functional macro
 //! (`metamatch!`) is currently required around the full match expression.
-//!
 //! Rustfmt and rust-analyzer are fully able to reason about the macro.
 //! Even auto refactorings affecting the `#[expand]`,
 //! like changing the name of an enum variant, work correctly.
