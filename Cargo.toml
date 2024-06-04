@@ -1,7 +1,7 @@
 [package]
 name = "metamatch"
 
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.65.0" # due to let .. else statements
 
@@ -10,6 +10,7 @@ license = "MIT"
 
 readme = "README.md"
 repository = "https://github.com/cmrschwarz/metamatch"
+documentation = "https://docs.rs/metamatch"
 
 description = """
 A proc-macro for generating repetitive match arms.
