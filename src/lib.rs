@@ -4,11 +4,11 @@
 //! [![msrv]](https://crates.io/crates/metamatch)&ensp;
 //! [![docs-rs]](https://docs.rs/metamatch)&ensp;
 //!
-//! [github]: https://img.shields.io/badge/cmrschwarz/metamatch-8da0cb?style=for-the-badge&labelColor=555555&logo=github
-//! [github-build]: https://img.shields.io/github/actions/workflow/status/cmrschwarz/metamatch/ci.yml?branch=main&style=for-the-badge&logo=github
-//! [crates-io]: https://img.shields.io/crates/v/metamatch.svg?style=for-the-badge&color=fc8d62&logo=rust
-//! [docs-rs]: https://img.shields.io/badge/docs.rs-metamatch-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs
-//! [msrv]: https://img.shields.io/crates/msrv/metamatch?style=for-the-badge&logo=rust
+//! [github]: https://img.shields.io/badge/cmrschwarz/metamatch-8da0cb?labelColor=555555&logo=github
+//! [github-build]: https://img.shields.io/github/actions/workflow/status/cmrschwarz/metamatch/ci.yml?branch=main&logo=github
+//! [crates-io]: https://img.shields.io/crates/v/metamatch.svg?logo=rust
+//! [msrv]: https://img.shields.io/crates/msrv/metamatch?logo=rust
+//! [docs-rs]: https://img.shields.io/badge/docs.rs-metamatch-66c2a5?logo=docs.rs
 //!
 //! A rust proc-macro for generating repetitive match arms.
 //!
