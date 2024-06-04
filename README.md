@@ -1,10 +1,10 @@
 # `metamatch!`
 
-[![github]](https://github.com/cmrschwarz/metamatch)&ensp;
-[![github-build]](https://github.com/cmrschwarz/metamatch/actions/workflows/ci.yml)&ensp;
+[![github]](https://img.shields.io/badge/cmrschwarz/metamatch)&ensp;
+[![github-build]](https://img.shields.io/badge/cmrschwarz/metamatch)&ensp;
 [![crates-io]](https://crates.io/crates/metamatch)&ensp;
 [![msrv]](https://crates.io/crates/metamatch)&ensp;
-[![docs-rs]](https://docs.rs/metamatch/)&ensp;
+[![docs-rs]](https://crates.io/crates/metamatch)&ensp;
 
 [github]: https://img.shields.io/badge/cmrschwarz/metamatch-8da0cb?style=for-the-badge&labelColor=555555&logo=github
 [github-build]: https://img.shields.io/github/actions/workflow/status/cmrschwarz/metamatch/ci.yml?branch=main&style=for-the-badge&logo=github
@@ -73,5 +73,4 @@ impl Number {
 ```
 
 ## License
-
 [MIT](./LICENSE)
