@@ -72,8 +72,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install cargo-readme
       - run: cargo readme --no-indent-headings -t readme.tpl > README.md
+      - run: git diff # just for the log output
       - id: git_diff_check
-        run: git diff-files --quiet
+        run: git diff --quiet
         continue-on-error: true
       - if: steps.git_diff_check.outcome == 'failure'
         name: commit updated readme
