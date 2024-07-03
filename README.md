@@ -14,59 +14,60 @@
 
 A rust proc-macro for generating repetitive match arms.
 
-Match arms for enum variants of *different types* cannot be combined,
-even if the match arm bodies are *syntactically* identical.
+Unless the enum variant type remains unused, match arms for different
+variants cannot be combined, even if the match arm bodies are syntactically
+identical.
 
 This macro implements a simple templating attribute (`#[expand]`)
 to automatically stamp out the neccessary copies.
 
-Due to limitations on attributes in stable rust, a functional macro
-(`metamatch!`) is currently required around the full match expression.
-Rustfmt and rust-analyzer are fully able to reason about the macro.
-Even auto refactorings affecting the `#[expand]`,
-like changing the name of an enum variant, work correctly.
+Rustfmt and rust-analyzer are fully able to reason about this macro.
+Even auto refactorings that affect the `#[expand]` (like changing the
+name of an enum variant) work correctly.
 
 ## Example
 
 ```rust
 use metamatch::metamatch;
 
-enum Number {
-    I32(i32),
-    I64(i64),
-    U32(u32),
-    U64(u64),
-    F32(f32),
-    F64(f64),
+enum DynVec {
+    I32(Vec<i32>),
+    I64(Vec<i64>),
+    F32(Vec<f32>),
+    F64(Vec<f64>),
 }
 
-impl Number {
-    fn as_i32(&self) -> Option<i32> {
+enum DynSlice<'a> {
+    I32(&'a [i32]),
+    I64(&'a [i64]),
+    F32(&'a [f32]),
+    F64(&'a [f64]),
+}
+
+impl DynVec {
+    fn as_slice(&self) -> DynSlice<'_> {
         metamatch!(match self {
-            Self::I32(v) => Some(*v),
-
-            #[expand(T in [I64, U32, U64])]
-            Self::T(v) => (*v).try_into().ok(),
-
-            // multiple expands in the same match possible
-            #[expand(T in [F32, F64])]
-            Self::T(v) => Some(*v as i32)
+            #[expand(T in [I32, I64, F32, F64])]
+            DynVec::T(v) => DynSlice::T(v),
         })
     }
+
     fn promote_to_64(&mut self) {
         metamatch!(match self {
             // multiple replacement expressions supported
             #[expand((SRC, TGT, TYPE) in [
                 (I32, I64, i64),
-                (U32, U64, u64),
                 (F32, F64, f64),
             ])]
-            Self::SRC(v) => {
-                *self = Self::TGT(*v as TYPE)
+            DynVec::SRC(v) => {
+                *self = DynVec::TGT(
+                    std::mem::take(v).into_iter().map(|v| v as TYPE).collect(),
+                );
             }
 
-            // no #[expand] needed, types are unused
-            Self::I64(_) | Self::U64(_) | Self::F64(_) => (),
+            // the types are unused, the match body can be shared
+            #[expand_pattern(T in [I64, F64])]
+            DynVec::T(_) => (),
         })
     }
 }

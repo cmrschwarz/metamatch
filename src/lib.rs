@@ -12,66 +12,70 @@
 //!
 //! A rust proc-macro for generating repetitive match arms.
 //!
-//! Match arms for enum variants of *different types* cannot be combined,
-//! even if the match arm bodies are *syntactically* identical.
+//! Unless the enum variant type remains unused, match arms for different
+//! variants cannot be combined, even if the match arm bodies are syntactically
+//! identical.
 //!
 //! This macro implements a simple templating attribute (`#[expand]`)
 //! to automatically stamp out the neccessary copies.
 //!
-//! Due to limitations on attributes in stable rust, a functional macro
-//! (`metamatch!`) is currently required around the full match expression.
-//! Rustfmt and rust-analyzer are fully able to reason about the macro.
-//! Even auto refactorings affecting the `#[expand]`,
-//! like changing the name of an enum variant, work correctly.
+//! Rustfmt and rust-analyzer are fully able to reason about this macro.
+//! Even auto refactorings that affect the `#[expand]` (like changing the
+//! name of an enum variant) work correctly.
 //!
 //! # Example
 //!
 //! ```rust
 //! use metamatch::metamatch;
 //!
-//! enum Number {
-//!     I32(i32),
-//!     I64(i64),
-//!     U32(u32),
-//!     U64(u64),
-//!     F32(f32),
-//!     F64(f64),
+//! enum DynVec {
+//!     I32(Vec<i32>),
+//!     I64(Vec<i64>),
+//!     F32(Vec<f32>),
+//!     F64(Vec<f64>),
 //! }
 //!
-//! impl Number {
-//!     fn as_i32(&self) -> Option<i32> {
+//! enum DynSlice<'a> {
+//!     I32(&'a [i32]),
+//!     I64(&'a [i64]),
+//!     F32(&'a [f32]),
+//!     F64(&'a [f64]),
+//! }
+//!
+//! impl DynVec {
+//!     fn as_slice(&self) -> DynSlice<'_> {
 //!         metamatch!(match self {
-//!             Self::I32(v) => Some(*v),
-//!
-//!             #[expand(T in [I64, U32, U64])]
-//!             Self::T(v) => (*v).try_into().ok(),
-//!
-//!             // multiple expands in the same match possible
-//!             #[expand(T in [F32, F64])]
-//!             Self::T(v) => Some(*v as i32)
+//!             #[expand(T in [I32, I64, F32, F64])]
+//!             DynVec::T(v) => DynSlice::T(v),
 //!         })
 //!     }
+//!
 //!     fn promote_to_64(&mut self) {
 //!         metamatch!(match self {
 //!             // multiple replacement expressions supported
 //!             #[expand((SRC, TGT, TYPE) in [
 //!                 (I32, I64, i64),
-//!                 (U32, U64, u64),
 //!                 (F32, F64, f64),
 //!             ])]
-//!             Self::SRC(v) => {
-//!                 *self = Self::TGT(*v as TYPE)
+//!             DynVec::SRC(v) => {
+//!                 *self = DynVec::TGT(
+//!                     std::mem::take(v).into_iter().map(|v| v as TYPE).collect(),
+//!                 );
 //!             }
 //!
-//!             // no #[expand] needed, types are unused
-//!             Self::I64(_) | Self::U64(_) | Self::F64(_) => (),
+//!             // the types are unused, the match body can be shared
+//!             #[expand_pattern(T in [I64, F64])]
+//!             DynVec::T(_) => (),
 //!         })
 //!     }
 //! }
 //! ```
 
 #![warn(clippy::pedantic)]
-use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
+use proc_macro::{
+    Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream,
+    TokenTree,
+};
 use std::collections::HashMap;
 
 type ExpansionIdentIndex = usize;
@@ -145,13 +149,15 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
                     return compile_error(&err.message, err.span);
                 }
                 Ok(body) => {
-                    let mut body_replacement = Group::new(group.delimiter(), body);
+                    let mut body_replacement =
+                        Group::new(group.delimiter(), body);
                     body_replacement.set_span(group.span());
                     *group = body_replacement;
                     // we allow multiple bodies. something like
                     // `match {42} { x => x}` is legal Rust.
                     // we don't do the work to figure out the 'correct'
-                    // match body, but just do each of them (non recursive though)
+                    // match body, but just do each of them (non recursive
+                    // though)
                     match_body_found = true;
                 }
             };
@@ -174,8 +180,9 @@ fn compile_error(message: &str, span: Span) -> TokenStream {
         TokenTree::Group({
             let mut group = Group::new(Delimiter::Brace, {
                 TokenStream::from_iter(vec![TokenTree::Literal({
-                    let mut string =
-                        Literal::string(&format!("`metamatch!` macro expansion: {message}"));
+                    let mut string = Literal::string(&format!(
+                        "`metamatch!` macro expansion: {message}"
+                    ));
                     string.set_span(span);
                     string
                 })])
@@ -191,7 +198,10 @@ fn tok_span_or_parent_close(tok: &Option<TokenTree>, parent: &Group) -> Span {
         .map_or_else(|| parent.span_close(), TokenTree::span)
 }
 
-fn tok_span_open_or_parent_close(tok: &Option<TokenTree>, parent: &Group) -> Span {
+fn tok_span_open_or_parent_close(
+    tok: &Option<TokenTree>,
+    parent: &Group,
+) -> Span {
     match tok {
         Some(TokenTree::Group(g)) => g.span_open(),
         Some(other) => other.span(),
@@ -209,7 +219,9 @@ fn parse_comma_separated_token_tree_lists(
             if p.as_char() == ',' {
                 if curr_variant.is_empty() {
                     return Err(SyntaxError {
-                        message: "expansion variant must have at least one token".to_string(),
+                        message:
+                            "expansion variant must have at least one token"
+                                .to_string(),
                         span: p.span(),
                     });
                 }
@@ -234,7 +246,8 @@ fn parse_expand_variants(
 
     if !expand_attrib.ident_tuple {
         debug_assert_eq!(ident_count, 1);
-        let replacements = parse_comma_separated_token_tree_lists(variants_group)?;
+        let replacements =
+            parse_comma_separated_token_tree_lists(variants_group)?;
         for r in replacements {
             expand_attrib.variants.push(ExpansionVariant {
                 ident_replacements: vec![r],
@@ -245,7 +258,11 @@ fn parse_expand_variants(
     let mut group_iter = variants_group.stream().into_iter();
     loop {
         let group = match group_iter.next() {
-            Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Parenthesis => group,
+            Some(TokenTree::Group(group))
+                if group.delimiter() == Delimiter::Parenthesis =>
+            {
+                group
+            }
             Some(other) => {
                 return Err(SyntaxError {
                     message: "expected `(` or `]`".to_string(),
@@ -254,7 +271,8 @@ fn parse_expand_variants(
             }
             None => break,
         };
-        let ident_replacements = parse_comma_separated_token_tree_lists(&group)?;
+        let ident_replacements =
+            parse_comma_separated_token_tree_lists(&group)?;
         let replacements_len = ident_replacements.len();
         if replacements_len != ident_count {
             return Err(SyntaxError {
@@ -295,7 +313,11 @@ fn parse_expand_ident_names(
                 variants: Vec::new(),
             })
         }
-        Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Parenthesis => group,
+        Some(TokenTree::Group(group))
+            if group.delimiter() == Delimiter::Parenthesis =>
+        {
+            group
+        }
         _ => {
             return Err(SyntaxError {
                 message: "expected `(` or identifier".to_string(),
@@ -413,8 +435,11 @@ fn parse_expand_attribute(
 
     let expand_ident_tok = expand_body_stream.next();
 
-    let mut expand_attrib =
-        parse_expand_ident_names(&expand_ident_tok, &expand_body, expand_pattern)?;
+    let mut expand_attrib = parse_expand_ident_names(
+        &expand_ident_tok,
+        &expand_body,
+        expand_pattern,
+    )?;
 
     let kw_in_tok = expand_body_stream.next();
 
@@ -439,7 +464,10 @@ fn parse_expand_attribute(
         _ => {
             return Err(SyntaxError {
                 message: "expected `[` to begin expand variants".to_string(),
-                span: tok_span_open_or_parent_close(&variants_group_tok, attrib_group),
+                span: tok_span_open_or_parent_close(
+                    &variants_group_tok,
+                    attrib_group,
+                ),
             });
         }
     };
@@ -477,7 +505,10 @@ fn try_add_substitutions(
     false
 }
 
-fn find_substitutions(expand: &ExpandAttribute, group: &Group) -> Vec<Substitution> {
+fn find_substitutions(
+    expand: &ExpandAttribute,
+    group: &Group,
+) -> Vec<Substitution> {
     let mut substitutions = Vec::new();
     for (i, tt) in group.stream().into_iter().enumerate() {
         try_add_substitutions(&tt, expand, &mut substitutions, i);
@@ -539,7 +570,9 @@ fn parse_match_arm_body(
             if allow_substitutions {
                 substitutions.push(Substitution {
                     pos: i,
-                    kind: SubstitutionKind::Nested(find_substitutions(expand, group)),
+                    kind: SubstitutionKind::Nested(find_substitutions(
+                        expand, group,
+                    )),
                 });
             }
             return i + 1;
@@ -552,7 +585,9 @@ fn parse_match_arm_body(
 
         let tt = &tokens[tok_idx];
 
-        if allow_substitutions && try_add_substitutions(tt, expand, substitutions, tok_idx) {
+        if allow_substitutions
+            && try_add_substitutions(tt, expand, substitutions, tok_idx)
+        {
             continue;
         }
         let TokenTree::Punct(p) = tt else {
@@ -567,9 +602,14 @@ fn parse_match_arm_body(
     i
 }
 
-fn parse_match_arm(expand: &ExpandAttribute, input: &[TokenTree], offset: usize) -> Template {
+fn parse_match_arm(
+    expand: &ExpandAttribute,
+    input: &[TokenTree],
+    offset: usize,
+) -> Template {
     let mut substitutions = Vec::new();
-    let pattern_end = parse_match_arm_pattern(expand, input, offset, &mut substitutions);
+    let pattern_end =
+        parse_match_arm_pattern(expand, input, offset, &mut substitutions);
 
     let mut requires_trailing_comma = false;
     let body_end = parse_match_arm_body(
@@ -604,17 +644,28 @@ fn expand_substitution(
     for subst in substitutions {
         match &subst.kind {
             SubstitutionKind::Inline(ident_idx) => {
-                expansion.extend(source[template_pos..subst.pos].iter().cloned());
-                expansion.extend(variant.ident_replacements[*ident_idx].iter().cloned());
+                expansion
+                    .extend(source[template_pos..subst.pos].iter().cloned());
+                expansion.extend(
+                    variant.ident_replacements[*ident_idx].iter().cloned(),
+                );
             }
             SubstitutionKind::Nested(nested_substs) => {
                 let TokenTree::Group(source_group) = &source[subst.pos] else {
                     unreachable!()
                 };
-                let group_body = source_group.stream().into_iter().collect::<Vec<_>>();
+                let group_body =
+                    source_group.stream().into_iter().collect::<Vec<_>>();
                 let mut group_target = Vec::new();
-                expand_substitution(&group_body, &mut group_target, nested_substs, variant, 0);
-                expansion.extend(source[template_pos..subst.pos].iter().cloned());
+                expand_substitution(
+                    &group_body,
+                    &mut group_target,
+                    nested_substs,
+                    variant,
+                    0,
+                );
+                expansion
+                    .extend(source[template_pos..subst.pos].iter().cloned());
                 let mut group = Group::new(
                     source_group.delimiter(),
                     TokenStream::from_iter(group_target),
@@ -636,7 +687,8 @@ fn expand_pattern(
 ) {
     for (i, variant) in expand_attribute.variants.iter().enumerate() {
         if i != 0 {
-            output_tokens.push(TokenTree::Punct(Punct::new('|', Spacing::Alone)));
+            output_tokens
+                .push(TokenTree::Punct(Punct::new('|', Spacing::Alone)));
         }
         expand_substitution(
             &input_tokens[..template.pattern_end],
@@ -646,7 +698,9 @@ fn expand_pattern(
             template.offset,
         );
     }
-    output_tokens.extend_from_slice(&input_tokens[template.pattern_end..template.body_end]);
+    output_tokens.extend_from_slice(
+        &input_tokens[template.pattern_end..template.body_end],
+    );
 }
 
 fn expand_full(
@@ -688,7 +742,8 @@ fn process_match_body(body: TokenStream) -> Result<TokenStream, SyntaxError> {
         // #[expand(...)] are two tokens
         let match_arm_start = expand_directive_start + 2;
 
-        let template = parse_match_arm(&expand_attribute, &input_tokens, match_arm_start);
+        let template =
+            parse_match_arm(&expand_attribute, &input_tokens, match_arm_start);
 
         output_tokens.extend(
             input_tokens[last_directive_end..expand_directive_start]
@@ -714,7 +769,8 @@ fn process_match_body(body: TokenStream) -> Result<TokenStream, SyntaxError> {
             );
         }
         if template.add_trailing_comma {
-            output_tokens.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
+            output_tokens
+                .push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
         }
     }
     output_tokens.extend(input_tokens[last_directive_end..].iter().cloned());
