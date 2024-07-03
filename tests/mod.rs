@@ -28,6 +28,34 @@ fn basic_len() {
 }
 
 #[test]
+fn expand_pattern() {
+    let f = DynVec::I32(vec![]);
+    let is_int = metamatch!(match f {
+        #[expand_pattern(T in [I32, I64])]
+        DynVec::T(_) => true,
+
+        #[expand_pattern(T in [F32, F64])]
+        DynVec::T(_) => {
+            false
+        }
+    });
+    assert!(is_int);
+}
+
+#[test]
+fn expand_pattern_single_variant() {
+    let f = DynVec::I32(vec![]);
+    let is_int = metamatch!(match f {
+        #[expand_pattern(T in [()])]
+        DynVec::I32(_) | DynVec::I64(_) => true,
+
+        #[expand_pattern(T in [F32, F64])]
+        DynVec::T(_) => false,
+    });
+    assert!(is_int);
+}
+
+#[test]
 fn multi_type() {
     let f = DynVec::I64(vec![]);
     let res = metamatch!(match &f {
