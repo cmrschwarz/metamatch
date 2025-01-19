@@ -1,4 +1,4 @@
-use metamatch::metamatch;
+use metamatch::{expand, metamatch};
 use paste::paste;
 
 #[derive(Debug, PartialEq)]
@@ -196,4 +196,36 @@ fn expand_pattern_single_variant() {
         DynVec::T(_) => false,
     });
     assert!(is_int);
+}
+
+#[test]
+fn direct_expand() {
+    let mut x = 0;
+
+    expand!(T in [1, 2, 3] {
+        x += T;
+    });
+
+    assert_eq!(x, 6);
+}
+
+#[test]
+fn direct_expand_empty() {
+    #[allow(unused_mut)]
+    let mut x = 0;
+
+    expand!(T in [] {
+        x += T;
+    });
+
+    assert_eq!(x, 0);
+}
+
+#[test]
+fn direct_expand_array() {
+    let arr: [i32; 3] = expand!(T in [1, 2, 3] *[
+        T,
+    ]);
+
+    assert_eq!(arr.iter().sum::<i32>(), 6);
 }

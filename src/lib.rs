@@ -131,6 +131,7 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
         Some(TokenTree::Ident(ident)) if ident.to_string() == "match" => {}
         other => {
             return compile_error(
+                "metamatch!",
                 "expected `match`",
                 other.map_or_else(Span::call_site, |t| t.span()),
             );
@@ -146,7 +147,11 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
             }
             match process_match_body(group.stream()) {
                 Err(err) => {
-                    return compile_error(&err.message, err.span);
+                    return compile_error(
+                        "metamatch!",
+                        &err.message,
+                        err.span,
+                    );
                 }
                 Ok(body) => {
                     let mut body_replacement =
@@ -164,12 +169,98 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
         }
     }
     if !match_body_found {
-        return compile_error("no match body found", Span::call_site());
+        return compile_error(
+            "metamatch!",
+            "no match body found",
+            Span::call_site(),
+        );
     }
     TokenStream::from_iter(tokens)
 }
 
-fn compile_error(message: &str, span: Span) -> TokenStream {
+fn parse_expand_body(
+    iter: &mut impl Iterator<Item = TokenTree>,
+) -> Result<(Vec<TokenTree>, Option<Delimiter>), SyntaxError> {
+    let mut t = iter.next();
+    let mut delim = None;
+    let mut use_delim = false;
+
+    if let Some(TokenTree::Punct(p)) = &t {
+        if p.as_char() == '*' {
+            use_delim = true;
+            t = iter.next();
+        }
+    }
+
+    let group = match t {
+        Some(TokenTree::Group(group)) => group,
+        Some(t) => {
+            return Err(SyntaxError {
+                message: "expected `{` to begin expand body".to_string(),
+                span: t.span(),
+            })
+        }
+        None => return Err(SyntaxError {
+            message:
+                "missing body for expand, expected `{` after expansion group"
+                    .to_string(),
+            span: Span::call_site(),
+        }),
+    };
+    if let Some(t) = iter.next() {
+        return Err(SyntaxError {
+            message: "stray token after the end of expand expresssion"
+                .to_string(),
+            span: t.span(),
+        });
+    }
+    if use_delim {
+        delim = Some(group.delimiter());
+    }
+    Ok((group.stream().into_iter().collect(), delim))
+}
+
+#[proc_macro]
+pub fn expand(body: TokenStream) -> TokenStream {
+    let mut iter = body.into_iter();
+    let expand_attr =
+        match parse_expand_attrib_inner(None, false, None, &mut iter) {
+            Ok(v) => v,
+            Err(e) => return compile_error("expand!", &e.message, e.span),
+        };
+
+    let (body, delim) = match parse_expand_body(&mut iter) {
+        Ok(v) => v,
+        Err(e) => return compile_error("expand!", &e.message, e.span),
+    };
+
+    let substitutions = find_substitutions(&expand_attr, &body, 0);
+
+    let template = Template {
+        offset: 0,
+        substitutions,
+        add_trailing_comma: false,
+        pattern_end: 0,
+        body_end: body.len(),
+    };
+
+    let mut res = Vec::new();
+
+    expand_full(&expand_attr, &body, &template, &mut res);
+
+    let res = TokenStream::from_iter(res);
+
+    if let Some(delim) = delim {
+        let x = TokenStream::from_iter(std::iter::once(TokenTree::Group(
+            Group::new(delim, res),
+        )));
+        x
+    } else {
+        res
+    }
+}
+
+fn compile_error(macro_name: &str, message: &str, span: Span) -> TokenStream {
     TokenStream::from_iter(vec![
         TokenTree::Ident(Ident::new("compile_error", span)),
         TokenTree::Punct({
@@ -181,7 +272,7 @@ fn compile_error(message: &str, span: Span) -> TokenStream {
             let mut group = Group::new(Delimiter::Brace, {
                 TokenStream::from_iter(vec![TokenTree::Literal({
                     let mut string = Literal::string(&format!(
-                        "`metamatch!` macro expansion: {message}"
+                        "`{macro_name}` macro expansion: {message}"
                     ));
                     string.set_span(span);
                     string
@@ -193,19 +284,26 @@ fn compile_error(message: &str, span: Span) -> TokenStream {
     ])
 }
 
-fn tok_span_or_parent_close(tok: &Option<TokenTree>, parent: &Group) -> Span {
-    tok.as_ref()
-        .map_or_else(|| parent.span_close(), TokenTree::span)
+fn tok_span_or_parent_close(
+    tok: &Option<TokenTree>,
+    parent: Option<&Group>,
+) -> Span {
+    match (tok, parent) {
+        (Some(t), _) => t.span(),
+        (None, Some(parent)) => parent.span_close(),
+        (None, None) => Span::call_site(),
+    }
 }
 
 fn tok_span_open_or_parent_close(
-    tok: &Option<TokenTree>,
-    parent: &Group,
+    tok: Option<&TokenTree>,
+    parent: Option<&Group>,
 ) -> Span {
-    match tok {
-        Some(TokenTree::Group(g)) => g.span_open(),
-        Some(other) => other.span(),
-        None => parent.span_close(),
+    match (tok, parent) {
+        (Some(TokenTree::Group(g)), _) => g.span_open(),
+        (Some(other), _) => other.span(),
+        (None, Some(parent)) => parent.span_close(),
+        (None, None) => Span::call_site(),
     }
 }
 
@@ -301,7 +399,7 @@ fn parse_expand_variants(
 
 fn parse_expand_ident_names(
     tok: &Option<TokenTree>,
-    expand_group: &Group,
+    expand_group: Option<&Group>,
     expand_pattern: bool,
 ) -> Result<ExpandAttribute, SyntaxError> {
     let ident_group = match tok {
@@ -419,7 +517,10 @@ fn parse_expand_attribute(
         _ => {
             return Err(SyntaxError {
                 message: "expected `(` to begin expand body".to_string(),
-                span: tok_span_or_parent_close(&expand_body_tok, attrib_group),
+                span: tok_span_or_parent_close(
+                    &expand_body_tok,
+                    Some(attrib_group),
+                ),
             });
         }
     };
@@ -433,28 +534,51 @@ fn parse_expand_attribute(
 
     let mut expand_body_stream = expand_body.stream().into_iter();
 
+    let expand_attrib = parse_expand_attrib_inner(
+        Some(attrib_group),
+        expand_pattern,
+        Some(&expand_body),
+        &mut expand_body_stream,
+    )?;
+
+    if let Some(t) = expand_body_stream.next() {
+        return Err(SyntaxError {
+            message: "stray token after the end of expand expresssion"
+                .to_string(),
+            span: t.span(),
+        });
+    }
+
+    Ok(Some(expand_attrib))
+}
+// parses the T/(X, Y) in [..] part of the expand attribute
+fn parse_expand_attrib_inner(
+    attrib_group: Option<&Group>,
+    expand_pattern: bool,
+    expand_body: Option<&Group>,
+    expand_body_stream: &mut proc_macro::token_stream::IntoIter,
+) -> Result<ExpandAttribute, SyntaxError> {
     let expand_ident_tok = expand_body_stream.next();
 
     let mut expand_attrib = parse_expand_ident_names(
         &expand_ident_tok,
-        &expand_body,
+        expand_body,
         expand_pattern,
     )?;
-
     let kw_in_tok = expand_body_stream.next();
-
     match kw_in_tok {
         Some(TokenTree::Ident(ident)) if ident.to_string() == "in" => (),
         _ => {
             return Err(SyntaxError {
                 message: "expand `in` after expand identifier".to_string(),
-                span: tok_span_open_or_parent_close(&kw_in_tok, &expand_body),
+                span: tok_span_open_or_parent_close(
+                    kw_in_tok.as_ref(),
+                    expand_body,
+                ),
             });
         }
     };
-
     let variants_group_tok = expand_body_stream.next();
-
     let variants_group = match variants_group_tok {
         Some(TokenTree::Group(variants_group))
             if variants_group.delimiter() == Delimiter::Bracket =>
@@ -465,16 +589,14 @@ fn parse_expand_attribute(
             return Err(SyntaxError {
                 message: "expected `[` to begin expand variants".to_string(),
                 span: tok_span_open_or_parent_close(
-                    &variants_group_tok,
+                    variants_group_tok.as_ref(),
                     attrib_group,
                 ),
             });
         }
     };
-
     parse_expand_variants(&mut expand_attrib, &variants_group)?;
-
-    Ok(Some(expand_attrib))
+    Ok(expand_attrib)
 }
 
 fn try_add_substitutions(
@@ -493,7 +615,7 @@ fn try_add_substitutions(
         }
     }
     if let TokenTree::Group(g) = tt {
-        let nested = find_substitutions(expand, g);
+        let nested = find_group_substitutions(expand, g);
         if !nested.is_empty() {
             substitutions.push(Substitution {
                 pos: tok_idx,
@@ -506,6 +628,18 @@ fn try_add_substitutions(
 }
 
 fn find_substitutions(
+    expand: &ExpandAttribute,
+    tokens: &[TokenTree],
+    offset: usize,
+) -> Vec<Substitution> {
+    let mut substitutions = Vec::new();
+    for (i, tt) in tokens.iter().enumerate() {
+        try_add_substitutions(&tt, expand, &mut substitutions, offset + i);
+    }
+    substitutions
+}
+
+fn find_group_substitutions(
     expand: &ExpandAttribute,
     group: &Group,
 ) -> Vec<Substitution> {
@@ -570,7 +704,7 @@ fn parse_match_arm_body(
             if allow_substitutions {
                 substitutions.push(Substitution {
                     pos: i,
-                    kind: SubstitutionKind::Nested(find_substitutions(
+                    kind: SubstitutionKind::Nested(find_group_substitutions(
                         expand, group,
                     )),
                 });
