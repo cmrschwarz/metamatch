@@ -217,10 +217,13 @@ fn parse_expand_expr_body(
     let mut delim = None;
     let mut use_delim = false;
 
+    let mut expected = "`{` or `:`";
+
     if let Some(TokenTree::Punct(p)) = &t {
-        if p.as_char() == '*' {
+        if p.as_char() == ':' {
             use_delim = true;
             t = iter.next();
+            expected = "`{`";
         }
     }
 
@@ -228,16 +231,18 @@ fn parse_expand_expr_body(
         Some(TokenTree::Group(group)) => group,
         Some(t) => {
             return Err(SyntaxError {
-                message: "expected `{` to begin expand body".to_string(),
+                message: format!("expected {expected} to begin expand body"),
                 span: t.span(),
             })
         }
-        None => return Err(SyntaxError {
-            message:
-                "missing body for expand, expected `{` after expansion group"
-                    .to_string(),
-            span: Span::call_site(),
-        }),
+        None => {
+            return Err(SyntaxError {
+                message: format!(
+                "missing body for expand, expected {expected} after expansion group"
+            ),
+                span: Span::call_site(),
+            })
+        }
     };
     if let Some(t) = iter.next() {
         return Err(SyntaxError {
@@ -748,8 +753,8 @@ fn parse_expand_attrib_inner(
 
     let mut cross_product = false;
 
-    if let Some(TokenTree::Ident(i)) = &t {
-        if i.to_string() == "x" {
+    if let Some(TokenTree::Punct(p)) = &t {
+        if p.as_char() == '*' {
             if !expand_attrib.ident_tup {
                 return Err(SyntaxError {
                     message: "cross product not supported on single replacement identifier".to_string(),
@@ -794,7 +799,7 @@ fn parse_expand_attrib_inner(
     };
     let expected = match (expand_attrib.ident_tup, cross_product) {
         (true, true) => "`[` or `(`",
-        (true, false) => "`x` or `[` or `(`",
+        (true, false) => "`*` or `[` or `(`",
         (false, _) => "`[`",
     };
     return Err(SyntaxError {
