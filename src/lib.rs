@@ -80,15 +80,17 @@ use std::collections::HashMap;
 
 type ExpansionIdentIndex = usize;
 
-#[derive(Debug, Default)]
+type Replacement = Vec<TokenTree>;
+
+#[derive(Debug, Default, Clone)]
 struct ExpansionVariant {
-    ident_replacements: Vec<Vec<TokenTree>>,
+    ident_replacements: Vec<Replacement>,
 }
 
 #[derive(Debug)]
 struct ExpandAttribute {
     ident_names: HashMap<String, usize>,
-    ident_tuple: bool,
+    ident_tup: bool,
     expand_pattern: bool,
     variants: Vec<ExpansionVariant>,
 }
@@ -178,7 +180,37 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
     TokenStream::from_iter(tokens)
 }
 
-fn parse_expand_body(
+#[proc_macro_attribute]
+pub fn expand(attr: TokenStream, body: TokenStream) -> TokenStream {
+    let expand_attr = match parse_expand_attrib_inner(
+        None,
+        false,
+        None,
+        &mut attr.into_iter(),
+    ) {
+        Ok(v) => v,
+        Err(e) => return compile_error("#[expand(..)]", &e.message, e.span),
+    };
+
+    let body = body.into_iter().collect::<Vec<_>>();
+    let substitutions = find_substitutions(&expand_attr, &body, 0);
+
+    let template = Template {
+        offset: 0,
+        substitutions,
+        add_trailing_comma: false,
+        pattern_end: 0,
+        body_end: body.len(),
+    };
+
+    let mut res = Vec::new();
+
+    expand_full(&expand_attr, &body, &template, &mut res);
+
+    TokenStream::from_iter(res)
+}
+
+fn parse_expand_expr_body(
     iter: &mut impl Iterator<Item = TokenTree>,
 ) -> Result<(Vec<TokenTree>, Option<Delimiter>), SyntaxError> {
     let mut t = iter.next();
@@ -221,17 +253,19 @@ fn parse_expand_body(
 }
 
 #[proc_macro]
-pub fn expand(body: TokenStream) -> TokenStream {
+pub fn expand_expr(body: TokenStream) -> TokenStream {
     let mut iter = body.into_iter();
     let expand_attr =
         match parse_expand_attrib_inner(None, false, None, &mut iter) {
             Ok(v) => v,
-            Err(e) => return compile_error("expand!", &e.message, e.span),
+            Err(e) => {
+                return compile_error("expand_expr!", &e.message, e.span)
+            }
         };
 
-    let (body, delim) = match parse_expand_body(&mut iter) {
+    let (body, delim) = match parse_expand_expr_body(&mut iter) {
         Ok(v) => v,
-        Err(e) => return compile_error("expand!", &e.message, e.span),
+        Err(e) => return compile_error("expand_expr!", &e.message, e.span),
     };
 
     let substitutions = find_substitutions(&expand_attr, &body, 0);
@@ -271,9 +305,8 @@ fn compile_error(macro_name: &str, message: &str, span: Span) -> TokenStream {
         TokenTree::Group({
             let mut group = Group::new(Delimiter::Brace, {
                 TokenStream::from_iter(vec![TokenTree::Literal({
-                    let mut string = Literal::string(&format!(
-                        "`{macro_name}` macro expansion: {message}"
-                    ));
+                    let mut string =
+                        Literal::string(&format!("`{macro_name}`: {message}"));
                     string.set_span(span);
                     string
                 })])
@@ -336,23 +369,52 @@ fn parse_comma_separated_token_tree_lists(
     Ok(variants)
 }
 
-fn parse_expand_variants(
+fn add_cross_product_variants<'a>(
+    mut pending: ExpansionVariant,
+    mut replacement_arrs: impl Clone + Iterator<Item = &'a Vec<Replacement>>,
+    arr_idx: usize,
+    variants: &mut Vec<ExpansionVariant>,
+) {
+    let Some(rep_arr) = replacement_arrs.next() else {
+        variants.push(pending);
+        return;
+    };
+    for rep in &rep_arr[0..rep_arr.len().saturating_sub(1)] {
+        let mut p = pending.clone();
+        p.ident_replacements.push(rep.clone());
+        add_cross_product_variants(
+            p,
+            replacement_arrs.clone(),
+            arr_idx + 1,
+            variants,
+        );
+    }
+    if let Some(rep) = rep_arr.last() {
+        pending.ident_replacements.push(rep.clone());
+        add_cross_product_variants(
+            pending,
+            replacement_arrs,
+            arr_idx + 1,
+            variants,
+        );
+    }
+}
+
+fn parse_expand_variants_arr_of_tup(
     expand_attrib: &mut ExpandAttribute,
     variants_group: &Group,
+    cross_product: bool,
 ) -> Result<(), SyntaxError> {
     let ident_count = expand_attrib.ident_names.len();
 
-    if !expand_attrib.ident_tuple {
-        debug_assert_eq!(ident_count, 1);
-        let replacements =
-            parse_comma_separated_token_tree_lists(variants_group)?;
-        for r in replacements {
-            expand_attrib.variants.push(ExpansionVariant {
-                ident_replacements: vec![r],
-            });
-        }
-        return Ok(());
+    let mut arrs = Vec::new();
+    if cross_product {
+        arrs.extend(std::iter::repeat_n(
+            Vec::<Replacement>::new(),
+            ident_count,
+        ));
     }
+
     let mut group_iter = variants_group.stream().into_iter();
     loop {
         let group = match group_iter.next() {
@@ -378,9 +440,15 @@ fn parse_expand_variants(
                 span: group.span(),
             });
         }
-        expand_attrib
-            .variants
-            .push(ExpansionVariant { ident_replacements });
+        if cross_product {
+            for (i, r) in ident_replacements.iter().enumerate() {
+                arrs[i].push(r.clone());
+            }
+        } else {
+            expand_attrib
+                .variants
+                .push(ExpansionVariant { ident_replacements });
+        }
         match group_iter.next() {
             Some(TokenTree::Punct(p)) if p.as_char() == ',' => {
                 continue;
@@ -394,6 +462,102 @@ fn parse_expand_variants(
             None => break,
         }
     }
+    if cross_product {
+        add_cross_product_variants(
+            ExpansionVariant::default(),
+            arrs.iter(),
+            0,
+            &mut expand_attrib.variants,
+        );
+    }
+    Ok(())
+}
+
+fn parse_expand_variants_tup_of_arr(
+    expand_attrib: &mut ExpandAttribute,
+    variants_group: &Group,
+    cross_product: bool,
+) -> Result<(), SyntaxError> {
+    struct ReplacementArr {
+        group: Group,
+        replacements: Vec<Vec<TokenTree>>,
+    }
+    let ident_count = expand_attrib.ident_names.len();
+
+    let mut group_iter = variants_group.stream().into_iter();
+    let mut arrs = Vec::new();
+    loop {
+        let group = match group_iter.next() {
+            Some(TokenTree::Group(group))
+                if group.delimiter() == Delimiter::Bracket =>
+            {
+                group
+            }
+            Some(other) => {
+                return Err(SyntaxError {
+                    message: "expected `[` or `)`".to_string(),
+                    span: other.span(),
+                });
+            }
+            None => break,
+        };
+        let replacements = parse_comma_separated_token_tree_lists(&group)?;
+        arrs.push(ReplacementArr {
+            group,
+            replacements,
+        });
+        match group_iter.next() {
+            Some(TokenTree::Punct(p)) if p.as_char() == ',' => {
+                continue;
+            }
+            Some(other) => {
+                return Err(SyntaxError {
+                    message: "expected `,` or `]`".to_string(),
+                    span: other.span(),
+                });
+            }
+            None => break,
+        }
+    }
+    let replacement_count = arrs.len();
+    if replacement_count != ident_count {
+        return Err(SyntaxError {
+            message: format!(
+                "expected {ident_count} replacement arrays, got {replacement_count}",
+            ),
+            span: variants_group.span(),
+        });
+    }
+    let len_0 = arrs[0].replacements.len();
+    if !cross_product {
+        for a in arrs.iter().skip(1) {
+            let len_i = a.replacements.len();
+            if len_i != len_0 {
+                return Err(SyntaxError {
+                    message: format!("replacement array length ({len_i}) differs from first ({len_0})"),
+                    span: a.group.span(),
+                });
+            }
+        }
+        for i in 0..len_0 {
+            let mut ident_replacements = Vec::new();
+            for a in arrs.iter() {
+                ident_replacements.push(a.replacements[i].clone());
+            }
+            expand_attrib
+                .variants
+                .push(ExpansionVariant { ident_replacements });
+        }
+        return Ok(());
+    }
+
+    add_cross_product_variants(
+        ExpansionVariant::default(),
+        arrs.iter().map(|ra| &ra.replacements),
+        0,
+        &mut expand_attrib.variants,
+    );
+
     Ok(())
 }
 
@@ -406,7 +570,7 @@ fn parse_expand_ident_names(
         Some(TokenTree::Ident(ident)) => {
             return Ok(ExpandAttribute {
                 ident_names: HashMap::from_iter([(ident.to_string(), 0)]),
-                ident_tuple: false,
+                ident_tup: false,
                 expand_pattern,
                 variants: Vec::new(),
             })
@@ -467,7 +631,7 @@ fn parse_expand_ident_names(
     }
     Ok(ExpandAttribute {
         ident_names: names,
-        ident_tuple: true,
+        ident_tup: true,
         expand_pattern,
         variants: Vec::new(),
     })
@@ -553,7 +717,7 @@ fn parse_expand_attribute(
 }
 // parses the T/(X, Y) in [..] part of the expand attribute
 fn parse_expand_attrib_inner(
-    attrib_group: Option<&Group>,
+    _attrib_group: Option<&Group>,
     expand_pattern: bool,
     expand_body: Option<&Group>,
     expand_body_stream: &mut proc_macro::token_stream::IntoIter,
@@ -578,25 +742,65 @@ fn parse_expand_attrib_inner(
             });
         }
     };
-    let variants_group_tok = expand_body_stream.next();
-    let variants_group = match variants_group_tok {
-        Some(TokenTree::Group(variants_group))
-            if variants_group.delimiter() == Delimiter::Bracket =>
-        {
-            variants_group
+    let ident_count = expand_attrib.ident_names.len();
+
+    let mut t = expand_body_stream.next();
+
+    let mut cross_product = false;
+
+    if let Some(TokenTree::Ident(i)) = &t {
+        if i.to_string() == "x" {
+            if !expand_attrib.ident_tup {
+                return Err(SyntaxError {
+                    message: "cross product not supported on single replacement identifier".to_string(),
+                    span: tok_span_open_or_parent_close(t.as_ref(), expand_body),
+                });
+            }
+            cross_product = true;
+            t = expand_body_stream.next();
         }
-        _ => {
-            return Err(SyntaxError {
-                message: "expected `[` to begin expand variants".to_string(),
-                span: tok_span_open_or_parent_close(
-                    variants_group_tok.as_ref(),
-                    attrib_group,
-                ),
-            });
+    }
+
+    if let Some(TokenTree::Group(variants_group)) = &t {
+        if variants_group.delimiter() == Delimiter::Bracket {
+            if !expand_attrib.ident_tup {
+                debug_assert_eq!(ident_count, 1);
+                let replacements =
+                    parse_comma_separated_token_tree_lists(&variants_group)?;
+                for r in replacements {
+                    expand_attrib.variants.push(ExpansionVariant {
+                        ident_replacements: vec![r],
+                    });
+                }
+                return Ok(expand_attrib);
+            }
+            parse_expand_variants_arr_of_tup(
+                &mut expand_attrib,
+                &variants_group,
+                cross_product,
+            )?;
+            return Ok(expand_attrib);
+        }
+        if variants_group.delimiter() == Delimiter::Parenthesis {
+            if expand_attrib.ident_tup {
+                parse_expand_variants_tup_of_arr(
+                    &mut expand_attrib,
+                    &variants_group,
+                    cross_product,
+                )?;
+            }
+            return Ok(expand_attrib);
         }
     };
-    parse_expand_variants(&mut expand_attrib, &variants_group)?;
-    Ok(expand_attrib)
+    let expected = match (expand_attrib.ident_tup, cross_product) {
+        (true, true) => "`[` or `(`",
+        (true, false) => "`x` or `[` or `(`",
+        (false, _) => "`[`",
+    };
+    return Err(SyntaxError {
+        message: format!("expected {expected} to begin expansion variants"),
+        span: tok_span_open_or_parent_close(t.as_ref(), expand_body),
+    });
 }
 
 fn try_add_substitutions(

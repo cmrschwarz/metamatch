@@ -1,4 +1,4 @@
-use metamatch::{expand, metamatch};
+use metamatch::{expand, expand_expr, metamatch};
 use paste::paste;
 
 #[derive(Debug, PartialEq)]
@@ -199,10 +199,10 @@ fn expand_pattern_single_variant() {
 }
 
 #[test]
-fn direct_expand() {
+fn direct_expand_expr() {
     let mut x = 0;
 
-    expand!(T in [1, 2, 3] {
+    expand_expr!(T in [1, 2, 3] {
         x += T;
     });
 
@@ -210,11 +210,33 @@ fn direct_expand() {
 }
 
 #[test]
-fn direct_expand_empty() {
+fn matrix_impl_using_expand() {
+    trait Foo<T> {
+        fn foo(&self, other: T);
+    }
+
+    #[expand((SELF, OTHER) in x([i32, i64], [i32, i64]))]
+    impl Foo<OTHER> for SELF {
+        fn foo(&self, other: OTHER) {
+            println!("{:?} {:?}", self, other);
+        }
+    }
+
+    let i32_val = 42;
+    let i64_val = 42i64;
+
+    i32_val.foo(i32_val);
+    i32_val.foo(i64_val);
+    i64_val.foo(i32_val);
+    i64_val.foo(i64_val);
+}
+
+#[test]
+fn expand_expr_empty() {
     #[allow(unused_mut)]
     let mut x = 0;
 
-    expand!(T in [] {
+    expand_expr!(T in [] {
         x += T;
     });
 
@@ -222,10 +244,17 @@ fn direct_expand_empty() {
 }
 
 #[test]
-fn direct_expand_array() {
-    let arr: [i32; 3] = expand!(T in [1, 2, 3] *[
+fn expand_expr_array() {
+    let arr: [i32; 3] = expand_expr!((T) in ([1, 2, 3]) *[
         T,
     ]);
-
     assert_eq!(arr.iter().sum::<i32>(), 6);
+}
+
+#[test]
+fn expand_expr_matrix() {
+    let arr: [[i32; 2]; 4] = expand_expr!((A, B) in x([0, 1], [0, 1]) *[
+       [A, B],
+    ]);
+    assert_eq!(arr, [[0, 0], [0, 1], [1, 0], [1, 1]]);
 }
