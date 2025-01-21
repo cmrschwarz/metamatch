@@ -414,10 +414,9 @@ fn parse_expand_variants_arr_of_tup(
 
     let mut arrs = Vec::new();
     if cross_product {
-        arrs.extend(std::iter::repeat_n(
-            Vec::<Replacement>::new(),
-            ident_count,
-        ));
+        arrs.extend(
+            std::iter::repeat(Vec::<Replacement>::new()).take(ident_count),
+        );
     }
 
     let mut group_iter = variants_group.stream().into_iter();
