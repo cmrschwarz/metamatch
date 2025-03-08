@@ -61,8 +61,7 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
         Some(TokenTree::Ident(ident)) if ident.to_string() == "match" => {}
         other => {
             return compile_error(
-                "metamatch!",
-                "expected `match`",
+                "metamatch! body must start with `match`",
                 other.map_or_else(Span::call_site, |t| t.span()),
             );
         }
@@ -77,11 +76,7 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
             }
             match process_match_body(group.stream()) {
                 Err(err) => {
-                    return compile_error(
-                        "metamatch!",
-                        &err.message,
-                        err.span,
-                    );
+                    return compile_error(&err.message, err.span);
                 }
                 Ok(body) => {
                     let mut body_replacement =
@@ -100,42 +95,11 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
     }
     if !match_body_found {
         return compile_error(
-            "metamatch!",
-            "no match body found",
+            "missing match statement body for metamatch!",
             Span::call_site(),
         );
     }
     TokenStream::from_iter(tokens)
-}
-
-#[proc_macro_attribute]
-pub fn expand(attr: TokenStream, body: TokenStream) -> TokenStream {
-    let expand_attr = match parse_expand_attrib_inner(
-        None,
-        false,
-        None,
-        &mut attr.into_iter(),
-    ) {
-        Ok(v) => v,
-        Err(e) => return compile_error("#[expand(..)]", &e.message, e.span),
-    };
-
-    let body = body.into_iter().collect::<Vec<_>>();
-    let substitutions = find_substitutions(&expand_attr, &body, 0);
-
-    let template = Template {
-        offset: 0,
-        substitutions,
-        add_trailing_comma: false,
-        pattern_end: 0,
-        body_end: body.len(),
-    };
-
-    let mut res = Vec::new();
-
-    expand_full(&expand_attr, &body, &template, &mut res);
-
-    TokenStream::from_iter(res)
 }
 
 fn parse_expand_expr_body(
@@ -191,14 +155,12 @@ pub fn expand_expr(body: TokenStream) -> TokenStream {
     let expand_attr =
         match parse_expand_attrib_inner(None, false, None, &mut iter) {
             Ok(v) => v,
-            Err(e) => {
-                return compile_error("expand_expr!", &e.message, e.span)
-            }
+            Err(e) => return compile_error(&e.message, e.span),
         };
 
     let (body, delim) = match parse_expand_expr_body(&mut iter) {
         Ok(v) => v,
-        Err(e) => return compile_error("expand_expr!", &e.message, e.span),
+        Err(e) => return compile_error(&e.message, e.span),
     };
 
     let substitutions = find_substitutions(&expand_attr, &body, 0);
@@ -227,7 +189,37 @@ pub fn expand_expr(body: TokenStream) -> TokenStream {
     }
 }
 
-fn compile_error(macro_name: &str, message: &str, span: Span) -> TokenStream {
+#[proc_macro_attribute]
+pub fn expand(attr: TokenStream, body: TokenStream) -> TokenStream {
+    let expand_attr = match parse_expand_attrib_inner(
+        None,
+        false,
+        None,
+        &mut attr.into_iter(),
+    ) {
+        Ok(v) => v,
+        Err(e) => return compile_error(&e.message, e.span),
+    };
+
+    let body = body.into_iter().collect::<Vec<_>>();
+    let substitutions = find_substitutions(&expand_attr, &body, 0);
+
+    let template = Template {
+        offset: 0,
+        substitutions,
+        add_trailing_comma: false,
+        pattern_end: 0,
+        body_end: body.len(),
+    };
+
+    let mut res = Vec::new();
+
+    expand_full(&expand_attr, &body, &template, &mut res);
+
+    TokenStream::from_iter(res)
+}
+
+fn compile_error(message: &str, span: Span) -> TokenStream {
     TokenStream::from_iter(vec![
         TokenTree::Ident(Ident::new("compile_error", span)),
         TokenTree::Punct({
@@ -238,8 +230,7 @@ fn compile_error(macro_name: &str, message: &str, span: Span) -> TokenStream {
         TokenTree::Group({
             let mut group = Group::new(Delimiter::Brace, {
                 TokenStream::from_iter(vec![TokenTree::Literal({
-                    let mut string =
-                        Literal::string(&format!("`{macro_name}`: {message}"));
+                    let mut string = Literal::string(&format!("{message}"));
                     string.set_span(span);
                     string
                 })])

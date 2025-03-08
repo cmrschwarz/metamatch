@@ -23,6 +23,7 @@ keywords = ["match", "macro", "generator", "boilerplate", "repetition"]
 
 [dev-dependencies]
 paste = "1.0.15"
+trybuild = "1.0.90"
 
 [lib]
 proc-macro = true
@@ -31,3 +32,4 @@ test = false
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
+rustdoc-args = ["--sort-modules-by-appearance"]

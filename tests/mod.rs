@@ -258,3 +258,9 @@ fn expand_expr_matrix() {
     ]);
     assert_eq!(arr, [[0, 0], [0, 1], [1, 0], [1, 1]]);
 }
+
+#[test]
+fn macro_errors() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/ui/**/*.rs");
+}
