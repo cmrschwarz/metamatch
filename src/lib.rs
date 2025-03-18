@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![warn(clippy::pedantic)]
+
 use proc_macro::{
     Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream,
     TokenTree,
@@ -161,8 +162,60 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
     TokenStream::from_iter(tokens)
 }
 
-/// An expression style proc-macro with the same syntax as `metamatch!` and
-/// a few extra features.
+/// An attribute styled proc-macro with similar syntax to [`metamatch!`]..
+///
+/// # Example
+///
+/// ```
+/// use metamatch::replicate;
+///
+/// struct NodeIdx(usize);
+///
+/// #[replicate( (TRAIT, FUNC) in [
+///     (Add, add),
+///     (Sub, sub),
+///     (Mul, mul),
+///     (Div, div)
+/// ])]
+/// impl core::ops::TRAIT for NodeIdx {
+///     type Output = Self;
+///     fn FUNC(self, other: Self) -> Self {
+///         NodeIdx(self.0.FUNC(other.0))
+///     }
+/// }
+/// ```
+
+#[proc_macro_attribute]
+pub fn replicate(attr: TokenStream, body: TokenStream) -> TokenStream {
+    let expand_attr = match parse_expand_attrib_inner(
+        None,
+        false,
+        None,
+        &mut attr.into_iter(),
+    ) {
+        Ok(v) => v,
+        Err(e) => return compile_error(&e.message, e.span),
+    };
+
+    let body = body.into_iter().collect::<Vec<_>>();
+    let substitutions = collect_substitutions(&expand_attr, &body, 0);
+
+    let template = Template {
+        offset: 0,
+        substitutions,
+        add_trailing_comma: false,
+        pattern_end: 0,
+        body_end: body.len(),
+    };
+
+    let mut res = Vec::new();
+
+    expand_full(&expand_attr, &body, &template, &mut res);
+
+    TokenStream::from_iter(res)
+}
+
+/// A generalized version [`metamatch!`] for arbitrary expressions.
 ///
 /// # Basic example
 ///
@@ -227,36 +280,6 @@ pub fn expand(body: TokenStream) -> TokenStream {
     } else {
         res
     }
-}
-
-#[proc_macro_attribute]
-pub fn replicate(attr: TokenStream, body: TokenStream) -> TokenStream {
-    let expand_attr = match parse_expand_attrib_inner(
-        None,
-        false,
-        None,
-        &mut attr.into_iter(),
-    ) {
-        Ok(v) => v,
-        Err(e) => return compile_error(&e.message, e.span),
-    };
-
-    let body = body.into_iter().collect::<Vec<_>>();
-    let substitutions = collect_substitutions(&expand_attr, &body, 0);
-
-    let template = Template {
-        offset: 0,
-        substitutions,
-        add_trailing_comma: false,
-        pattern_end: 0,
-        body_end: body.len(),
-    };
-
-    let mut res = Vec::new();
-
-    expand_full(&expand_attr, &body, &template, &mut res);
-
-    TokenStream::from_iter(res)
 }
 
 fn parse_expand_expr_body(

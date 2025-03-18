@@ -28,7 +28,7 @@ parentheses`()` instead of braces`{}` for the `metamatch!` expression.
 
 Zero dependencies on other crates.
 
-## Basic Example
+## [`metamatch!`](https://docs.rs/metamatch/latest/metamatch/macro.metamatch.html)
 
 A proc-macro for generating repetitive match arms.
 
@@ -41,17 +41,66 @@ enum MyEnum {
     D(i64),
 }
 
-let mut foo = MyEnum::A(42);
+let mut double_me = MyEnum::A(42);
 
-metamatch!(match &mut foo {
+metamatch!(match &mut double_me {
     #[expand( T in [A, B, C, D] )]
     MyEnum::T(v) => *v *= 2,
 })
 ```
 
 For more complex examples have a look at the
-[metamatch!](https://docs.rs/metamatch/latest/metamatch/macro.metamatch.html)
-documentation.
+[documentation](https://docs.rs/metamatch/latest/metamatch/macro.metamatch.html).
+
+
+## [`#[replicate]`](https://docs.rs/metamatch/latest/metamatch/attr.replicate.html)
+An attribute styled proc-macro with similar syntax to `metamatch!`.
+
+```
+use metamatch::replicate;
+
+struct NodeIdx(usize);
+
+#[replicate( (TRAIT, FUNC) in [
+    (Add, add),
+    (Sub, sub),
+    (Mul, mul),
+    (Div, div)
+])]
+impl core::ops::TRAIT for NodeIdx {
+    type Output = Self;
+    fn FUNC(self, other: Self) -> Self {
+        NodeIdx(self.0.FUNC(other.0))
+    }
+}
+
+```
+
+## [`expand!`](https://docs.rs/metamatch/latest/metamatch/macro.expand.html)
+A generalized version of `metamatch!` for arbitrary expressions.
+
+```
+use metamatch::expand;
+
+let multi_dim_array: [[i32; 2]; 9] = expand!{
+    (X, Y) in matrix([1, 2, 3], [1, 2, 3]) *[
+        [X, Y],
+    ]
+};
+let result: [[i32; 2]; 9] = [
+    [1, 1],
+    [1, 2],
+    [1, 3],
+    [2, 1],
+    [2, 2],
+    [2, 3],
+    [3, 1],
+    [3, 2],
+    [3, 3],
+];
+assert_eq!(multi_dim_array, result);
+```
+
 
 
 

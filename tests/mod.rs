@@ -252,6 +252,27 @@ fn expand_expr_array() {
 }
 
 #[test]
+fn expand_nested_array() {
+    let arr: [[i32; 2]; 9] = expand!(
+        (X, Y) in matrix([1, 2, 3], [1, 2, 3]) *[
+            [X, Y],
+        ]
+    );
+    let result: [[i32; 2]; 9] = [
+        [1, 1],
+        [1, 2],
+        [1, 3],
+        [2, 1],
+        [2, 2],
+        [2, 3],
+        [3, 1],
+        [3, 2],
+        [3, 3],
+    ];
+    assert_eq!(arr, result);
+}
+
+#[test]
 fn expand_expr_matrix() {
     let arr: [[i32; 2]; 4] = expand!((A, B) in matrix([0, 1], [0, 1]) *[
        [A, B],
