@@ -23,6 +23,7 @@ keywords = ["match", "macro", "generator", "boilerplate", "repetition"]
 
 
 [dependencies]
+# None!
 
 [dev-dependencies]
 paste = "1.0.15"

@@ -12,20 +12,20 @@
 [msrv]: https://img.shields.io/crates/msrv/metamatch?logo=rust
 [docs-rs]: https://img.shields.io/badge/docs.rs-metamatch-66c2a5?logo=docs.rs
 
-A rust proc-macro for generating repetitive match arms.
+A Rust proc-macro for generating repetitive `match` arms.
 
-Unless the enum variant type remains unused, match arms for different
-variants cannot be combined, even if the match arm bodies are syntactically
-identical.
-
+Match arms for differently typed variants usually cannot be combined,
+even if the are syntactically identical.
 This macro implements a simple templating attribute (`#[expand]`)
 to automatically stamp out the neccessary copies.
 
-Rustfmt and rust-analyzer are fully able to reason about this macro.
+`rustfmt` and `rust-analyzer` work correctly with this macro.
 Even auto refactorings that affect the `#[expand]` (like changing the
 name of an enum variant) work correctly.
 
-## Example
+Zero dependencies on other crates.
+
+## Basic Example
 
 ```rust
 use metamatch::metamatch;
@@ -35,43 +35,33 @@ enum DynVec {
     I64(Vec<i64>),
     F32(Vec<f32>),
     F64(Vec<f64>),
-}
-
-enum DynSlice<'a> {
-    I32(&'a [i32]),
-    I64(&'a [i64]),
-    F32(&'a [f32]),
-    F64(&'a [f64]),
+    //...
 }
 
 impl DynVec {
-    fn as_slice(&self) -> DynSlice<'_> {
+    fn len(&self) -> usize {
         metamatch!(match self {
-            #[expand(T in [I32, I64, F32, F64])]
-            DynVec::T(v) => DynSlice::T(v),
+            #[expand(T in [ I32, I64, F32, F64, /*...*/ ])]
+            DynVec::T(v) => v.len(),
         })
     }
-
-    fn promote_to_64(&mut self) {
-        metamatch!(match self {
-            // multiple replacement expressions supported
-            #[expand((SRC, TGT, TYPE) in [
-                (I32, I64, i64),
-                (F32, F64, f64),
-            ])]
-            DynVec::SRC(v) => {
-                *self = DynVec::TGT(
-                    std::mem::take(v).into_iter().map(|v| v as TYPE).collect(),
-                );
-            }
-
-            // the types are unused, the match body can be shared
-            #[expand_pattern(T in [I64, F64])]
-            DynVec::T(_) => (),
-        })
+    // v  expands into  v
+    fn len_expanded(&self) -> usize {
+        match self {
+            DynVec::I32(v) => v.len(),
+            DynVec::I64(v) => v.len(),
+            DynVec::F32(v) => v.len(),
+            DynVec::F64(v) => v.len(),
+            //...
+        }
     }
 }
 ```
+
+For more complex expansion expressions have a look at the
+[documentation](https://docs.rs/metamatch/latest/metamatch/).
+
+
 
 ## License
 [MIT](./LICENSE)

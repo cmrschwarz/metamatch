@@ -163,7 +163,7 @@ pub fn expand(body: TokenStream) -> TokenStream {
         Err(e) => return compile_error(&e.message, e.span),
     };
 
-    let substitutions = find_substitutions(&expand_attr, &body, 0);
+    let substitutions = collect_substitutions(&expand_attr, &body, 0);
 
     let template = Template {
         offset: 0,
@@ -202,7 +202,7 @@ pub fn replicate(attr: TokenStream, body: TokenStream) -> TokenStream {
     };
 
     let body = body.into_iter().collect::<Vec<_>>();
-    let substitutions = find_substitutions(&expand_attr, &body, 0);
+    let substitutions = collect_substitutions(&expand_attr, &body, 0);
 
     let template = Template {
         offset: 0,
@@ -726,7 +726,8 @@ fn parse_expand_attrib_inner(
     });
 }
 
-fn try_add_substitutions(
+// returns true if any substutions were found
+fn collect_substitutions_in_tt(
     tt: &TokenTree,
     expand: &ExpandAttribute,
     substitutions: &mut Vec<Substitution>,
@@ -742,7 +743,7 @@ fn try_add_substitutions(
         }
     }
     if let TokenTree::Group(g) = tt {
-        let nested = find_group_substitutions(expand, g);
+        let nested = collect_substitutions_in_group(expand, g);
         if !nested.is_empty() {
             substitutions.push(Substitution {
                 pos: tok_idx,
@@ -754,25 +755,30 @@ fn try_add_substitutions(
     false
 }
 
-fn find_substitutions(
+fn collect_substitutions(
     expand: &ExpandAttribute,
     tokens: &[TokenTree],
     offset: usize,
 ) -> Vec<Substitution> {
     let mut substitutions = Vec::new();
     for (i, tt) in tokens.iter().enumerate() {
-        try_add_substitutions(&tt, expand, &mut substitutions, offset + i);
+        collect_substitutions_in_tt(
+            &tt,
+            expand,
+            &mut substitutions,
+            offset + i,
+        );
     }
     substitutions
 }
 
-fn find_group_substitutions(
+fn collect_substitutions_in_group(
     expand: &ExpandAttribute,
     group: &Group,
 ) -> Vec<Substitution> {
     let mut substitutions = Vec::new();
     for (i, tt) in group.stream().into_iter().enumerate() {
-        try_add_substitutions(&tt, expand, &mut substitutions, i);
+        collect_substitutions_in_tt(&tt, expand, &mut substitutions, i);
     }
     substitutions
 }
@@ -788,7 +794,7 @@ fn parse_match_arm_pattern(
         let tok_idx = i;
         i += 1;
         let tt = &tokens[tok_idx];
-        if try_add_substitutions(tt, expand, substitutions, tok_idx) {
+        if collect_substitutions_in_tt(tt, expand, substitutions, tok_idx) {
             continue;
         }
         let TokenTree::Punct(p) = tt else {
@@ -831,9 +837,9 @@ fn parse_match_arm_body(
             if allow_substitutions {
                 substitutions.push(Substitution {
                     pos: i,
-                    kind: SubstitutionKind::Nested(find_group_substitutions(
-                        expand, group,
-                    )),
+                    kind: SubstitutionKind::Nested(
+                        collect_substitutions_in_group(expand, group),
+                    ),
                 });
             }
             return i + 1;
@@ -847,7 +853,7 @@ fn parse_match_arm_body(
         let tt = &tokens[tok_idx];
 
         if allow_substitutions
-            && try_add_substitutions(tt, expand, substitutions, tok_idx)
+            && collect_substitutions_in_tt(tt, expand, substitutions, tok_idx)
         {
             continue;
         }
