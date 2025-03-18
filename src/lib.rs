@@ -109,10 +109,10 @@ fn parse_expand_expr_body(
     let mut delim = None;
     let mut use_delim = false;
 
-    let mut expected = "`{` or `:`";
+    let mut expected = "`{` or `*`";
 
     if let Some(TokenTree::Punct(p)) = &t {
-        if p.as_char() == ':' {
+        if p.as_char() == '*' {
             use_delim = true;
             t = iter.next();
             expected = "`{`";
@@ -671,8 +671,8 @@ fn parse_expand_attrib_inner(
 
     let mut cross_product = false;
 
-    if let Some(TokenTree::Punct(p)) = &t {
-        if p.as_char() == '*' {
+    if let Some(TokenTree::Ident(p)) = &t {
+        if p.to_string() == "x" {
             if !expand_attrib.ident_tup {
                 return Err(SyntaxError {
                     message: "cross product not supported on single replacement identifier".to_string(),
@@ -717,7 +717,7 @@ fn parse_expand_attrib_inner(
     };
     let expected = match (expand_attrib.ident_tup, cross_product) {
         (true, true) => "`[` or `(`",
-        (true, false) => "`*` or `[` or `(`",
+        (true, false) => "`x` or `[` or `(`",
         (false, _) => "`[`",
     };
     return Err(SyntaxError {
