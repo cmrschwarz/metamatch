@@ -50,7 +50,66 @@ struct Template {
 }
 
 /// A proc-macro for generating repetitive match arms.
-/// See the root level documentation of this [`crate`] for examples.
+///
+/// # Basic Example
+/// ```
+/// use metamatch::metamatch;
+/// enum MyEnum {
+///     A(i8),
+///     B(i16),
+///     C(i32),
+/// }
+///
+/// let mut double_me = MyEnum::A(42);
+///
+/// metamatch!(match &mut double_me {
+///     #[expand( T in [A, B, C] )]
+///     MyEnum::T(v) => *v *= 2,
+/// })
+/// ```
+///
+/// # Multiple Replacement Expressions
+/// ```
+/// use metamatch::metamatch;
+/// enum MyEnum {
+///     A(i8),
+///     B(i16),
+///     C(i32),
+/// }
+///
+/// let mut foo = MyEnum::A(42);
+///
+/// let upcast = metamatch!(match &mut foo {
+///     #[expand( (SRC, TGT, TY) in [
+///         (A, B, i16), (B, C, i32), (C, C, i32)
+///     ])]
+///     MyEnum::SRC(v) => MyEnum::TGT(*v as TY),
+/// });
+/// ```
+///
+/// # Matrix Expansion
+/// ```
+/// use metamatch::metamatch;
+/// enum MyEnum {
+///     A(i8),
+///     B(i16),
+///     C(i32),
+/// }
+///
+/// let mut foo = MyEnum::A(42);
+/// let mut bar = MyEnum::B(42);
+///
+/// let same_value = metamatch!(match (foo, bar) {
+///     #[expand( (LHS, RHS) in matrix(
+///         [A, B, C],
+///         [A, B, C],
+///     ))]
+///     (MyEnum::LHS(lhs), MyEnum::RHS(rhs)) => {
+///         (lhs as i64) == (rhs as i64)
+///     }
+/// });
+/// assert!(same_value);
+/// ```
 #[proc_macro]
 pub fn metamatch(body: TokenStream) -> TokenStream {
     let mut tokens = Vec::from_iter(body);
@@ -100,53 +159,6 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
         );
     }
     TokenStream::from_iter(tokens)
-}
-
-fn parse_expand_expr_body(
-    iter: &mut impl Iterator<Item = TokenTree>,
-) -> Result<(Vec<TokenTree>, Option<Delimiter>), SyntaxError> {
-    let mut t = iter.next();
-    let mut delim = None;
-    let mut use_delim = false;
-
-    let mut expected = "`{` or `*`";
-
-    if let Some(TokenTree::Punct(p)) = &t {
-        if p.as_char() == '*' {
-            use_delim = true;
-            t = iter.next();
-            expected = "`{`";
-        }
-    }
-
-    let group = match t {
-        Some(TokenTree::Group(group)) => group,
-        Some(t) => {
-            return Err(SyntaxError {
-                message: format!("expected {expected} to begin expand body"),
-                span: t.span(),
-            })
-        }
-        None => {
-            return Err(SyntaxError {
-                message: format!(
-                "missing body for expand, expected {expected} after expansion group"
-            ),
-                span: Span::call_site(),
-            })
-        }
-    };
-    if let Some(t) = iter.next() {
-        return Err(SyntaxError {
-            message: "stray token after the end of expand expresssion"
-                .to_string(),
-            span: t.span(),
-        });
-    }
-    if use_delim {
-        delim = Some(group.delimiter());
-    }
-    Ok((group.stream().into_iter().collect(), delim))
 }
 
 #[proc_macro]
@@ -217,6 +229,53 @@ pub fn replicate(attr: TokenStream, body: TokenStream) -> TokenStream {
     expand_full(&expand_attr, &body, &template, &mut res);
 
     TokenStream::from_iter(res)
+}
+
+fn parse_expand_expr_body(
+    iter: &mut impl Iterator<Item = TokenTree>,
+) -> Result<(Vec<TokenTree>, Option<Delimiter>), SyntaxError> {
+    let mut t = iter.next();
+    let mut delim = None;
+    let mut use_delim = false;
+
+    let mut expected = "`{` or `*`";
+
+    if let Some(TokenTree::Punct(p)) = &t {
+        if p.as_char() == '*' {
+            use_delim = true;
+            t = iter.next();
+            expected = "`{`";
+        }
+    }
+
+    let group = match t {
+        Some(TokenTree::Group(group)) => group,
+        Some(t) => {
+            return Err(SyntaxError {
+                message: format!("expected {expected} to begin expand body"),
+                span: t.span(),
+            })
+        }
+        None => {
+            return Err(SyntaxError {
+                message: format!(
+                "missing body for expand, expected {expected} after expansion group"
+            ),
+                span: Span::call_site(),
+            })
+        }
+    };
+    if let Some(t) = iter.next() {
+        return Err(SyntaxError {
+            message: "stray token after the end of expand expresssion"
+                .to_string(),
+            span: t.span(),
+        });
+    }
+    if use_delim {
+        delim = Some(group.delimiter());
+    }
+    Ok((group.stream().into_iter().collect(), delim))
 }
 
 fn compile_error(message: &str, span: Span) -> TokenStream {
@@ -672,7 +731,7 @@ fn parse_expand_attrib_inner(
     let mut cross_product = false;
 
     if let Some(TokenTree::Ident(p)) = &t {
-        if p.to_string() == "x" {
+        if p.to_string() == "matrix" {
             if !expand_attrib.ident_tup {
                 return Err(SyntaxError {
                     message: "cross product not supported on single replacement identifier".to_string(),
@@ -717,7 +776,7 @@ fn parse_expand_attrib_inner(
     };
     let expected = match (expand_attrib.ident_tup, cross_product) {
         (true, true) => "`[` or `(`",
-        (true, false) => "`x` or `[` or `(`",
+        (true, false) => "`matrix` or `[` or `(`",
         (false, _) => "`[`",
     };
     return Err(SyntaxError {

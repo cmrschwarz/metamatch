@@ -19,43 +19,34 @@ even if the are syntactically identical.
 This macro implements a simple templating attribute (`#[expand]`)
 to automatically stamp out the neccessary copies.
 
-`rustfmt` and `rust-analyzer` work correctly with this macro.
+`rust-analyzer` works correctly with this macro.
 Even auto refactorings that affect the `#[expand]` (like changing the
 name of an enum variant) work correctly.
+
+We can get `rustfmt` to nicely format our macro by using
+parentheses`()` instead of braces`{}` for the `metamatch!` expression.
 
 Zero dependencies on other crates.
 
 ## Basic Example
 
+A proc-macro for generating repetitive match arms.
+
 ```rust
 use metamatch::metamatch;
-
-enum DynVec {
-    I32(Vec<i32>),
-    I64(Vec<i64>),
-    F32(Vec<f32>),
-    F64(Vec<f64>),
-    //...
+enum MyEnum {
+    A(i8),
+    B(i16),
+    C(i32),
+    D(i64),
 }
 
-impl DynVec {
-    fn len(&self) -> usize {
-        metamatch!(match self {
-            #[expand(T in [ I32, I64, F32, F64, /*...*/ ])]
-            DynVec::T(v) => v.len(),
-        })
-    }
-    // v  expands into  v
-    fn len_expanded(&self) -> usize {
-        match self {
-            DynVec::I32(v) => v.len(),
-            DynVec::I64(v) => v.len(),
-            DynVec::F32(v) => v.len(),
-            DynVec::F64(v) => v.len(),
-            //...
-        }
-    }
-}
+let mut foo = MyEnum::A(42);
+
+metamatch!(match &mut foo {
+    #[expand( T in [A, B, C, D] )]
+    MyEnum::T(v) => *v *= 2,
+})
 ```
 
 For more complex examples have a look at the
