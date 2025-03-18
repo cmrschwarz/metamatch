@@ -58,10 +58,11 @@ impl DynVec {
 }
 ```
 
-For more complex expansion expressions have a look at the
-[documentation](https://docs.rs/metamatch/latest/metamatch/).
+For more complex examples have a look at the
+[metamatch!](https://docs.rs/metamatch/latest/metamatch/macro.metamatch.html)
+documentation.
 
 
 
 ## License
-[MIT](./LICENSE)
+[MIT](./LICENSE-MIT) or [Apache Version 2.0](./LICENSE-APACHE), at your option.
