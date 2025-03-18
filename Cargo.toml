@@ -3,7 +3,10 @@ name = "metamatch"
 
 version = "0.2.4"
 edition = "2021"
-rust-version = "1.65.0" # due to let .. else statements
+
+# needed for let .. else
+# remember to update in ci when bumping this
+rust-version = "1.65.0"
 
 authors = ["Christian Schwarz <cmrs@cmrs.io>"]
 license = "MIT"

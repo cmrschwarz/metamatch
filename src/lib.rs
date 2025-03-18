@@ -150,7 +150,7 @@ fn parse_expand_expr_body(
 }
 
 #[proc_macro]
-pub fn expand_expr(body: TokenStream) -> TokenStream {
+pub fn expand(body: TokenStream) -> TokenStream {
     let mut iter = body.into_iter();
     let expand_attr =
         match parse_expand_attrib_inner(None, false, None, &mut iter) {
@@ -190,7 +190,7 @@ pub fn expand_expr(body: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn expand(attr: TokenStream, body: TokenStream) -> TokenStream {
+pub fn replicate(attr: TokenStream, body: TokenStream) -> TokenStream {
     let expand_attr = match parse_expand_attrib_inner(
         None,
         false,

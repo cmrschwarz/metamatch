@@ -1,4 +1,4 @@
-use metamatch::{expand, expand_expr, metamatch};
+use metamatch::{expand, metamatch, replicate};
 use paste::paste;
 
 #[derive(Debug, PartialEq)]
@@ -29,9 +29,9 @@ impl DynVec {
         metamatch!(match self {
             // multiple replacement expressions supported
             #[expand((SRC, TGT, TYPE) in [
-                        (I32, I64, i64),
-                        (F32, F64, f64),
-                    ])]
+                (I32, I64, i64),
+                (F32, F64, f64),
+            ])]
             DynVec::SRC(v) => {
                 *self = DynVec::TGT(
                     std::mem::take(v).into_iter().map(|v| v as TYPE).collect(),
@@ -202,7 +202,7 @@ fn expand_pattern_single_variant() {
 fn direct_expand_expr() {
     let mut x = 0;
 
-    expand_expr!(T in [1, 2, 3] {
+    expand!(T in [1, 2, 3] {
         x += T;
     });
 
@@ -210,12 +210,12 @@ fn direct_expand_expr() {
 }
 
 #[test]
-fn matrix_impl_using_expand() {
+fn matrix_impl_using_replicate() {
     trait Foo<T> {
         fn foo(&self, other: T);
     }
 
-    #[expand((SELF, OTHER) in *([i32, i64], [i32, i64]))]
+    #[replicate((SELF, OTHER) in *([i32, i64], [i32, i64]))]
     impl Foo<OTHER> for SELF {
         fn foo(&self, other: OTHER) {
             println!("{:?} {:?}", self, other);
@@ -236,7 +236,7 @@ fn expand_expr_empty() {
     #[allow(unused_mut)]
     let mut x = 0;
 
-    expand_expr!(T in [] {
+    expand!(T in [] {
         x += T;
     });
 
@@ -245,7 +245,7 @@ fn expand_expr_empty() {
 
 #[test]
 fn expand_expr_array() {
-    let arr: [i32; 3] = expand_expr!((T) in *([1, 2, 3]) :[
+    let arr: [i32; 3] = expand!((T) in *([1, 2, 3]) :[
         T,
     ]);
     assert_eq!(arr.iter().sum::<i32>(), 6);
@@ -253,7 +253,7 @@ fn expand_expr_array() {
 
 #[test]
 fn expand_expr_matrix() {
-    let arr: [[i32; 2]; 4] = expand_expr!((A, B) in *([0, 1], [0, 1]) :[
+    let arr: [[i32; 2]; 4] = expand!((A, B) in *([0, 1], [0, 1]) :[
        [A, B],
     ]);
     assert_eq!(arr, [[0, 0], [0, 1], [1, 0], [1, 1]]);
