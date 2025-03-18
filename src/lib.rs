@@ -161,6 +161,34 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
     TokenStream::from_iter(tokens)
 }
 
+/// An expression style proc-macro with the same syntax as `metamatch!` and
+/// a few extra features.
+///
+/// # Basic example
+///
+/// ```
+/// use metamatch::expand;
+///
+///  let mut x = 0;
+///
+///  expand!(T in [1, 2, 3] {
+///      x += T; // 'loop unrolling'
+///  });
+///
+///  assert_eq!(x, 6);
+/// ```
+///
+/// # Create Multidimensional arrays
+/// ```
+/// use metamatch::expand;
+///
+/// // macros cannot produce
+/// let arr: [[i32; 2]; 9] = expand!(
+///     (X, Y) in matrix([1, 2, 3], [1, 2, 3]) *[
+///         [X, Y],
+///     ]
+/// );
+/// ```
 #[proc_macro]
 pub fn expand(body: TokenStream) -> TokenStream {
     let mut iter = body.into_iter();
