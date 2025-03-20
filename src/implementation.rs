@@ -2,7 +2,7 @@ use proc_macro::{
     token_stream, Delimiter, Group, Ident, Literal, Punct, Spacing, Span,
     TokenStream, TokenTree,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::ControlFlow};
 
 /// Indexes into [`ExpansionVariant`]::indent_replacements.
 type ExpansionIdentIndex = usize;
@@ -139,8 +139,13 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
 }
 
 pub fn replicate(attr: TokenStream, body: TokenStream) -> TokenStream {
-    let mut expand_attr =
-        parse_expand_attrib_inner(None, false, None, &mut attr.into_iter());
+    let mut expand_attr = parse_expand_attrib_inner(
+        None,
+        false,
+        None,
+        &mut attr.into_iter(),
+        false,
+    );
 
     let body = body.into_iter().collect::<Vec<_>>();
     let substitutions = collect_substitutions(&mut expand_attr, &body, 0);
@@ -163,7 +168,7 @@ pub fn replicate(attr: TokenStream, body: TokenStream) -> TokenStream {
 pub fn expand(body: TokenStream) -> TokenStream {
     let mut iter = body.into_iter();
     let mut expand_attr =
-        parse_expand_attrib_inner(None, false, None, &mut iter);
+        parse_expand_attrib_inner(None, false, None, &mut iter, false);
 
     let (body, delim) = match parse_expand_expr_body(&mut iter) {
         Ok(v) => v,
@@ -527,16 +532,16 @@ fn parse_expand_variants_tup_of_arr(
 }
 
 fn parse_expand_ident_names(
+    expand_attrib: &mut ExpandAttribute,
     tok: &Option<TokenTree>,
     expand_group: Option<&Group>,
     expand_pattern: bool,
-) -> ExpandAttribute {
-    let mut expand_attrib = ExpandAttribute::default();
+) {
     expand_attrib.expand_pattern = expand_pattern;
     let ident_group = match tok {
         Some(TokenTree::Ident(ident)) => {
             expand_attrib.ident_names.insert(ident.to_string(), 0);
-            return expand_attrib;
+            return;
         }
         Some(TokenTree::Group(group))
             if group.delimiter() == Delimiter::Parenthesis =>
@@ -549,7 +554,7 @@ fn parse_expand_ident_names(
                 message: "expected `(` or identifier".to_string(),
                 span: tok_span_or_parent_close(tok, expand_group),
             });
-            return expand_attrib;
+            return;
         }
     };
 
@@ -566,7 +571,7 @@ fn parse_expand_ident_names(
                 message: "expected identifier".to_string(),
                 span: first.span(),
             });
-            return expand_attrib;
+            return;
         };
         if expand_attrib
             .ident_names
@@ -577,7 +582,7 @@ fn parse_expand_ident_names(
                 message: "same identifier used again".to_string(),
                 span: ident.span(),
             });
-            return expand_attrib;
+            return;
         }
         name_count += 1;
         match group_iter.next() {
@@ -589,7 +594,7 @@ fn parse_expand_ident_names(
                     message: "expected `,`".to_string(),
                     span: other.span(),
                 });
-                return expand_attrib;
+                return;
             }
             None => break,
         }
@@ -600,8 +605,6 @@ fn parse_expand_ident_names(
             span: ident_group.span(),
         });
     }
-
-    expand_attrib
 }
 
 fn parse_expand_attribute(
@@ -674,28 +677,45 @@ fn parse_expand_attribute(
         expand_pattern,
         Some(&expand_body),
         &mut expand_body_stream,
+        true, // allowed for compatability reasons
     );
 
     if let Some(t) = expand_body_stream.next() {
-        expand_attrib.error_list.push(MetaError {
-            message: "stray token after the end of expand expresssion"
-                .to_string(),
-            span: t.span(),
-        });
+        if expand_attrib.error_list.is_empty() {
+            expand_attrib.error_list.push(MetaError {
+                message: "stray token after the end of expand expresssion"
+                    .to_string(),
+                span: t.span(),
+            });
+        }
     }
 
     Some(expand_attrib)
 }
-// parses the T/(X, Y) in [..] part of the expand attribute
+// parses the `for T/(X, Y) in [..]` part of the expand attribute
 fn parse_expand_attrib_inner(
     _attrib_group: Option<&Group>,
     expand_pattern: bool,
     expand_body: Option<&Group>,
     expand_body_stream: &mut token_stream::IntoIter,
+    allow_ommited_for: bool,
 ) -> ExpandAttribute {
+    let mut expand_attrib = ExpandAttribute::default();
+
+    if expect_for(
+        &mut expand_attrib,
+        expand_body,
+        expand_body_stream,
+        allow_ommited_for,
+    ) == ControlFlow::Break(())
+    {
+        return expand_attrib;
+    }
+
     let expand_ident_tok = expand_body_stream.next();
 
-    let mut expand_attrib = parse_expand_ident_names(
+    parse_expand_ident_names(
+        &mut expand_attrib,
         &expand_ident_tok,
         expand_body,
         expand_pattern,
@@ -780,6 +800,43 @@ fn parse_expand_attrib_inner(
         span: tok_span_open_or_parent_close(t.as_ref(), expand_body),
     });
     expand_attrib
+}
+
+fn expect_for(
+    expand_attrib: &mut ExpandAttribute,
+    expand_body: Option<&Group>,
+    expand_body_stream: &mut token_stream::IntoIter,
+    allow_ommited_for: bool,
+) -> ControlFlow<(), ()> {
+    let mut expect_for = expand_body_stream.clone();
+    match expect_for.next() {
+        Some(TokenTree::Ident(i)) if i.to_string() == "for" => {
+            let mut skip = true;
+            if allow_ommited_for {
+                if let Some(TokenTree::Ident(i)) = expect_for.next() {
+                    skip = i.to_string() != "in";
+                }
+            }
+            if skip {
+                expand_body_stream.next();
+            }
+        }
+        other => {
+            if !allow_ommited_for {
+                expand_attrib.error_list.push(MetaError {
+                    message:
+                        "expected `for` keyword to begin expand expression"
+                            .to_string(),
+                    span: tok_span_open_or_parent_close(
+                        other.as_ref(),
+                        expand_body,
+                    ),
+                });
+                return ControlFlow::Break(());
+            }
+        }
+    }
+    ControlFlow::Continue(())
 }
 
 // returns true if any substutions were found

@@ -44,7 +44,7 @@ enum MyEnum {
 let mut double_me = MyEnum::A(42);
 
 metamatch!(match &mut double_me {
-    #[expand( T in [A, B, C, D] )]
+    #[expand(for T in [A, B, C, D])]
     MyEnum::T(v) => *v *= 2,
 })
 ```
@@ -61,7 +61,7 @@ use metamatch::replicate;
 
 struct NodeIdx(usize);
 
-#[replicate( (TRAIT, FUNC) in [
+#[replicate(for (TRAIT, FUNC) in [
     (Add, add),
     (Sub, sub),
     (Mul, mul),
@@ -83,7 +83,7 @@ A generalized version of `metamatch!` for arbitrary expressions.
 use metamatch::expand;
 
 let multi_dim_array: [[i32; 2]; 9] = expand!{
-    (X, Y) in matrix([1, 2, 3], [1, 2, 3]) *[
+    for (X, Y) in matrix([1, 2, 3], [1, 2, 3]) *[
         [X, Y],
     ]
 };

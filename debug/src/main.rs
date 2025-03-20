@@ -20,20 +20,22 @@ pub fn pretty_print_token_stream(input: TokenStream) -> String {
 
     let stx = match syn::parse_str::<syn::File>(&code) {
         Ok(stx) => stx,
-        Err(err) => return format!(
+        Err(err) => {
+            return format!(
             "// pretty printing failed: \"{err}\"\n// raw output:\n\n{input}"
-        ),
+        )
+        }
     };
     let pretty = prettyplease::unparse(&stx);
 
     // filter back out the main function wrapper...
-    let mut res = pretty
-        .lines()
-        .skip(1)
-        .map(|line| format!("{}\n", &line[4.min(line.len())..]))
-        .collect::<String>();
-    res.truncate(res.len() - 2);
-    res
+    // let mut pretty = pretty
+    //    .lines()
+    //    .skip(1)
+    //    .map(|line| format!("{}\n", &line[4.min(line.len())..]))
+    //    .collect::<String>();
+    // pretty.truncate(pretty.len().saturating_sub(2));
+    pretty
 }
 
 #[derive(Default, clap::Subcommand)]
@@ -76,9 +78,9 @@ fn main() {
     }
 
     let body_str = std::fs::read_to_string(playground)
-        .expect("failed to stringify playground_attrib.rs");
+        .expect("failed to stringify playground_body.rs");
     let body_tt = syn::parse_str::<TokenStream>(&body_str)
-        .expect("failed to parse playground_attrib.rs");
+        .expect("failed to parse playground_body.rs");
 
     let result = match kind {
         MacroKind::Expand => metamatch_impl::expand(body_tt),
