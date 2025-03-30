@@ -1,7 +1,8 @@
 [package]
 publish = false
-name = "metamatch_debug"
+name = "metamatch_playground"
 edition = "2021"
+rust-version = "1.85"
 
 [dependencies]
 proc-macro2 = "1.0.94"

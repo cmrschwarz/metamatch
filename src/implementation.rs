@@ -196,10 +196,9 @@ pub fn expand(body: TokenStream) -> TokenStream {
     let res = TokenStream::from_iter(res);
 
     if let Some(delim) = delim {
-        let x = TokenStream::from_iter(std::iter::once(TokenTree::Group(
-            Group::new(delim, res),
-        )));
-        x
+        TokenStream::from_iter(std::iter::once(TokenTree::Group(Group::new(
+            delim, res,
+        ))))
     } else {
         res
     }
@@ -263,7 +262,7 @@ fn compile_error(message: &str, span: Span) -> TokenStream {
         TokenTree::Group({
             let mut group = Group::new(Delimiter::Brace, {
                 TokenStream::from_iter(vec![TokenTree::Literal({
-                    let mut string = Literal::string(&format!("{message}"));
+                    let mut string = Literal::string(message);
                     string.set_span(span);
                     string
                 })])
@@ -329,7 +328,7 @@ fn parse_comma_separated_token_tree_lists(
 fn add_cross_product_variants<'a>(
     mut pending: ExpansionVariant,
     mut replacement_arrs: impl Clone + Iterator<Item = &'a Vec<Replacement>>,
-    arr_idx: usize,
+    _arr_idx: usize,
     variants: &mut Vec<ExpansionVariant>,
 ) {
     let Some(rep_arr) = replacement_arrs.next() else {
@@ -342,7 +341,7 @@ fn add_cross_product_variants<'a>(
         add_cross_product_variants(
             p,
             replacement_arrs.clone(),
-            arr_idx + 1,
+            _arr_idx + 1,
             variants,
         );
     }
@@ -351,7 +350,7 @@ fn add_cross_product_variants<'a>(
         add_cross_product_variants(
             pending,
             replacement_arrs,
-            arr_idx + 1,
+            _arr_idx + 1,
             variants,
         );
     }
@@ -743,7 +742,7 @@ fn parse_expand_attrib_inner(
     let mut cross_product = false;
 
     if let Some(TokenTree::Ident(p)) = &t {
-        if p.to_string() == "matrix" {
+        if "matrix" == p.to_string() {
             if !expand_attrib.ident_tup {
                 expand_attrib.error_list.push(MetaError {
                     message: "cross product not supported on single replacement identifier".to_string(),
@@ -760,7 +759,7 @@ fn parse_expand_attrib_inner(
         if variants_group.delimiter() == Delimiter::Bracket {
             if !expand_attrib.ident_tup {
                 debug_assert_eq!(ident_count, 1);
-                match parse_comma_separated_token_tree_lists(&variants_group) {
+                match parse_comma_separated_token_tree_lists(variants_group) {
                     Ok(replacements) => {
                         for r in replacements {
                             expand_attrib.variants.push(ExpansionVariant {
@@ -774,7 +773,7 @@ fn parse_expand_attrib_inner(
             }
             parse_expand_variants_arr_of_tup(
                 &mut expand_attrib,
-                &variants_group,
+                variants_group,
                 cross_product,
             );
             return expand_attrib;
@@ -783,7 +782,7 @@ fn parse_expand_attrib_inner(
             if expand_attrib.ident_tup {
                 parse_expand_variants_tup_of_arr(
                     &mut expand_attrib,
-                    &variants_group,
+                    variants_group,
                     cross_product,
                 );
             }
@@ -877,7 +876,7 @@ fn collect_substitutions(
     for (i, tt) in tokens.iter().enumerate() {
         collect_substitutions_in_tt(
             expand,
-            &tt,
+            tt,
             &mut substitutions,
             offset + i,
         );
@@ -891,7 +890,7 @@ fn parse_expression_group(
     expand: &ExpandAttribute,
     expr: Vec<TokenTree>,
 ) -> Result<MetaExpr, MetaError> {
-    let Some(first) = expr.get(0) else {
+    let Some(first) = expr.first() else {
         return Ok(MetaExpr::FnCall {
             kind: MetaFnKind::Concat,
             args: Vec::default(),

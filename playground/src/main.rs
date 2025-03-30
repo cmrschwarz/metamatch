@@ -4,7 +4,10 @@
 // without messing with the cargo toml of the main crate.
 // This is convenient for debugging.
 mod metamatch_impl {
-    #![allow(unused)]
+    // NOTE: This file has a different MSRV so many of the lints become
+    // incorrect. We also already lint it when using it through metamatch
+    // directly.
+    #![allow(clippy::all, clippy::pedantic)]
     use proc_macro2 as proc_macro;
     include!("../../src/implementation.rs");
 }
@@ -29,12 +32,13 @@ pub fn pretty_print_token_stream(input: TokenStream) -> String {
     let pretty = prettyplease::unparse(&stx);
 
     // filter back out the main function wrapper...
-    // let mut pretty = pretty
-    //    .lines()
-    //    .skip(1)
-    //    .map(|line| format!("{}\n", &line[4.min(line.len())..]))
-    //    .collect::<String>();
-    // pretty.truncate(pretty.len().saturating_sub(2));
+    let mut pretty = pretty
+        .lines()
+        .skip(1)
+        .map(|line| format!("{}\n", &line[4.min(line.len())..]))
+        .collect::<String>();
+    pretty.truncate(pretty.len().saturating_sub(2));
+
     pretty
 }
 
@@ -57,15 +61,15 @@ fn main() {
 
     let kind = args.subcommand.unwrap_or(MacroKind::Metamatch);
 
-    let dir = format!("{}/src", env!("CARGO_MANIFEST_DIR"));
+    let sandbox = format!("{}/sandbox", env!("CARGO_MANIFEST_DIR"));
 
-    let attrib = format!("{dir}/playground_attrib.rs");
+    let attrib = format!("{sandbox}/attrib.rs");
 
-    let playground = format!("{dir}/playground_body.rs");
+    let body = format!("{sandbox}/body.rs");
 
-    if !std::fs::exists(&playground).unwrap() {
+    if !std::fs::exists(&body).unwrap() {
         std::fs::write(
-            &playground,
+            &body,
             "// Macro body here.\n// This file is intentionally ignored by git.\n\n"
         ).unwrap();
     }
@@ -77,7 +81,7 @@ fn main() {
         ).unwrap();
     }
 
-    let body_str = std::fs::read_to_string(playground)
+    let body_str = std::fs::read_to_string(&body)
         .expect("failed to stringify playground_body.rs");
     let body_tt = syn::parse_str::<TokenStream>(&body_str)
         .expect("failed to parse playground_body.rs");
@@ -86,10 +90,10 @@ fn main() {
         MacroKind::Expand => metamatch_impl::expand(body_tt),
         MacroKind::Metamatch => metamatch_impl::metamatch(body_tt),
         MacroKind::Replicate => {
-            let attrib_str = std::fs::read_to_string(attrib)
-                .expect("failed to stringify playground_attrib.rs");
+            let attrib_str = std::fs::read_to_string(&attrib)
+                .unwrap_or_else(|_| panic!("failed to stringify {attrib}"));
             let attrib_tt = syn::parse_str::<TokenStream>(&attrib_str)
-                .expect("failed to parse playground_attrib.rs");
+                .unwrap_or_else(|_| panic!("failed to stringify {body}"));
             metamatch_impl::replicate(attrib_tt, body_tt)
         }
     };

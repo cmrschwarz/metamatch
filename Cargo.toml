@@ -1,5 +1,5 @@
 [workspace]
-members = ["debug"]
+members = ["playground"]
 
 [package]
 name = "metamatch"
