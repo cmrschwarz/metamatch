@@ -55,7 +55,7 @@ mod implementation;
 /// let mut bar = MyEnum::B(42);
 ///
 /// let same_value = metamatch!(match (foo, bar) {
-///     #[expand( (LHS, RHS) in matrix(
+///     #[expand(for (LHS, RHS) in matrix(
 ///         [A, B, C],
 ///         [A, B, C],
 ///     ))]
@@ -79,8 +79,14 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
 ///
 /// struct NodeIdx(usize);
 ///
-/// #[replicate( FN in [ add, sub, mul, div ])]
-/// impl core::ops::[<capitalize(FN)>] for NodeIdx {
+/// #[replicate(for (TRAIT, FN) in [
+///     (Add, add),
+///     (Sub, sub),
+///     (Mul, mul),
+///     (Div, div),
+///     (Rem, rem),
+/// ])]
+/// impl core::ops::TRAIT for NodeIdx {
 ///     type Output = Self;
 ///     fn FN(self, other: Self) -> Self {
 ///         NodeIdx(self.0.FN(other.0))
@@ -99,22 +105,22 @@ pub fn replicate(attr: TokenStream, body: TokenStream) -> TokenStream {
 /// ```
 /// use metamatch::expand;
 ///
-///  let mut x = 0;
+/// let mut x = 0;
 ///
-///  expand!(T in [1, 2, 3] {
-///      x += T; // 'loop unrolling'
-///  });
+/// expand!(for T in [1, 2, 3] {
+///     x += T; // 'loop unrolling'
+/// });
 ///
-///  assert_eq!(x, 6);
+/// assert_eq!(x, 6);
 /// ```
 ///
 /// # Create Multidimensional arrays
 /// ```
 /// use metamatch::expand;
 ///
-/// // macros cannot produce
+/// // really annoying to do with macro_rules!
 /// let arr: [[i32; 2]; 9] = expand! {
-///     (X, Y) in matrix([1, 2, 3], [1, 2, 3]) [
+///     for (X, Y) in matrix([1, 2, 3], [1, 2, 3]) [
 ///         [X, Y],
 ///     ]
 /// };

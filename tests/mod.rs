@@ -203,7 +203,7 @@ fn expand_pattern_single_variant() {
 fn direct_expand_expr() {
     let mut x = 0;
 
-    expand!(T in [1, 2, 3] {
+    expand!(for T in [1, 2, 3] {
         x += T;
     });
 
@@ -216,7 +216,7 @@ fn matrix_impl_using_replicate() {
         fn foo(&self, other: T);
     }
 
-    #[replicate((SELF, OTHER) in matrix([i32, i64], [i32, i64]))]
+    #[replicate(for (SELF, OTHER) in matrix([i32, i64], [i32, i64]))]
     impl Foo<OTHER> for SELF {
         fn foo(&self, other: OTHER) {
             println!("{:?} {:?}", self, other);
@@ -237,7 +237,7 @@ fn expand_expr_empty() {
     #[allow(unused_mut)]
     let mut x = 0;
 
-    expand!(T in [] {
+    expand!(for T in [] {
         x += T;
     });
 
@@ -246,7 +246,7 @@ fn expand_expr_empty() {
 
 #[test]
 fn expand_expr_array() {
-    let arr: [i32; 3] = expand!((T) in matrix([1, 2, 3]) [
+    let arr: [i32; 3] = expand!(for (T) in matrix([1, 2, 3]) [
         T,
     ]);
     assert_eq!(arr.iter().sum::<i32>(), 6);
@@ -255,7 +255,7 @@ fn expand_expr_array() {
 #[test]
 fn expand_nested_array() {
     let arr: [[i32; 2]; 9] = expand!(
-        (X, Y) in matrix([1, 2, 3], [1, 2, 3]) [
+        for (X, Y) in matrix([1, 2, 3], [1, 2, 3]) [
             [X, Y],
         ]
     );
@@ -275,7 +275,7 @@ fn expand_nested_array() {
 
 #[test]
 fn expand_expr_matrix() {
-    let arr: [[i32; 2]; 4] = expand!((A, B) in matrix([0, 1], [0, 1]) [
+    let arr: [[i32; 2]; 4] = expand!(for (A, B) in matrix([0, 1], [0, 1]) [
        [A, B],
     ]);
     assert_eq!(arr, [[0, 0], [0, 1], [1, 0], [1, 1]]);

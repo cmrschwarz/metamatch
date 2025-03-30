@@ -19,14 +19,13 @@ even if the are syntactically identical.
 This macro implements a simple templating attribute (`#[expand]`)
 to automatically stamp out the neccessary copies.
 
-`rust-analyzer` works correctly with this macro.
+The macro syntax was carefully chosen to ensure maximum compatability
+with `rustfmt`. It will correctly format the macro body as if it was
+a regular `match` expression. Rust-analyzer also works correctly within this macro.
 Even auto refactorings that affect the `#[expand]` (like changing the
 name of an enum variant) work correctly.
 
-We can get `rustfmt` to nicely format our macro by using
-parentheses`()` instead of braces`{}` for the `metamatch!` expression.
-
-Zero dependencies on other crates.
+`metamatch!` has zero dependencies on other crates.
 
 ## [`metamatch!`](https://docs.rs/metamatch/latest/metamatch/macro.metamatch.html)
 
@@ -34,19 +33,30 @@ A proc-macro for generating repetitive match arms.
 
 ```rust
 use metamatch::metamatch;
-enum MyEnum {
-    A(i8),
-    B(i16),
-    C(i32),
-    D(i64),
+enum VarIntVec {
+    I8(Vec<i8>),
+    I16(Vec<i16>),
+    I32(Vec<i32>),
+    I64(Vec<i64>),
 }
 
-let mut double_me = MyEnum::A(42);
-
-metamatch!(match &mut double_me {
-    #[expand(for T in [A, B, C, D])]
-    MyEnum::T(v) => *v *= 2,
-})
+impl VarIntVec{
+    fn len(&self) -> usize {
+        metamatch!(match self {
+            #[expand(for X in [I8, I16, I32, I64])]
+            VarIntVec::X(v) => v.len(),
+        })
+    }
+    // v   expands into   v
+    fn len_expanded(&self) -> usize {
+        match self {
+            VarIntVec::I8(v) => v.len(),
+            VarIntVec::I16(v) => v.len(),
+            VarIntVec::I32(v) => v.len(),
+            VarIntVec::I64(v) => v.len(),
+        }
+    }
+}
 ```
 
 For more complex examples have a look at the
@@ -61,16 +71,16 @@ use metamatch::replicate;
 
 struct NodeIdx(usize);
 
-#[replicate(for (TRAIT, FUNC) in [
+#[replicate(for (TRAIT, FN) in [
     (Add, add),
     (Sub, sub),
     (Mul, mul),
-    (Div, div)
+    (Div, div),
 ])]
 impl core::ops::TRAIT for NodeIdx {
     type Output = Self;
-    fn FUNC(self, other: Self) -> Self {
-        NodeIdx(self.0.FUNC(other.0))
+    fn FN(self, other: Self) -> Self {
+        NodeIdx(self.0.FN(other.0))
     }
 }
 
@@ -79,14 +89,14 @@ impl core::ops::TRAIT for NodeIdx {
 ## [`expand!`](https://docs.rs/metamatch/latest/metamatch/macro.expand.html)
 A generalized version of `metamatch!` for arbitrary expressions.
 
-```
+```rust
 use metamatch::expand;
 
-let multi_dim_array: [[i32; 2]; 9] = expand!{
-    for (X, Y) in matrix([1, 2, 3], [1, 2, 3]) *[
+let multi_dim_array: [[i32; 2]; 9] = expand!(
+    for (X, Y) in matrix([1, 2, 3], [1, 2, 3]) [
         [X, Y],
     ]
-};
+);
 let result: [[i32; 2]; 9] = [
     [1, 1],
     [1, 2],
