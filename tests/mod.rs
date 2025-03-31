@@ -55,9 +55,9 @@ fn raw_block() {
     let res = eval! {
         raw!(0);
         for X in [1, 2, 3] {
-            [<raw>]
+            raw!{
                 +X
-            [</raw>]
+            }
         }
     };
 

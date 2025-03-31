@@ -845,64 +845,6 @@ impl Context {
             self.parse_stmt_or_expr(parent_span, tokens, false)?;
         Ok((expr, rest))
     }
-    fn parse_template_expr<'a>(
-        &mut self,
-        group: &Group,
-        group_tokens: &[TokenTree],
-        rest_tokens: &'a [TokenTree],
-    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
-        // for dummy bindings
-        self.scopes.push(Default::default());
-
-        let content = &group_tokens[1..&group_tokens.len() - 1];
-        let mut raw_tag = false;
-        if content.len() == 1 {
-            if let Some(TokenTree::Ident(i)) = content.first() {
-                raw_tag = i.to_string() == "raw";
-            }
-        }
-
-        if !raw_tag {
-            let expr = self.parse_raw_body_to_scope_or_literal(
-                group.span(),
-                group_tokens,
-            );
-
-            self.scopes.pop();
-
-            return Ok((expr?, rest_tokens));
-        }
-
-        let exprs = self.parse_raw_body(group.span(), rest_tokens);
-        self.scopes.pop();
-        match exprs? {
-            RawBodyParseResult::Plain | RawBodyParseResult::Complete(_) => {
-                self.error(group.span(), "`raw` tag is never closed");
-                Err(())
-            }
-            RawBodyParseResult::UnmatchedEnd {
-                span,
-                kind,
-                offset,
-                contents,
-            } => {
-                if kind != TrailingBlockKind::Raw {
-                    self.error(
-                        span,
-                        format!("unmatched closing tag `/{}`", kind.to_str()),
-                    );
-                    return Err(());
-                }
-                Ok((
-                    Rc::new(MetaExpr::Scope {
-                        span: group.span(),
-                        body: contents,
-                    }),
-                    &rest_tokens[offset + 1..],
-                ))
-            }
-        }
-    }
     fn parse_stmt_or_expr<'a>(
         &mut self,
         parent_span: Span,
@@ -934,29 +876,19 @@ impl Context {
                         ))
                     }
                     Delimiter::Bracket => {
-                        let rest = &tokens[1..];
-                        let (expr, rest) =
-                            if has_template_angle_backets(&group_tokens) {
-                                self.parse_template_expr(
-                                    group,
-                                    &group_tokens,
-                                    rest,
-                                )?
-                            } else {
-                                let list = self.parse_comma_separated(
-                                    group.delimiter(),
-                                    group.span(),
-                                    &group_tokens,
-                                )?;
-                                (
-                                    Rc::new(MetaExpr::List {
-                                        span: group.span(),
-                                        exprs: list,
-                                    }),
-                                    rest,
-                                )
-                            };
-                        Ok((expr, rest, None))
+                        let list = self.parse_comma_separated(
+                            group.delimiter(),
+                            group.span(),
+                            &group_tokens,
+                        )?;
+                        Ok((
+                            Rc::new(MetaExpr::List {
+                                span: group.span(),
+                                exprs: list,
+                            }),
+                            &tokens[1..],
+                            None,
+                        ))
                     }
                     Delimiter::None => {
                         let (expr, rest) =
@@ -1842,27 +1774,6 @@ impl Context {
             })]),
             Some(exprs) => Ok(exprs),
         }
-    }
-
-    fn parse_raw_body_to_scope_or_literal(
-        &mut self,
-        parent_span: Span,
-        tokens: &[TokenTree],
-    ) -> Result<Rc<MetaExpr>> {
-        let expr = if let Some(exprs) =
-            self.parse_raw_body_deny_unmatched(parent_span, tokens)?
-        {
-            MetaExpr::Scope {
-                span: parent_span,
-                body: exprs,
-            }
-        } else {
-            MetaExpr::Literal {
-                span: parent_span,
-                value: Rc::new(MetaValue::Tokens(tokens.to_vec())),
-            }
-        };
-        Ok(Rc::new(expr))
     }
 
     fn parse_raw_body_deny_unmatched(
