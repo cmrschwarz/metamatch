@@ -26,8 +26,8 @@ struct BuiltinFn {
 
 #[derive(Clone)]
 enum MetaValue {
-    TokenList(Vec<TokenTree>),
-    TokenTree(TokenTree),
+    Token(TokenTree),
+    Tokens(Vec<TokenTree>),
     Bool(bool),
     Int(i64),
     String(Rc<str>),
@@ -45,7 +45,7 @@ enum Pattern {
 
 impl Default for MetaValue {
     fn default() -> Self {
-        Self::TokenList(Vec::new())
+        Self::Tokens(Vec::new())
     }
 }
 
@@ -142,8 +142,8 @@ enum RawBodyParseResult {
 impl MetaValue {
     fn type_id(&self) -> &'static str {
         match self {
-            MetaValue::TokenList(_) => "token_list",
-            MetaValue::TokenTree(_) => "token_tree",
+            MetaValue::Token(_) => "token",
+            MetaValue::Tokens(_) => "tokens",
             MetaValue::Int(_) => "int",
             MetaValue::String(_) => "string",
             MetaValue::Fn(_) | MetaValue::BuiltinFn(_) => "fn",
@@ -276,6 +276,29 @@ impl Context {
                 })
                 .collect::<Vec<_>>()
         });
+        self.insert_builtin_fn("len", 1, |ctx, callsite, args| {
+            let v = match &*args[0] {
+                MetaValue::Token(_) => 1,
+                MetaValue::Tokens(token_trees) => token_trees.len(),
+                MetaValue::List(list) => list.len(),
+                MetaValue::Tuple(tup) => tup.len(),
+                MetaValue::String(s) => s.len(),
+                MetaValue::Bool(_)
+                | MetaValue::Int(_)
+                | MetaValue::Fn(_)
+                | MetaValue::BuiltinFn(_) => {
+                    ctx.error(
+                        callsite,
+                        format!(
+                            "value of type {} has no len()",
+                            args[0].type_id()
+                        ),
+                    );
+                    return Err(());
+                }
+            };
+            Ok(Rc::new(MetaValue::Int(v as i64)))
+        });
         // TODO: camel_case, pascal_case, ...
     }
     fn attempt_pattern_match(
@@ -356,14 +379,29 @@ impl Context {
             }
         }
     }
+
+    fn insert_builtin_fn(
+        &mut self,
+        name: &'static str,
+        param_count: usize,
+        f: impl 'static
+            + Fn(&mut Context, Span, &[Rc<MetaValue>]) -> Result<Rc<MetaValue>>,
+    ) {
+        let builtin_fn_v = Rc::new(MetaValue::BuiltinFn(Rc::new(BuiltinFn {
+            param_count,
+            builtin: Box::new(f),
+        })));
+        self.insert_binding(Span::call_site(), Rc::from(name), builtin_fn_v);
+    }
+
     fn insert_builtin_str_fn(
         &mut self,
         name: &'static str,
         f: impl 'static + Fn(&str) -> String,
     ) {
-        let builtin_fn = move |ctx: &mut Context,
-                               span: Span,
-                               args: &[Rc<MetaValue>]|
+        let str_fn = move |ctx: &mut Context,
+                           span: Span,
+                           args: &[Rc<MetaValue>]|
               -> Result<Rc<MetaValue>> {
             let MetaValue::String(s) = &*args[0] else {
                 ctx.error(
@@ -377,20 +415,16 @@ impl Context {
             };
             Ok(Rc::new(MetaValue::String(Rc::from(f(s)))))
         };
-        let builtin_fn_v = Rc::new(MetaValue::BuiltinFn(Rc::new(BuiltinFn {
-            param_count: 1,
-            builtin: Box::new(builtin_fn),
-        })));
-        self.insert_binding(Span::call_site(), Rc::from(name), builtin_fn_v);
+        self.insert_builtin_fn(name, 1, str_fn);
     }
     fn insert_builtin_list_fn(
         &mut self,
         name: &'static str,
         f: impl 'static + Fn(&[Rc<MetaValue>]) -> Vec<Rc<MetaValue>>,
     ) {
-        let builtin_fn = move |ctx: &mut Context,
-                               span: Span,
-                               args: &[Rc<MetaValue>]|
+        let list_fn = move |ctx: &mut Context,
+                            span: Span,
+                            args: &[Rc<MetaValue>]|
               -> Result<Rc<MetaValue>> {
             let MetaValue::List(list) = &*args[0] else {
                 ctx.error(
@@ -404,11 +438,7 @@ impl Context {
             };
             Ok(Rc::new(MetaValue::List(f(list))))
         };
-        let builtin_fn_v = Rc::new(MetaValue::BuiltinFn(Rc::new(BuiltinFn {
-            param_count: 1,
-            builtin: Box::new(builtin_fn),
-        })));
-        self.insert_binding(Span::call_site(), Rc::from(name), builtin_fn_v);
+        self.insert_builtin_fn(name, 1, list_fn);
     }
     fn append_value_to_stream(
         &mut self,
@@ -417,10 +447,10 @@ impl Context {
         value: &MetaValue,
     ) -> Result<()> {
         match value {
-            MetaValue::TokenTree(t) => {
+            MetaValue::Token(t) => {
                 tgt.push(t.clone());
             }
-            MetaValue::TokenList(list) => {
+            MetaValue::Tokens(list) => {
                 tgt.extend(list.iter().cloned());
             }
             MetaValue::Int(value) => {
@@ -522,7 +552,7 @@ impl Context {
     ) -> Result<Rc<MetaValue>> {
         let mut res = Vec::new();
         self.eval_stmt_list_to_stream(&mut res, eval_span, exprs)?;
-        Ok(Rc::new(MetaValue::TokenList(res)))
+        Ok(Rc::new(MetaValue::Tokens(res)))
     }
     fn eval(&mut self, expr: &MetaExpr) -> Result<Rc<MetaValue>> {
         match expr {
@@ -531,9 +561,9 @@ impl Context {
                 if let Some(expr) = self.lookup(name) {
                     return Ok(expr);
                 }
-                Ok(Rc::new(MetaValue::TokenTree(TokenTree::Ident(
-                    Ident::new(name, *span),
-                ))))
+                Ok(Rc::new(MetaValue::Token(TokenTree::Ident(Ident::new(
+                    name, *span,
+                )))))
             }
             MetaExpr::LetBinding { span, expr, name } => {
                 let val = self.eval(expr.as_ref().unwrap())?;
@@ -550,9 +580,10 @@ impl Context {
             } => {
                 let mut res = Vec::new();
                 self.eval_stmt_list_to_stream(&mut res, *span, contents)?;
-                Ok(Rc::new(MetaValue::TokenTree(TokenTree::Group(
-                    Group::new(*delimiter, TokenStream::from_iter(res)),
-                ))))
+                Ok(Rc::new(MetaValue::Token(TokenTree::Group(Group::new(
+                    *delimiter,
+                    TokenStream::from_iter(res),
+                )))))
             }
             MetaExpr::ForExpansion {
                 span,
@@ -589,7 +620,7 @@ impl Context {
                         return Err(());
                     }
                 }
-                Ok(Rc::new(MetaValue::TokenList(res)))
+                Ok(Rc::new(MetaValue::Tokens(res)))
             }
             MetaExpr::Scope { span, contents } => {
                 self.scopes.push(Default::default());
@@ -1649,7 +1680,7 @@ impl Context {
             if raw_token_list_start != offset {
                 exprs.push(Rc::new(MetaExpr::Literal {
                     span: tokens[raw_token_list_start].span(),
-                    value: Rc::new(MetaValue::TokenList(
+                    value: Rc::new(MetaValue::Tokens(
                         tokens[raw_token_list_start..offset].to_vec(),
                     )),
                 }));
@@ -1855,7 +1886,7 @@ impl Context {
         if i != raw_token_list_start {
             exprs.push(Rc::new(MetaExpr::Literal {
                 span: tokens[raw_token_list_start].span(),
-                value: Rc::new(MetaValue::TokenList(
+                value: Rc::new(MetaValue::Tokens(
                     tokens[raw_token_list_start..i].to_vec(),
                 )),
             }));
