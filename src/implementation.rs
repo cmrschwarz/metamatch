@@ -1161,6 +1161,11 @@ impl Context {
 
         let (variants_expr, rest) = self.parse_expr(for_span, &rest[1..])?;
 
+        // for dummy bindings
+        self.scopes.push(Default::default());
+
+        self.insert_dummy_bindings_for_pattern(&pattern);
+
         let (body, final_rest, trailing_block);
         if rest.is_empty() && allow_trailing_block {
             body = Vec::new();
@@ -1186,11 +1191,6 @@ impl Context {
 
             let body_tokens =
                 body_group.stream().into_iter().collect::<Vec<_>>();
-
-            // for dummy bindings
-            self.scopes.push(Default::default());
-
-            self.insert_dummy_bindings_for_pattern(&pattern);
 
             body =
                 self.parse_body_no_trailing(body_group.span(), &body_tokens);
