@@ -81,9 +81,6 @@ enum MetaExpr {
         delimiter: Delimiter,
         contents: Vec<Rc<MetaExpr>>,
     },
-    RawOutputToken {
-        tok: TokenTree,
-    },
     IfExpr {
         span: Span,
         condition: Rc<MetaExpr>,
@@ -124,6 +121,26 @@ struct Context {
     errors: Vec<MetaError>,
 }
 
+#[derive(PartialEq, Eq)]
+enum TrailingBlockKind {
+    For,
+    If,
+    Else,
+    Let,
+    Fn,
+}
+
+enum RawBodyParseResult {
+    Plain,
+    Complete(Vec<Rc<MetaExpr>>),
+    UnmatchedEnd {
+        span: Span,
+        kind: TrailingBlockKind,
+        offset: usize,
+        contents: Vec<Rc<MetaExpr>>,
+    },
+}
+
 impl MetaValue {
     fn type_id(&self) -> &'static str {
         match self {
@@ -131,8 +148,7 @@ impl MetaValue {
             MetaValue::TokenTree(_) => "token_tree",
             MetaValue::Int(_) => "int",
             MetaValue::String(_) => "string",
-            MetaValue::Fn(_) => "fn",
-            MetaValue::BuiltinFn(_) => "builtin_fn",
+            MetaValue::Fn(_) | MetaValue::BuiltinFn(_) => "fn",
             MetaValue::List(_) => "list",
             MetaValue::Tuple(_) => "tuple",
             MetaValue::Bool(_) => "bool",
@@ -140,22 +156,45 @@ impl MetaValue {
     }
 }
 
-pub fn expand(body: TokenStream) -> TokenStream {
+impl TrailingBlockKind {
+    fn to_str(&self) -> &'static str {
+        match self {
+            TrailingBlockKind::For => "for",
+            TrailingBlockKind::If => "if",
+            TrailingBlockKind::Else => "else",
+            TrailingBlockKind::Let => "let",
+            TrailingBlockKind::Fn => "fn",
+        }
+    }
+}
+
+pub fn eval(body: TokenStream) -> TokenStream {
     let body = body.into_iter().collect::<Vec<_>>();
     let mut ctx = Context::default();
 
-    let expr = ctx.parse_body(Span::call_site(), &body);
+    let expr = ctx.parse_body_no_trailing(Span::call_site(), &body);
 
-    if ctx.errors.is_empty() {
-        let mut res = Vec::new();
-        if let Ok(()) =
-            ctx.eval_stmt_list_to_stream(&mut res, Span::call_site(), &expr)
-        {
-            return TokenStream::from_iter(res);
+    ctx.eval_to_token_stream(Span::call_site(), &expr)
+}
+
+pub fn template(body: TokenStream) -> TokenStream {
+    let body = body.into_iter().collect::<Vec<_>>();
+    let mut ctx = Context::default();
+
+    match ctx.parse_raw_body(Span::call_site(), &body) {
+        Ok(RawBodyParseResult::Complete(expr)) => {
+            ctx.eval_to_token_stream(Span::call_site(), &expr)
         }
+        Ok(RawBodyParseResult::Plain) => {
+            // no meta exprs found, so we return the raw body
+            TokenStream::from_iter(body)
+        }
+        Ok(RawBodyParseResult::UnmatchedEnd { span, .. }) => {
+            ctx.error(span, format!("unexpected closing tag"));
+            ctx.expand_errors()
+        }
+        Err(_) => ctx.expand_errors(),
     }
-
-    ctx.expand_errors()
 }
 
 fn comma_token(span: Span) -> TokenTree {
@@ -402,6 +441,21 @@ impl Context {
         self.error(loc, format!("undefined identifier `{name}`"));
         Err(())
     }
+    fn eval_to_token_stream(
+        &mut self,
+        eval_span: Span,
+        exprs: &[Rc<MetaExpr>],
+    ) -> TokenStream {
+        if self.errors.is_empty() {
+            let mut res = Vec::new();
+            if let Ok(()) =
+                self.eval_stmt_list_to_stream(&mut res, eval_span, &exprs)
+            {
+                return TokenStream::from_iter(res);
+            }
+        }
+        self.expand_errors()
+    }
     fn eval_stmt_list_to_stream(
         &mut self,
         tgt: &mut Vec<TokenTree>,
@@ -523,9 +577,6 @@ impl Context {
                     elements.push(self.eval(*span, e)?);
                 }
                 Ok(Rc::new(MetaValue::Tuple(elements)))
-            }
-            MetaExpr::RawOutputToken { tok } => {
-                Ok(Rc::new(MetaValue::TokenTree(tok.clone())))
             }
             MetaExpr::IfExpr {
                 span,
@@ -682,14 +733,6 @@ fn parse_literal(token: &TokenTree) -> Option<(Span, Rc<MetaValue>)> {
     }
 }
 
-enum TrailingBlockKind {
-    For,
-    If,
-    Else,
-    Let,
-    Fn,
-}
-
 impl Context {
     fn parse_expr<'a>(
         &mut self,
@@ -760,7 +803,10 @@ impl Context {
                     Delimiter::Brace => Ok((
                         Rc::new(MetaExpr::Scope {
                             span: group.span(),
-                            contents: self.parse_body(group.span(), &content),
+                            contents: self.parse_body_no_trailing(
+                                group.span(),
+                                &content,
+                            ),
                         }),
                         &tokens[1..],
                         None,
@@ -890,6 +936,18 @@ impl Context {
             self.error(tokens[0].span(), "expected identifier");
         })?;
 
+        if tokens.len() == 1 && allow_trailing_block {
+            return Ok((
+                Rc::new(MetaExpr::LetBinding {
+                    span: let_span,
+                    name,
+                    expr: None,
+                }),
+                &[],
+                Some(TrailingBlockKind::Let),
+            ));
+        }
+
         let mut eq_span = None;
         if let Some(TokenTree::Punct(p)) = tokens.get(1) {
             if p.as_char() == '=' {
@@ -907,25 +965,20 @@ impl Context {
 
         let rest = &tokens[2..];
 
-        let (expr, rest, trailing_block) = if tokens.is_empty() {
-            if !allow_trailing_block {
-                self.error(eq_span, "expected expression after `=`");
-                return Err(());
-            }
-            (None, rest, Some(TrailingBlockKind::Let))
-        } else {
-            let (expr, rest) = self.parse_expr(let_span, rest)?;
-            (Some(expr), rest, None)
-        };
+        if tokens.is_empty() {
+            self.error(eq_span, "expected expression after `=`");
+            return Err(());
+        }
+        let (expr, rest) = self.parse_expr(let_span, rest)?;
 
         Ok((
             Rc::new(MetaExpr::LetBinding {
                 span: let_span,
                 name,
-                expr,
+                expr: Some(expr),
             }),
             rest,
-            trailing_block,
+            None,
         ))
     }
 
@@ -1021,7 +1074,7 @@ impl Context {
 
             let body_tokens =
                 body_group.stream().into_iter().collect::<Vec<_>>();
-            let body = self.parse_body(name_span, &body_tokens);
+            let body = self.parse_body_no_trailing(name_span, &body_tokens);
             (body, &rest[1..], None)
         };
 
@@ -1091,7 +1144,8 @@ impl Context {
                 let body_tokens =
                     body_group.stream().into_iter().collect::<Vec<_>>();
 
-                let body = self.parse_body(body_group.span(), &body_tokens);
+                let body = self
+                    .parse_body_no_trailing(body_group.span(), &body_tokens);
                 (Some(body), &rest[1..], None)
             };
 
@@ -1149,7 +1203,8 @@ impl Context {
         let body_tokens = body_group.stream().into_iter().collect::<Vec<_>>();
         // errors are contained within that body, we can continue
         // parsing either way
-        let body = self.parse_body(body_group.span(), &body_tokens);
+        let body =
+            self.parse_body_no_trailing(body_group.span(), &body_tokens);
 
         let mut rest = &rest[1..];
 
@@ -1206,7 +1261,8 @@ impl Context {
             rest = &rest[2..];
             else_expr = Some(Rc::new(MetaExpr::Scope {
                 span: block.span(),
-                contents: self.parse_body(block.span(), &block_content),
+                contents: self
+                    .parse_body_no_trailing(block.span(), &block_content),
             }));
             trailing_block = None;
         }
@@ -1372,23 +1428,40 @@ impl Context {
         Ok((exprs, final_comma))
     }
 
+    fn parse_body_no_trailing(
+        &mut self,
+        parent_span: Span,
+        tokens: &[TokenTree],
+    ) -> Vec<Rc<MetaExpr>> {
+        self.parse_body(parent_span, tokens, false).0
+    }
+
     // syntax errors are contained withing the body
     // we return all the exprs that we were able to parse
     fn parse_body(
         &mut self,
         parent_span: Span,
         tokens: &[TokenTree],
-    ) -> Vec<Rc<MetaExpr>> {
+        allow_trailing_block: bool,
+    ) -> (Vec<Rc<MetaExpr>>, Option<TrailingBlockKind>) {
         let mut exprs = Vec::new();
         let mut rest = tokens;
 
         while !rest.is_empty() {
-            let Ok((expr, new_rest)) = self.parse_expr(parent_span, rest)
+            let Ok((expr, new_rest, trailing_block)) = self
+                .parse_stmt_or_expr(parent_span, rest, allow_trailing_block)
             else {
                 break;
             };
-            exprs.push(expr);
+
             rest = new_rest;
+            exprs.push(expr);
+
+            if trailing_block.is_some() {
+                debug_assert!(allow_trailing_block && rest.is_empty());
+                return (exprs, trailing_block);
+            }
+
             if let Some(first) = rest.first() {
                 let mut is_semi = false;
                 if let TokenTree::Punct(p) = first {
@@ -1407,6 +1480,182 @@ impl Context {
                 }
             }
         }
-        exprs
+        (exprs, None)
+    }
+
+    fn parse_raw_body(
+        &mut self,
+        parent_span: Span,
+        tokens: &[TokenTree],
+    ) -> Result<RawBodyParseResult> {
+        let mut exprs = Vec::new();
+
+        let mut raw_token_list_start = 0;
+
+        let mut i = 0;
+
+        while i < tokens.len() {
+            let offset = i;
+            i += 1;
+            let t = &tokens[offset];
+            let TokenTree::Group(group) = t else {
+                continue;
+            };
+            let group_tokens = group.stream().into_iter().collect::<Vec<_>>();
+            let mut is_template = true;
+            if group.delimiter() != Delimiter::Bracket {
+                is_template = false;
+            }
+            if let Some(TokenTree::Punct(p)) = group_tokens.first() {
+                if p.as_char() != '<' {
+                    is_template = false;
+                }
+            } else {
+                is_template = false;
+            }
+            if let Some(TokenTree::Punct(p)) = group_tokens.last() {
+                if p.as_char() != '>' {
+                    is_template = false;
+                }
+            } else {
+                is_template = false;
+            }
+            if !is_template {
+                match self.parse_raw_body(group.span(), &group_tokens) {
+                    Err(()) | Ok(RawBodyParseResult::Plain) => (),
+                    Ok(RawBodyParseResult::Complete(body_exprs)) => {
+                        if raw_token_list_start != offset {
+                            exprs.push(Rc::new(MetaExpr::Literal {
+                                span: tokens[raw_token_list_start].span(),
+                                value: Rc::new(MetaValue::TokenList(
+                                    tokens[raw_token_list_start..offset]
+                                        .iter()
+                                        .cloned()
+                                        .collect(),
+                                )),
+                            }));
+                        }
+                        exprs.push(Rc::new(MetaExpr::RawOutputGroup {
+                            span: group.span(),
+                            delimiter: group.delimiter(),
+                            contents: body_exprs,
+                        }));
+                        raw_token_list_start = i;
+                    }
+                    Ok(RawBodyParseResult::UnmatchedEnd { span, .. }) => {
+                        self.error(span, format!("unexpected closing tag"));
+                    }
+                }
+                continue;
+            }
+            if let Some(TokenTree::Punct(p)) = group_tokens.get(1) {
+                if p.as_char() == '/' {
+                    // this is a closing tag
+                    let Some(TokenTree::Ident(ident)) = group_tokens.get(2)
+                    else {
+                        self.error(
+                            group_tokens
+                                .get(2)
+                                .map(|t| t.span())
+                                .unwrap_or(group.span()),
+                            "closing tag expects an identifier after `/`",
+                        );
+                        return Err(());
+                    };
+                    let tag = ident.to_string();
+                    let kind = match &*tag {
+                        "for" => TrailingBlockKind::For,
+                        "let" => TrailingBlockKind::Let,
+                        "fn" => TrailingBlockKind::Fn,
+                        "if" => TrailingBlockKind::If,
+                        "else" => TrailingBlockKind::Else,
+                        _ => {
+                            self.error(
+                                group_tokens
+                                    .get(2)
+                                    .map(|t| t.span())
+                                    .unwrap_or(group.span()),
+                                format!("unknown closing tag `{tag}`"),
+                            );
+                            return Err(());
+                        }
+                    };
+                    if raw_token_list_start != offset {
+                        exprs.push(Rc::new(MetaExpr::Literal {
+                            span: tokens[raw_token_list_start].span(),
+                            value: Rc::new(MetaValue::TokenList(
+                                tokens[raw_token_list_start..offset]
+                                    .iter()
+                                    .cloned()
+                                    .collect(),
+                            )),
+                        }));
+                    }
+                    return Ok(RawBodyParseResult::UnmatchedEnd {
+                        span: group.span(),
+                        kind,
+                        offset,
+                        contents: exprs,
+                    });
+                }
+            }
+            let (expr, trailing_block) = self.parse_body(
+                parent_span,
+                &group_tokens[1..group_tokens.len() - 1],
+                true,
+            );
+            exprs.extend(expr);
+            let Some(trailing_block) = trailing_block else {
+                raw_token_list_start = i;
+                continue;
+            };
+            match self.parse_raw_body(parent_span, &tokens[i..tokens.len()])? {
+                RawBodyParseResult::Plain
+                | RawBodyParseResult::Complete(_) => {
+                    self.error(
+                        group.span(),
+                        format!(
+                            "missing closing tag for `{}`",
+                            trailing_block.to_str()
+                        ),
+                    );
+                    return Err(());
+                }
+                RawBodyParseResult::UnmatchedEnd {
+                    span,
+                    kind,
+                    offset,
+                    contents,
+                } => {
+                    if kind != trailing_block {
+                        self.error(
+                            span,
+                            format!(
+                                "expected closing tag for `{}`, found `{}`",
+                                trailing_block.to_str(),
+                                kind.to_str()
+                            ),
+                        );
+                        return Err(());
+                    }
+                    exprs.extend(contents);
+                    i += offset + 1;
+                    raw_token_list_start = i;
+                }
+            }
+        }
+        if raw_token_list_start == 0 {
+            debug_assert!(exprs.is_empty());
+            return Ok(RawBodyParseResult::Plain);
+        }
+        if i != raw_token_list_start {
+            exprs.push(Rc::new(MetaExpr::Literal {
+                span: tokens[raw_token_list_start].span(),
+                value: Rc::new(MetaValue::TokenList(
+                    tokens[raw_token_list_start..i].iter().cloned().collect(),
+                )),
+            }));
+        }
+        Ok(RawBodyParseResult::Complete(exprs))
     }
 }

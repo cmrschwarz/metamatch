@@ -45,7 +45,8 @@ pub fn pretty_print_token_stream(input: TokenStream) -> String {
 #[derive(Default, clap::Subcommand)]
 enum MacroKind {
     #[default]
-    Expand,
+    Template,
+    Eval,
     // Metamatch,
     // Replicate,
 }
@@ -59,7 +60,7 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let kind = args.subcommand.unwrap_or(MacroKind::Expand);
+    let kind = args.subcommand.unwrap_or(MacroKind::Template);
 
     let sandbox = format!("{}/sandbox", env!("CARGO_MANIFEST_DIR"));
 
@@ -87,7 +88,8 @@ fn main() {
         .expect("failed to parse playground_body.rs");
 
     let result = match kind {
-        MacroKind::Expand => metamatch_impl::expand(body_tt),
+        MacroKind::Template => metamatch_impl::template(body_tt),
+        MacroKind::Eval => metamatch_impl::eval(body_tt),
         // MacroKind::Metamatch => metamatch_impl::metamatch(body_tt),
         // MacroKind::Replicate => {
         //    let attrib_str = std::fs::read_to_string(&attrib)

@@ -6,6 +6,11 @@ use proc_macro::TokenStream;
 mod implementation;
 
 #[proc_macro]
-pub fn expand(body: TokenStream) -> TokenStream {
-    implementation::expand(body)
+pub fn eval(body: TokenStream) -> TokenStream {
+    implementation::eval(body)
+}
+
+#[proc_macro]
+pub fn template(body: TokenStream) -> TokenStream {
+    implementation::template(body)
 }
