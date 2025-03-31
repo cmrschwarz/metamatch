@@ -28,6 +28,7 @@ struct BuiltinFn {
 enum MetaValue {
     TokenList(Vec<TokenTree>),
     TokenTree(TokenTree),
+    Bool(bool),
     Int(i64),
     String(Rc<str>),
     Fn(Rc<Function>),
@@ -83,6 +84,12 @@ enum MetaExpr {
     RawOutputToken {
         tok: TokenTree,
     },
+    IfExpr {
+        span: Span,
+        condition: Rc<MetaExpr>,
+        body: Vec<Rc<MetaExpr>>,
+        else_expr: Option<Rc<MetaExpr>>,
+    },
     ForExpansion {
         span: Span,
         pattern: Pattern,
@@ -128,6 +135,7 @@ impl MetaValue {
             MetaValue::BuiltinFn(_) => "builtin_fn",
             MetaValue::List(_) => "list",
             MetaValue::Tuple(_) => "tuple",
+            MetaValue::Bool(_) => "bool",
         }
     }
 }
@@ -327,6 +335,13 @@ impl Context {
                 lit.set_span(eval_span);
                 tgt.push(TokenTree::Literal(lit));
             }
+            MetaValue::Bool(value) => {
+                let ident = Ident::new(
+                    if *value { "true" } else { "false" },
+                    eval_span,
+                );
+                tgt.push(TokenTree::Ident(ident));
+            }
             MetaValue::String(value) => {
                 let mut lit = Literal::string(value);
                 lit.set_span(eval_span);
@@ -512,6 +527,31 @@ impl Context {
             MetaExpr::RawOutputToken { tok } => {
                 Ok(Rc::new(MetaValue::TokenTree(tok.clone())))
             }
+            MetaExpr::IfExpr {
+                span,
+                condition,
+                body,
+                else_expr,
+            } => {
+                let condition = self.eval(*span, condition)?;
+                let MetaValue::Bool(condition) = &*condition else {
+                    self.error(
+                        *span,
+                        format!(
+                            "if expression must result in `bool`, not `{}`",
+                            condition.type_id()
+                        ),
+                    );
+                    return Err(());
+                };
+                if *condition {
+                    self.eval_stmt_list_to_meta_val(*span, &body)
+                } else if let Some(else_expr) = else_expr {
+                    self.eval(*span, else_expr)
+                } else {
+                    Ok(self.empty_token_list.clone())
+                }
+            }
         }
     }
 
@@ -525,13 +565,13 @@ impl Context {
             MetaValue::Fn(function) => {
                 if function.params.len() != args.len() {
                     self.error(
-                                 *span,
-                                 format!(
-                                            "function `{name}` with {} parameters called with {} arguments",
-                                            function.params.len(),
-                                            args.len()
-                                        ),
-                                );
+                        *span,
+                        format!(
+                                "function `{name}` with {} parameters called with {} arguments",
+                                function.params.len(),
+                                args.len()
+                            ),
+                    );
                     return Err(());
                 }
                 self.scopes.push(Default::default());
@@ -645,6 +685,7 @@ fn parse_literal(token: &TokenTree) -> Option<(Span, Rc<MetaValue>)> {
 enum TrailingBlockKind {
     For,
     If,
+    Else,
     Let,
     Fn,
 }
@@ -656,14 +697,14 @@ impl Context {
         tokens: &'a [TokenTree],
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
         let (expr, rest, _trailing_block) =
-            self.parse_stmt_or_expr(false, parent_span, tokens)?;
+            self.parse_stmt_or_expr(parent_span, tokens, false)?;
         Ok((expr, rest))
     }
     fn parse_stmt_or_expr<'a>(
         &mut self,
-        allow_trailing_block: bool,
         parent_span: Span,
         tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
         if tokens.is_empty() {
@@ -731,26 +772,47 @@ impl Context {
                 let span = ident.span();
                 let name = Rc::from(ident.to_string());
 
-                if &*name == "let" && tokens.len() > 1 {
-                    return self.parse_let(
-                        span,
-                        &tokens[1..],
-                        allow_trailing_block,
-                    );
-                }
-                if &*name == "fn" && tokens.len() > 1 {
-                    return self.parse_fn(
-                        span,
-                        &tokens[1..],
-                        allow_trailing_block,
-                    );
-                }
-                if &*name == "for" && tokens.len() > 1 {
-                    return self.parse_for(
-                        span,
-                        &tokens[1..],
-                        allow_trailing_block,
-                    );
+                match &*name {
+                    "let" => {
+                        return self.parse_let(
+                            span,
+                            &tokens[1..],
+                            allow_trailing_block,
+                        )
+                    }
+                    "fn" => {
+                        return self.parse_fn(
+                            span,
+                            &tokens[1..],
+                            allow_trailing_block,
+                        );
+                    }
+                    "for" => {
+                        return self.parse_for(
+                            span,
+                            &tokens[1..],
+                            allow_trailing_block,
+                        );
+                    }
+                    "if" => {
+                        return self.parse_if(
+                            span,
+                            &tokens[1..],
+                            allow_trailing_block,
+                        );
+                    }
+                    "true" | "false" => {
+                        let val = &*name == "true";
+                        return Ok((
+                            Rc::new(MetaExpr::Literal {
+                                span,
+                                value: Rc::new(MetaValue::Bool(val)),
+                            }),
+                            &tokens[1..],
+                            None,
+                        ));
+                    }
+                    _ => (),
                 }
 
                 // Check if it's a function call
@@ -895,7 +957,6 @@ impl Context {
             return Err(());
         }
 
-        // Parse parameters
         let param_tokens =
             param_group.stream().into_iter().collect::<Vec<_>>();
         let mut params = Vec::new();
@@ -983,7 +1044,6 @@ impl Context {
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
-        // Parse pattern
         let (pattern, rest) = self.parse_pattern(for_span, tokens)?;
 
         let mut is_in = false;
@@ -1030,8 +1090,7 @@ impl Context {
 
                 let body_tokens =
                     body_group.stream().into_iter().collect::<Vec<_>>();
-                // errors are contained within that body, we can continue
-                // parsing either way
+
                 let body = self.parse_body(body_group.span(), &body_tokens);
                 (Some(body), &rest[1..], None)
             };
@@ -1042,6 +1101,122 @@ impl Context {
                 pattern,
                 variants_expr,
                 body,
+            }),
+            rest,
+            trailing_block,
+        ))
+    }
+
+    fn parse_if<'a>(
+        &mut self,
+        if_span: Span,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        let (condition, rest) = self.parse_expr(if_span, tokens)?;
+
+        if rest.is_empty() && allow_trailing_block {
+            return Ok((
+                Rc::new(MetaExpr::IfExpr {
+                    span: if_span,
+                    condition,
+                    body: Vec::new(),
+                    else_expr: None,
+                }),
+                rest,
+                Some(TrailingBlockKind::If),
+            ));
+        }
+
+        // Parse body
+        let Some(TokenTree::Group(body_group)) = rest.first() else {
+            self.error(
+                rest.first().unwrap_or(tokens.last().unwrap()).span(),
+                "expected if expression body",
+            );
+            return Err(());
+        };
+
+        if body_group.delimiter() != Delimiter::Brace {
+            self.error(
+                body_group.span(),
+                "expected braces around if expression body",
+            );
+            return Err(());
+        }
+
+        let body_tokens = body_group.stream().into_iter().collect::<Vec<_>>();
+        // errors are contained within that body, we can continue
+        // parsing either way
+        let body = self.parse_body(body_group.span(), &body_tokens);
+
+        let mut rest = &rest[1..];
+
+        let mut has_else = false;
+        if let Some(TokenTree::Ident(i)) = rest.first() {
+            has_else = i.to_string() == "else";
+        }
+
+        if !has_else || (rest.len() == 1 && allow_trailing_block) {
+            return Ok((
+                Rc::new(MetaExpr::IfExpr {
+                    span: if_span,
+                    condition,
+                    body,
+                    else_expr: None,
+                }),
+                rest,
+                if has_else {
+                    Some(TrailingBlockKind::Else)
+                } else {
+                    None
+                },
+            ));
+        }
+
+        let (else_expr, trailing_block);
+
+        let Some(tok) = rest.get(1) else {
+            self.error(rest[0].span(), "expected `if` or block after `else`");
+            return Err(());
+        };
+        if let TokenTree::Ident(i) = tok {
+            if i.to_string() != "if" {
+                self.error(i.span(), "expected `if` or block after `else`");
+                return Err(());
+            }
+            let (expr, rest_if, trailing_block_if) =
+                self.parse_if(i.span(), &rest[2..], allow_trailing_block)?;
+            rest = rest_if;
+            else_expr = Some(expr);
+            trailing_block = trailing_block_if;
+        } else {
+            let mut block = None;
+            if let TokenTree::Group(g) = tok {
+                if g.delimiter() == Delimiter::Brace {
+                    block = Some(g);
+                }
+            };
+            let Some(block) = block else {
+                self.error(tok.span(), "expected `if` or block after `else`");
+                return Err(());
+            };
+            let block_content = block.stream().into_iter().collect::<Vec<_>>();
+            rest = &rest[2..];
+            else_expr = Some(Rc::new(MetaExpr::Scope {
+                span: block.span(),
+                contents: self.parse_body(block.span(), &block_content),
+            }));
+            trailing_block = None;
+        }
+
+        Ok((
+            Rc::new(MetaExpr::IfExpr {
+                span: if_span,
+                condition,
+                body,
+                else_expr,
             }),
             rest,
             trailing_block,
