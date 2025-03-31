@@ -2,7 +2,7 @@ use proc_macro::{
     Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream,
     TokenTree,
 };
-use std::{cell::RefCell, collections::HashMap, process::id, rc::Rc};
+use std::{collections::HashMap, rc::Rc};
 
 type Result<T, E = ()> = std::result::Result<T, E>;
 
@@ -108,6 +108,7 @@ enum MetaExpr {
 }
 
 struct Binding {
+    #[allow(unused)] // Todo: im sure we will need this at some point?
     span: Span,
     value: Rc<MetaValue>,
 }
@@ -153,6 +154,24 @@ impl MetaValue {
     }
 }
 
+impl MetaExpr {
+    fn span(&self) -> Span {
+        *match self {
+            MetaExpr::Literal { span, .. } => span,
+            MetaExpr::Ident { span, .. } => span,
+            MetaExpr::LetBinding { span, .. } => span,
+            MetaExpr::FnCall { span, .. } => span,
+            MetaExpr::FnDecl(function) => &function.span,
+            MetaExpr::RawOutputGroup { span, .. } => span,
+            MetaExpr::IfExpr { span, .. } => span,
+            MetaExpr::ForExpansion { span, .. } => span,
+            MetaExpr::Scope { span, .. } => span,
+            MetaExpr::List { span, .. } => span,
+            MetaExpr::Tuple { span, .. } => span,
+        }
+    }
+}
+
 impl TrailingBlockKind {
     fn to_str(&self) -> &'static str {
         match self {
@@ -187,7 +206,7 @@ pub fn template(body: TokenStream) -> TokenStream {
             TokenStream::from_iter(body)
         }
         Ok(RawBodyParseResult::UnmatchedEnd { span, .. }) => {
-            ctx.error(span, format!("unexpected closing tag"));
+            ctx.error(span, "unexpected closing tag");
             ctx.expand_errors()
         }
         Err(_) => ctx.expand_errors(),
@@ -550,14 +569,14 @@ impl Context {
                 );
                 Ok(self.empty_token_list.clone())
             }
-            MetaExpr::List { span, exprs } => {
+            MetaExpr::List { span: _, exprs } => {
                 let mut elements = Vec::new();
                 for e in exprs {
                     elements.push(self.eval(e)?);
                 }
                 Ok(Rc::new(MetaValue::List(elements)))
             }
-            MetaExpr::Tuple { span, exprs } => {
+            MetaExpr::Tuple { span: _, exprs } => {
                 let mut elements = Vec::new();
                 for e in exprs {
                     elements.push(self.eval(e)?);
@@ -570,13 +589,13 @@ impl Context {
                 body,
                 else_expr,
             } => {
-                let condition = self.eval(condition)?;
-                let MetaValue::Bool(condition) = &*condition else {
+                let condition_val = self.eval(condition)?;
+                let MetaValue::Bool(condition) = &*condition_val else {
                     self.error(
-                        *span,
+                        condition.span(),
                         format!(
                             "if expression must result in `bool`, not `{}`",
-                            condition.type_id()
+                            condition_val.type_id()
                         ),
                     );
                     return Err(());
