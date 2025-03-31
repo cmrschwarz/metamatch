@@ -906,6 +906,33 @@ impl Context {
         });
     }
 
+    fn insert_dummy_binding(&mut self, name: Rc<str>) {
+        // dummy binding during parsing so raw blocks can detect identifiers
+        self.scopes.last_mut().unwrap().insert(
+            name.clone(),
+            Binding {
+                span: Span::call_site(),
+                value: self.empty_token_list.clone(),
+            },
+        );
+    }
+
+    fn insert_dummy_bindings_for_pattern(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::Ident(i) => self.insert_dummy_binding(i.name.clone()),
+            Pattern::Tuple { span: _, elems } => {
+                for pat in elems {
+                    self.insert_dummy_bindings_for_pattern(pat);
+                }
+            }
+            Pattern::List { span: _, elems } => {
+                for pat in elems {
+                    self.insert_dummy_bindings_for_pattern(pat);
+                }
+            }
+        }
+    }
+
     fn parse_let<'a>(
         &mut self,
         let_span: Span,
@@ -921,6 +948,8 @@ impl Context {
         let (name_span, name) = parse_ident(&tokens[0]).ok_or_else(|| {
             self.error(tokens[0].span(), "expected identifier");
         })?;
+
+        self.insert_dummy_binding(name.clone());
 
         if tokens.len() == 1 && allow_trailing_block {
             return Ok((
@@ -1001,6 +1030,9 @@ impl Context {
         let mut params = Vec::new();
         let mut rest = &param_tokens[..];
 
+        // for dummy bindings
+        self.scopes.push(Default::default());
+
         while !rest.is_empty() {
             let (param_span, param_name) =
                 parse_ident(&rest[0]).ok_or_else(|| {
@@ -1009,6 +1041,7 @@ impl Context {
                         "expected parameter name".to_owned(),
                     );
                 })?;
+            self.insert_dummy_binding(param_name.clone());
 
             params.push(BindingParameter {
                 span: param_span,
@@ -1061,6 +1094,9 @@ impl Context {
             let body_tokens =
                 body_group.stream().into_iter().collect::<Vec<_>>();
             let body = self.parse_body_no_trailing(name_span, &body_tokens);
+
+            self.scopes.pop();
+
             (body, &rest[1..], None)
         };
 
@@ -1132,8 +1168,15 @@ impl Context {
             let body_tokens =
                 body_group.stream().into_iter().collect::<Vec<_>>();
 
+            // for dummy bindings
+            self.scopes.push(Default::default());
+
+            self.insert_dummy_bindings_for_pattern(&pattern);
+
             body =
                 self.parse_body_no_trailing(body_group.span(), &body_tokens);
+
+            self.scopes.pop();
             final_rest = &rest[1..];
             trailing_block = None;
         };
@@ -1158,6 +1201,9 @@ impl Context {
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
         let (condition, rest) = self.parse_expr(if_span, tokens)?;
+
+        // for dummy bindings
+        self.scopes.push(Default::default());
 
         if rest.is_empty() && allow_trailing_block {
             return Ok((
@@ -1190,10 +1236,11 @@ impl Context {
         }
 
         let body_tokens = body_group.stream().into_iter().collect::<Vec<_>>();
-        // errors are contained within that body, we can continue
-        // parsing either way
+
         let body =
             self.parse_body_no_trailing(body_group.span(), &body_tokens);
+
+        self.scopes.pop();
 
         let mut rest = &rest[1..];
 
@@ -1472,8 +1519,8 @@ impl Context {
         (exprs, None)
     }
 
-    fn append_trailing_body_to_expr(
-        &self,
+    fn close_expr_after_trailing_body(
+        &mut self,
         exprs: &mut [Rc<MetaExpr>],
         kind: TrailingBlockKind,
         contents: Vec<Rc<MetaExpr>>,
@@ -1490,12 +1537,14 @@ impl Context {
                     unreachable!()
                 };
                 *body = contents;
+                self.scopes.pop();
             }
             TrailingBlockKind::If => {
                 let MetaExpr::IfExpr { body, .. } = expr else {
                     unreachable!()
                 };
                 *body = contents;
+                self.scopes.pop();
             }
             TrailingBlockKind::Let => {
                 let MetaExpr::LetBinding {
@@ -1520,6 +1569,7 @@ impl Context {
                 // we don't lookup identifiers until evaluation
                 // so during parsing this rc will always have a refcount of one
                 Rc::get_mut(fd).unwrap().body = contents;
+                self.scopes.pop();
             }
             // else is handled separately
             TrailingBlockKind::Else => unreachable!(),
@@ -1531,6 +1581,22 @@ impl Context {
         parent_span: Span,
         tokens: &[TokenTree],
     ) -> Result<RawBodyParseResult> {
+        fn append_previous(
+            exprs: &mut Vec<Rc<MetaExpr>>,
+            tokens: &[TokenTree],
+            raw_token_list_start: usize,
+            offset: usize,
+        ) {
+            if raw_token_list_start != offset {
+                exprs.push(Rc::new(MetaExpr::Literal {
+                    span: tokens[raw_token_list_start].span(),
+                    value: Rc::new(MetaValue::TokenList(
+                        tokens[raw_token_list_start..offset].to_vec(),
+                    )),
+                }));
+            }
+        }
+
         let mut exprs = Vec::new();
 
         let mut raw_token_list_start = 0;
@@ -1541,6 +1607,22 @@ impl Context {
             let offset = i;
             i += 1;
             let t = &tokens[offset];
+            if let TokenTree::Ident(ident) = t {
+                let name = ident.to_string();
+                if self.lookup(&name).is_some() {
+                    append_previous(
+                        &mut exprs,
+                        tokens,
+                        raw_token_list_start,
+                        offset,
+                    );
+                    exprs.push(Rc::new(MetaExpr::Ident {
+                        span: ident.span(),
+                        name: Rc::from(name),
+                    }));
+                    raw_token_list_start = i;
+                }
+            }
             let TokenTree::Group(group) = t else {
                 continue;
             };
@@ -1567,15 +1649,12 @@ impl Context {
                 match self.parse_raw_body(group.span(), &group_tokens) {
                     Err(()) | Ok(RawBodyParseResult::Plain) => (),
                     Ok(RawBodyParseResult::Complete(body_exprs)) => {
-                        if raw_token_list_start != offset {
-                            exprs.push(Rc::new(MetaExpr::Literal {
-                                span: tokens[raw_token_list_start].span(),
-                                value: Rc::new(MetaValue::TokenList(
-                                    tokens[raw_token_list_start..offset]
-                                        .to_vec(),
-                                )),
-                            }));
-                        }
+                        append_previous(
+                            &mut exprs,
+                            tokens,
+                            raw_token_list_start,
+                            offset,
+                        );
                         exprs.push(Rc::new(MetaExpr::RawOutputGroup {
                             span: group.span(),
                             delimiter: group.delimiter(),
@@ -1592,14 +1671,12 @@ impl Context {
             let first_tok = group_tokens.get(1);
             if let Some(TokenTree::Ident(ident)) = first_tok {
                 if ident.to_string() == "else" {
-                    if raw_token_list_start != offset {
-                        exprs.push(Rc::new(MetaExpr::Literal {
-                            span: tokens[raw_token_list_start].span(),
-                            value: Rc::new(MetaValue::TokenList(
-                                tokens[raw_token_list_start..offset].to_vec(),
-                            )),
-                        }));
-                    }
+                    append_previous(
+                        &mut exprs,
+                        tokens,
+                        raw_token_list_start,
+                        offset,
+                    );
                     return Ok(RawBodyParseResult::UnmatchedEnd {
                         span: group.span(),
                         kind: TrailingBlockKind::Else,
@@ -1640,14 +1717,12 @@ impl Context {
                             return Err(());
                         }
                     };
-                    if raw_token_list_start != offset {
-                        exprs.push(Rc::new(MetaExpr::Literal {
-                            span: tokens[raw_token_list_start].span(),
-                            value: Rc::new(MetaValue::TokenList(
-                                tokens[raw_token_list_start..offset].to_vec(),
-                            )),
-                        }));
-                    }
+                    append_previous(
+                        &mut exprs,
+                        tokens,
+                        raw_token_list_start,
+                        offset,
+                    );
                     return Ok(RawBodyParseResult::UnmatchedEnd {
                         span: group.span(),
                         kind,
@@ -1706,7 +1781,7 @@ impl Context {
                         );
                         return Err(());
                     }
-                    self.append_trailing_body_to_expr(
+                    self.close_expr_after_trailing_body(
                         &mut exprs, kind, contents,
                     );
                     i += offset + 1;
