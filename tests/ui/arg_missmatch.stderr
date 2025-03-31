@@ -1,5 +1,0 @@
-error: expected 2 replacements, got 1
- --> tests/ui/arg_missmatch.rs:7:41
-  |
-7 |             #[expand((A, B) in [(1, 2), (3)])]
-  |                                         ^^^
