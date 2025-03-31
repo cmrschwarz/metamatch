@@ -30,7 +30,7 @@ fn let_bindings() {
 #[test]
 fn raw_expr() {
     let res = template! {
-        [<for X in [1, raw(+2), raw(+3)]>]
+        [<for X in [1, raw!(+2), raw!(+3)]>]
             X
         [</for>]
     };
@@ -41,9 +41,9 @@ fn raw_expr() {
 #[test]
 fn raw_scope() {
     let res = eval! {
-        raw(0);
+        raw!(0);
         for X in [1, 2, 3] {
-            raw(+ X)
+            raw!(+ X)
         }
     };
 
@@ -53,7 +53,7 @@ fn raw_scope() {
 #[test]
 fn raw_block() {
     let res = eval! {
-        raw(0);
+        raw!(0);
         for X in [1, 2, 3] {
             [<raw>]
                 +X

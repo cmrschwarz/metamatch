@@ -1018,7 +1018,7 @@ impl Context {
                         );
                     }
                     "raw" => {
-                        return self.parse_raw(
+                        return self.parse_raw_expr(
                             span,
                             &tokens[1..],
                             allow_trailing_block,
@@ -1187,13 +1187,27 @@ impl Context {
         ))
     }
 
-    fn parse_raw<'a>(
+    fn parse_raw_expr<'a>(
         &mut self,
         raw_span: Span,
         tokens: &'a [TokenTree],
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
+        let mut has_exclam = false;
+        if let Some(TokenTree::Punct(p)) = tokens.first() {
+            has_exclam = p.as_char() == '!';
+        }
+        if !has_exclam {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(raw_span),
+                "expected `!` after `raw`",
+            );
+            return Err(());
+        }
+
+        let tokens = &tokens[1..];
+
         // for dummy bindings
         self.scopes.push(Default::default());
 
