@@ -5,7 +5,7 @@ fn basic_enum_variants() {
     template! {
         enum Foo{
             [<for (i, VARIANT) in enumerate([A, B, C])>]
-                VARIANT,
+                VARIANT = i,
             [</for>]
         }
     };
@@ -44,6 +44,20 @@ fn raw_scope() {
         raw(0);
         for X in [1, 2, 3] {
             raw(+ X)
+        }
+    };
+
+    assert_eq!(res, 6);
+}
+
+#[test]
+fn raw_block() {
+    let res = eval! {
+        raw(0);
+        for X in [1, 2, 3] {
+            [<raw>]
+                +X
+            [</raw>]
         }
     };
 
