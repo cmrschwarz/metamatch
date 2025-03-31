@@ -1,4 +1,4 @@
-use metamatch::template;
+use metamatch::{eval, template};
 
 #[test]
 fn basic_enum_variants() {
@@ -25,6 +25,29 @@ fn let_bindings() {
     };
 
     let _ = [Foo::A, Foo::B, Foo::C];
+}
+
+#[test]
+fn raw_expr() {
+    let res = template! {
+        [<for X in [1, raw(+2), raw(+3)]>]
+            X
+        [</for>]
+    };
+
+    assert_eq!(res, 6);
+}
+
+#[test]
+fn raw_scope() {
+    let res = eval! {
+        raw(0);
+        for X in [1, 2, 3] {
+            raw(+ X)
+        }
+    };
+
+    assert_eq!(res, 6);
 }
 
 #[test]

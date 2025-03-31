@@ -4,6 +4,18 @@ use proc_macro::{
 };
 use std::{collections::HashMap, rc::Rc};
 
+trait IntoIterIntoVec {
+    type Item;
+    fn into_vec(self) -> Vec<Self::Item>;
+}
+impl<I: IntoIterator> IntoIterIntoVec for I {
+    type Item = I::Item;
+
+    fn into_vec(self) -> Vec<Self::Item> {
+        self.into_iter().collect()
+    }
+}
+
 type Result<T, E = ()> = std::result::Result<T, E>;
 
 struct MetaError {
@@ -95,7 +107,7 @@ enum MetaExpr {
     },
     Scope {
         span: Span,
-        contents: Vec<Rc<MetaExpr>>,
+        body: Vec<Rc<MetaExpr>>,
     },
     List {
         span: Span,
@@ -125,6 +137,7 @@ enum TrailingBlockKind {
     If,
     Else,
     Let,
+    Raw,
     Fn,
 }
 
@@ -180,37 +193,30 @@ impl TrailingBlockKind {
             TrailingBlockKind::Else => "else",
             TrailingBlockKind::Let => "let",
             TrailingBlockKind::Fn => "fn",
+            TrailingBlockKind::Raw => "raw",
         }
     }
 }
 
 pub fn eval(body: TokenStream) -> TokenStream {
-    let body = body.into_iter().collect::<Vec<_>>();
+    let body = body.into_vec();
     let mut ctx = Context::default();
 
-    let expr = ctx.parse_body_no_trailing(Span::call_site(), &body);
+    let expr = ctx.parse_body_deny_trailing(Span::call_site(), &body);
 
     ctx.eval_to_token_stream(Span::call_site(), &expr)
 }
 
 pub fn template(body: TokenStream) -> TokenStream {
-    let body = body.into_iter().collect::<Vec<_>>();
+    let body = body.into_vec();
     let mut ctx = Context::default();
 
-    match ctx.parse_raw_body(Span::call_site(), &body) {
-        Ok(RawBodyParseResult::Complete(expr)) => {
-            ctx.eval_to_token_stream(Span::call_site(), &expr)
-        }
-        Ok(RawBodyParseResult::Plain) => {
-            // no meta exprs found, so we return the raw body
-            TokenStream::from_iter(body)
-        }
-        Ok(RawBodyParseResult::UnmatchedEnd { span, .. }) => {
-            ctx.error(span, "unexpected closing tag");
-            ctx.expand_errors()
-        }
-        Err(_) => ctx.expand_errors(),
-    }
+    let Ok(exprs) = ctx.parse_raw_body_to_exprs(Span::call_site(), &body)
+    else {
+        return ctx.expand_errors();
+    };
+
+    ctx.eval_to_token_stream(Span::call_site(), &exprs)
 }
 
 fn comma_token(span: Span) -> TokenTree {
@@ -622,7 +628,10 @@ impl Context {
                 }
                 Ok(Rc::new(MetaValue::Tokens(res)))
             }
-            MetaExpr::Scope { span, contents } => {
+            MetaExpr::Scope {
+                span,
+                body: contents,
+            } => {
                 self.scopes.push(Default::default());
                 let res = self.eval_stmt_list_to_meta_val(*span, contents);
                 self.scopes.pop();
@@ -832,7 +841,7 @@ impl Context {
         }
         match &tokens[0] {
             TokenTree::Group(group) => {
-                let content = group.stream().into_iter().collect::<Vec<_>>();
+                let content = group.stream().into_vec();
                 match group.delimiter() {
                     Delimiter::Parenthesis => {
                         let list = self.parse_comma_separated(
@@ -879,7 +888,7 @@ impl Context {
                     Delimiter::Brace => Ok((
                         Rc::new(MetaExpr::Scope {
                             span: group.span(),
-                            contents: self.parse_body_no_trailing(
+                            body: self.parse_body_deny_trailing(
                                 group.span(),
                                 &content,
                             ),
@@ -923,6 +932,13 @@ impl Context {
                             allow_trailing_block,
                         );
                     }
+                    "raw" => {
+                        return self.parse_raw(
+                            span,
+                            &tokens[1..],
+                            allow_trailing_block,
+                        )
+                    }
                     "true" | "false" => {
                         let val = &*name == "true";
                         return Ok((
@@ -941,8 +957,7 @@ impl Context {
                 if tokens.len() > 1 {
                     if let TokenTree::Group(group) = &tokens[1] {
                         if group.delimiter() == Delimiter::Parenthesis {
-                            let args =
-                                group.stream().into_iter().collect::<Vec<_>>();
+                            let args = group.stream().into_vec();
                             let fn_args = self.parse_comma_separated(
                                 Delimiter::Parenthesis,
                                 group.span(),
@@ -1031,7 +1046,7 @@ impl Context {
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
         if tokens.is_empty() {
-            self.error(let_span, "expected identifier after let");
+            self.error(let_span, "expected identifier after `let`");
             return Err(());
         }
 
@@ -1087,6 +1102,53 @@ impl Context {
         ))
     }
 
+    fn parse_raw<'a>(
+        &mut self,
+        raw_span: Span,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        // for dummy bindings
+        self.scopes.push(Default::default());
+
+        if tokens.is_empty() && allow_trailing_block {
+            return Ok((
+                Rc::new(MetaExpr::Scope {
+                    span: raw_span,
+                    body: Vec::new(),
+                }),
+                &[],
+                Some(TrailingBlockKind::Raw),
+            ));
+        }
+
+        let Some(TokenTree::Group(p)) = tokens.first() else {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(raw_span),
+                "expected block after `raw`",
+            );
+            return Err(());
+        };
+
+        let raw_block_contents = p.stream().into_vec();
+
+        let contents = self
+            .parse_raw_body_to_exprs(raw_span, &raw_block_contents)
+            .unwrap_or_default(); // we continue in case of a nested error
+
+        self.scopes.pop();
+
+        Ok((
+            Rc::new(MetaExpr::Scope {
+                span: raw_span,
+                body: contents,
+            }),
+            &tokens[1..],
+            None,
+        ))
+    }
+
     fn parse_fn<'a>(
         &mut self,
         fn_span: Span,
@@ -1115,8 +1177,7 @@ impl Context {
             return Err(());
         }
 
-        let param_tokens =
-            param_group.stream().into_iter().collect::<Vec<_>>();
+        let param_tokens = param_group.stream().into_vec();
         let mut params = Vec::new();
         let mut rest = &param_tokens[..];
 
@@ -1181,9 +1242,8 @@ impl Context {
                 return Err(());
             }
 
-            let body_tokens =
-                body_group.stream().into_iter().collect::<Vec<_>>();
-            let body = self.parse_body_no_trailing(name_span, &body_tokens);
+            let body_tokens = body_group.stream().into_vec();
+            let body = self.parse_body_deny_trailing(name_span, &body_tokens);
 
             self.scopes.pop();
 
@@ -1260,11 +1320,10 @@ impl Context {
                 return Err(());
             }
 
-            let body_tokens =
-                body_group.stream().into_iter().collect::<Vec<_>>();
+            let body_tokens = body_group.stream().into_vec();
 
             body =
-                self.parse_body_no_trailing(body_group.span(), &body_tokens);
+                self.parse_body_deny_trailing(body_group.span(), &body_tokens);
 
             self.scopes.pop();
             final_rest = &rest[1..];
@@ -1325,10 +1384,10 @@ impl Context {
             return Err(());
         }
 
-        let body_tokens = body_group.stream().into_iter().collect::<Vec<_>>();
+        let body_tokens = body_group.stream().into_vec();
 
         let body =
-            self.parse_body_no_trailing(body_group.span(), &body_tokens);
+            self.parse_body_deny_trailing(body_group.span(), &body_tokens);
 
         self.scopes.pop();
 
@@ -1383,12 +1442,12 @@ impl Context {
                 self.error(tok.span(), "expected `if` or block after `else`");
                 return Err(());
             };
-            let block_content = block.stream().into_iter().collect::<Vec<_>>();
+            let block_content = block.stream().into_vec();
             rest = &rest[2..];
             else_expr = Some(Rc::new(MetaExpr::Scope {
                 span: block.span(),
-                contents: self
-                    .parse_body_no_trailing(block.span(), &block_content),
+                body: self
+                    .parse_body_deny_trailing(block.span(), &block_content),
             }));
             trailing_block = None;
         }
@@ -1410,7 +1469,7 @@ impl Context {
         parent_span: Span,
         group: &Group,
     ) -> Pattern {
-        let tokens = group.stream().into_iter().collect::<Vec<_>>();
+        let tokens = group.stream().into_vec();
         let mut patterns = Vec::new();
         let mut rest = &tokens[..];
 
@@ -1554,7 +1613,7 @@ impl Context {
         Ok((exprs, final_comma))
     }
 
-    fn parse_body_no_trailing(
+    fn parse_body_deny_trailing(
         &mut self,
         parent_span: Span,
         tokens: &[TokenTree],
@@ -1648,7 +1707,7 @@ impl Context {
                 // TODO: this span is wrong but Span::join is not stable...
                 *let_expr = Some(Rc::new(MetaExpr::Scope {
                     span: *span,
-                    contents,
+                    body: contents,
                 }))
             }
             TrailingBlockKind::Fn => {
@@ -1661,8 +1720,52 @@ impl Context {
                 Rc::get_mut(fd).unwrap().body = contents;
                 self.scopes.pop();
             }
-            // else is handled separately
             TrailingBlockKind::Else => unreachable!(),
+            TrailingBlockKind::Raw => {
+                let MetaExpr::Scope { body, .. } = expr else {
+                    unreachable!()
+                };
+                *body = contents;
+                self.scopes.pop();
+            }
+        }
+    }
+
+    fn parse_raw_body_to_exprs(
+        &mut self,
+        parent_span: Span,
+        tokens: &[TokenTree],
+    ) -> Result<Vec<Rc<MetaExpr>>> {
+        match self.parse_raw_body_deny_unmatched(parent_span, tokens)? {
+            None => Ok(vec![Rc::new(MetaExpr::Literal {
+                span: parent_span,
+                value: Rc::new(MetaValue::Tokens(tokens.to_vec())),
+            })]),
+            Some(exprs) => Ok(exprs),
+        }
+    }
+
+    fn parse_raw_body_deny_unmatched(
+        &mut self,
+        parent_span: Span,
+        tokens: &[TokenTree],
+    ) -> Result<Option<Vec<Rc<MetaExpr>>>> {
+        match self.parse_raw_body(parent_span, tokens) {
+            Ok(RawBodyParseResult::Plain) => Ok(None),
+            Ok(RawBodyParseResult::Complete(exprs)) => Ok(Some(exprs)),
+            Ok(RawBodyParseResult::UnmatchedEnd {
+                span,
+                kind,
+                offset: _,
+                contents: _,
+            }) => {
+                self.error(
+                    span,
+                    format!("unmatched closing tag `/{}`", kind.to_str()),
+                );
+                Err(())
+            }
+            Err(()) => Err(()),
         }
     }
 
@@ -1716,7 +1819,7 @@ impl Context {
             let TokenTree::Group(group) = t else {
                 continue;
             };
-            let group_tokens = group.stream().into_iter().collect::<Vec<_>>();
+            let group_tokens = group.stream().into_vec();
             let mut is_template = true;
             if group.delimiter() != Delimiter::Bracket {
                 is_template = false;
@@ -1736,9 +1839,11 @@ impl Context {
                 is_template = false;
             }
             if !is_template {
-                match self.parse_raw_body(group.span(), &group_tokens) {
-                    Err(()) | Ok(RawBodyParseResult::Plain) => (),
-                    Ok(RawBodyParseResult::Complete(body_exprs)) => {
+                match self
+                    .parse_raw_body_deny_unmatched(group.span(), &group_tokens)
+                {
+                    Err(()) | Ok(None) => (),
+                    Ok(Some(body_exprs)) => {
                         append_previous(
                             &mut exprs,
                             tokens,
@@ -1751,9 +1856,6 @@ impl Context {
                             contents: body_exprs,
                         }));
                         raw_token_list_start = i;
-                    }
-                    Ok(RawBodyParseResult::UnmatchedEnd { span, .. }) => {
-                        self.error(span, "unexpected closing tag");
                     }
                 }
                 continue;
