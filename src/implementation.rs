@@ -67,7 +67,7 @@ enum MetaExpr {
     LetBinding {
         span: Span,
         name: Rc<str>,
-        expr: Rc<MetaExpr>,
+        expr: Option<Rc<MetaExpr>>,
     },
     FnCall {
         span: Span,
@@ -419,7 +419,7 @@ impl Context {
             MetaExpr::Literal { span: _, value } => Ok(value.clone()),
             MetaExpr::Ident { span, name } => self.lookup_throw(*span, name),
             MetaExpr::LetBinding { span, expr, name } => {
-                let val = self.eval(*span, expr)?;
+                let val = self.eval(*span, expr.as_ref().unwrap())?;
                 self.insert_binding(*span, name.clone(), val);
                 Ok(self.empty_token_list.clone())
             }
@@ -642,12 +642,30 @@ fn parse_literal(token: &TokenTree) -> Option<(Span, Rc<MetaValue>)> {
     }
 }
 
+enum TrailingBlockKind {
+    For,
+    If,
+    Let,
+    Fn,
+}
+
 impl Context {
     fn parse_expr<'a>(
         &mut self,
         parent_span: Span,
         tokens: &'a [TokenTree],
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
+        let (expr, rest, _trailing_block) =
+            self.parse_stmt_or_expr(false, parent_span, tokens)?;
+        Ok((expr, rest))
+    }
+    fn parse_stmt_or_expr<'a>(
+        &mut self,
+        allow_trailing_block: bool,
+        parent_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
         if tokens.is_empty() {
             self.error(parent_span, "unexpected end of input".to_owned());
             return Err(());
@@ -668,6 +686,7 @@ impl Context {
                                 exprs: list,
                             }),
                             &tokens[1..],
+                            None,
                         ))
                     }
                     Delimiter::Bracket => {
@@ -682,6 +701,7 @@ impl Context {
                                 exprs: list,
                             }),
                             &tokens[1..],
+                            None,
                         ))
                     }
                     Delimiter::None => {
@@ -694,7 +714,7 @@ impl Context {
                             );
                             return Err(());
                         }
-                        Ok((expr, &tokens[1..]))
+                        Ok((expr, &tokens[1..], None))
                     }
                     Delimiter::Brace => Ok((
                         Rc::new(MetaExpr::Scope {
@@ -702,6 +722,7 @@ impl Context {
                             contents: self.parse_body(group.span(), &content),
                         }),
                         &tokens[1..],
+                        None,
                     )),
                 }
             }
@@ -711,13 +732,25 @@ impl Context {
                 let name = Rc::from(ident.to_string());
 
                 if &*name == "let" && tokens.len() > 1 {
-                    return self.parse_let(span, &tokens[1..]);
+                    return self.parse_let(
+                        span,
+                        &tokens[1..],
+                        allow_trailing_block,
+                    );
                 }
                 if &*name == "fn" && tokens.len() > 1 {
-                    return self.parse_fn(span, &tokens[1..]);
+                    return self.parse_fn(
+                        span,
+                        &tokens[1..],
+                        allow_trailing_block,
+                    );
                 }
                 if &*name == "for" && tokens.len() > 1 {
-                    return self.parse_for(span, &tokens[1..]);
+                    return self.parse_for(
+                        span,
+                        &tokens[1..],
+                        allow_trailing_block,
+                    );
                 }
 
                 // Check if it's a function call
@@ -738,12 +771,17 @@ impl Context {
                                     args: fn_args,
                                 }),
                                 &tokens[2..],
+                                None,
                             ));
                         }
                     }
                 }
 
-                Ok((Rc::new(MetaExpr::Ident { span, name }), &tokens[1..]))
+                Ok((
+                    Rc::new(MetaExpr::Ident { span, name }),
+                    &tokens[1..],
+                    None,
+                ))
             }
 
             TokenTree::Literal(lit) => {
@@ -752,6 +790,7 @@ impl Context {
                     Ok((
                         Rc::new(MetaExpr::Literal { span, value }),
                         &tokens[1..],
+                        None,
                     ))
                 } else {
                     self.error(span, "invalid literal".to_owned());
@@ -777,7 +816,9 @@ impl Context {
         &mut self,
         let_span: Span,
         tokens: &'a [TokenTree],
-    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
+        allow_trailing_block: bool,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
         if tokens.is_empty() {
             self.error(let_span, "expected identifier after let");
             return Err(());
@@ -787,22 +828,33 @@ impl Context {
             self.error(tokens[0].span(), "expected identifier");
         })?;
 
-        let mut is_eq = false;
+        let mut eq_span = None;
         if let Some(TokenTree::Punct(p)) = tokens.get(1) {
             if p.as_char() == '=' {
-                is_eq = true;
+                eq_span = Some(p.span());
             }
         }
 
-        if !is_eq {
+        let Some(eq_span) = eq_span else {
             self.error(
                 tokens.get(1).map(|t| t.span()).unwrap_or(name_span),
                 "expected = after let identifier",
             );
             return Err(());
-        }
+        };
 
-        let (expr, rest) = self.parse_expr(let_span, &tokens[2..])?;
+        let rest = &tokens[2..];
+
+        let (expr, rest, trailing_block) = if tokens.is_empty() {
+            if !allow_trailing_block {
+                self.error(eq_span, "expected expression after `=`");
+                return Err(());
+            }
+            (None, rest, Some(TrailingBlockKind::Let))
+        } else {
+            let (expr, rest) = self.parse_expr(let_span, rest)?;
+            (Some(expr), rest, None)
+        };
 
         Ok((
             Rc::new(MetaExpr::LetBinding {
@@ -811,6 +863,7 @@ impl Context {
                 expr,
             }),
             rest,
+            trailing_block,
         ))
     }
 
@@ -818,7 +871,9 @@ impl Context {
         &mut self,
         fn_span: Span,
         tokens: &'a [TokenTree],
-    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
+        allow_trailing_block: bool,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
         if tokens.is_empty() {
             self.error(fn_span, "expected identifier after `fn`");
         }
@@ -878,27 +933,36 @@ impl Context {
             }
         }
 
-        // Parse function body
-        if tokens.len() < 3 {
-            self.error(param_group.span(), "expected function body");
-            return Err(());
-        }
+        let rest = &tokens[3..];
 
-        let TokenTree::Group(body_group) = &tokens[2] else {
-            self.error(tokens[2].span(), "expected function body");
-            return Err(());
+        let (body, rest, trailing_block) = if rest.is_empty() {
+            if !allow_trailing_block {
+                self.error(
+                    tokens[2].span(),
+                    "expected function body after parameters",
+                );
+                return Err(());
+            }
+            (Vec::new(), rest, Some(TrailingBlockKind::Fn))
+        } else {
+            let TokenTree::Group(body_group) = &rest[0] else {
+                self.error(tokens[0].span(), "expected function body");
+                return Err(());
+            };
+
+            if body_group.delimiter() != Delimiter::Brace {
+                self.error(
+                    body_group.span(),
+                    "expected braces around function body",
+                );
+                return Err(());
+            }
+
+            let body_tokens =
+                body_group.stream().into_iter().collect::<Vec<_>>();
+            let body = self.parse_body(name_span, &body_tokens);
+            (body, &rest[1..], None)
         };
-
-        if body_group.delimiter() != Delimiter::Brace {
-            self.error(
-                body_group.span(),
-                "expected braces around function body",
-            );
-            return Err(());
-        }
-
-        let body_tokens = body_group.stream().into_iter().collect::<Vec<_>>();
-        let body = self.parse_body(name_span, &body_tokens);
 
         Ok((
             Rc::new(MetaExpr::FnDecl(Rc::new(Function {
@@ -907,7 +971,8 @@ impl Context {
                 params,
                 body,
             }))),
-            &tokens[3..],
+            rest,
+            trailing_block,
         ))
     }
 
@@ -915,7 +980,9 @@ impl Context {
         &mut self,
         for_span: Span,
         tokens: &'a [TokenTree],
-    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
+        allow_trailing_block: bool,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
         // Parse pattern
         let (pattern, rest) = self.parse_pattern(for_span, tokens)?;
 
@@ -940,36 +1007,44 @@ impl Context {
 
         let (variants_expr, rest) = self.parse_expr(for_span, &rest[1..])?;
 
-        // Parse body
-        let Some(TokenTree::Group(body_group)) = rest.first() else {
-            self.error(
-                rest.first().unwrap_or(last_tok).span(),
-                "expected for loop body",
-            );
-            return Err(());
-        };
+        let (body, rest, trailing_block) =
+            if rest.is_empty() && allow_trailing_block {
+                (None, rest, Some(TrailingBlockKind::For))
+            } else {
+                // Parse body
+                let Some(TokenTree::Group(body_group)) = rest.first() else {
+                    self.error(
+                        rest.first().unwrap_or(last_tok).span(),
+                        "expected for loop body",
+                    );
+                    return Err(());
+                };
 
-        if body_group.delimiter() != Delimiter::Brace {
-            self.error(
-                body_group.span(),
-                "expected braces around for loop body",
-            );
-            return Err(());
-        }
+                if body_group.delimiter() != Delimiter::Brace {
+                    self.error(
+                        body_group.span(),
+                        "expected braces around for loop body",
+                    );
+                    return Err(());
+                }
 
-        let body_tokens = body_group.stream().into_iter().collect::<Vec<_>>();
-        // errors are contained within that body, we can continue parsing
-        // either way
-        let body = self.parse_body(body_group.span(), &body_tokens);
+                let body_tokens =
+                    body_group.stream().into_iter().collect::<Vec<_>>();
+                // errors are contained within that body, we can continue
+                // parsing either way
+                let body = self.parse_body(body_group.span(), &body_tokens);
+                (Some(body), &rest[1..], None)
+            };
 
         Ok((
             Rc::new(MetaExpr::ForExpansion {
                 span: for_span,
                 pattern,
                 variants_expr,
-                body: Some(body),
+                body,
             }),
-            &rest[1..],
+            rest,
+            trailing_block,
         ))
     }
 
