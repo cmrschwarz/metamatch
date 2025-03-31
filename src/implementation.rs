@@ -2,7 +2,7 @@ use proc_macro::{
     Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream,
     TokenTree,
 };
-use std::{collections::HashMap, fmt::format, rc::Rc};
+use std::{collections::HashMap, rc::Rc};
 
 type Result<T, E = ()> = std::result::Result<T, E>;
 
@@ -75,16 +75,19 @@ enum MetaExpr {
         args: Vec<Rc<MetaExpr>>,
     },
     FnDecl(Rc<Function>),
-    Group {
+    RawOutputGroup {
         span: Span,
         delimiter: Delimiter,
         contents: Vec<Rc<MetaExpr>>,
+    },
+    RawOutputToken {
+        tok: TokenTree,
     },
     ForExpansion {
         span: Span,
         pattern: Pattern,
         variants_expr: Rc<MetaExpr>,
-        body: Vec<Rc<MetaExpr>>,
+        body: Option<Vec<Rc<MetaExpr>>>,
     },
     Scope {
         span: Span,
@@ -134,10 +137,19 @@ pub fn expand(body: TokenStream) -> TokenStream {
     let body = body.into_iter().collect::<Vec<_>>();
     let mut ctx = Context::default();
     ctx.insert_builtins();
-    match ctx.parse_body(Span::call_site(), &body) {
-        Ok(expr) => ctx.evaluate_to_token_stream(Span::call_site(), &expr),
-        Err(()) => ctx.expand_errors(),
+
+    let expr = ctx.parse_body(Span::call_site(), &body);
+
+    if ctx.errors.is_empty() {
+        let mut res = Vec::new();
+        if let Ok(()) =
+            ctx.eval_stmt_list_to_stream(&mut res, Span::call_site(), &expr)
+        {
+            return TokenStream::from_iter(res);
+        }
     }
+
+    ctx.expand_errors()
 }
 
 fn comma_token(span: Span) -> TokenTree {
@@ -198,24 +210,23 @@ impl Context {
             } => {
                 let MetaValue::Tuple(val_elems) = &*val else {
                     // TODO: more context
-                    self.errors.push(MetaError {
-                        span: *span,
-                        message: format!(
+                    self.error(
+                        *span,
+                        format!(
                             "tuple pattern does not match {}",
                             val.type_id()
                         ),
-                    });
+                    );
                     return Err(());
                 };
                 if pat_bindings.len() != val_elems.len() {
-                    self.errors.push(MetaError {
-                        span: *span,
-                        message: format!(
-                            "tuple pattern missmatch: expected length {}, got {}",
-                            pat_bindings.len(),
-                            val_elems.len()
-                        ),
-                    });
+                    self.error( *span,
+                                 format!(
+                                    "tuple pattern missmatch: expected length {}, got {}",
+                                    pat_bindings.len(),
+                                    val_elems.len()
+                                ),
+                            );
                     return Err(());
                 }
                 for i in 0..val_elems.len() {
@@ -226,32 +237,29 @@ impl Context {
                 }
                 Ok(())
             }
-            // Essentially the same as the Tuple case.
-            // Would love myself some metamatch here... :D.
             Pattern::List {
                 span,
                 elems: pat_bindings,
             } => {
                 let MetaValue::List(val_elems) = &*val else {
                     // TODO: more context
-                    self.errors.push(MetaError {
-                        span: *span,
-                        message: format!(
+                    self.error(
+                        *span,
+                        format!(
                             "list pattern does not match {}",
                             val.type_id()
                         ),
-                    });
+                    );
                     return Err(());
                 };
                 if pat_bindings.len() != val_elems.len() {
-                    self.errors.push(MetaError {
-                        span: *span,
-                        message: format!(
-                            "list pattern missmatch: expected length {}, got {}",
-                            pat_bindings.len(),
-                            val_elems.len()
-                        ),
-                    });
+                    self.error(  *span,
+                                 format!(
+                                    "list pattern missmatch: expected length {}, got {}",
+                                    pat_bindings.len(),
+                                    val_elems.len()
+                                ),
+                            );
                     return Err(());
                 }
                 for i in 0..val_elems.len() {
@@ -274,13 +282,13 @@ impl Context {
                                args: &[Rc<MetaValue>]|
               -> Result<Rc<MetaValue>> {
             let MetaValue::String(s) = &*args[0] else {
-                ctx.errors.push(MetaError {
+                ctx.error(
                     span,
-                    message: format!(
+                    format!(
                         "builtin function `{name}` expects a string, got a {}",
                         args[0].type_id()
                     ),
-                });
+                );
                 return Err(());
             };
             Ok(Rc::new(MetaValue::String(Rc::from(f(s)))))
@@ -315,10 +323,7 @@ impl Context {
                 tgt.push(TokenTree::Literal(lit));
             }
             MetaValue::Fn(_) | MetaValue::BuiltinFn(_) => {
-                self.errors.push(MetaError {
-                    span: eval_span,
-                    message: "function cannot be tokenized".to_owned(),
-                });
+                self.error(eval_span, "function cannot be tokenized");
                 return Err(());
             }
             MetaValue::List(vals) => {
@@ -369,10 +374,7 @@ impl Context {
         if let Some(val) = self.lookup(name) {
             return Ok(val);
         }
-        self.errors.push(MetaError {
-            span: loc,
-            message: format!("undefined identifier `{name}`"),
-        });
+        self.error(loc, format!("undefined identifier `{name}`"));
         Err(())
     }
     fn eval_stmt_list_to_stream(
@@ -414,7 +416,7 @@ impl Context {
             MetaExpr::FnCall { span, name, args } => {
                 self.eval_fn_call(span, name, args)
             }
-            MetaExpr::Group {
+            MetaExpr::RawOutputGroup {
                 span,
                 delimiter,
                 contents,
@@ -436,13 +438,13 @@ impl Context {
             } => {
                 let input_list = self.eval(*span, variants_expr)?;
                 let MetaValue::List(list_elems) = &*input_list else {
-                    self.errors.push(MetaError {
-                        span: *span,
-                        message: format!(
+                    self.error(
+                        *span,
+                        format!(
                             "cannot iterate over {}",
                             input_list.type_id()
                         ),
-                    });
+                    );
                     return Err(());
                 };
                 let mut res = Vec::new();
@@ -456,7 +458,11 @@ impl Context {
                         return Err(());
                     }
                     if self
-                        .eval_stmt_list_to_stream(&mut res, *span, body)
+                        .eval_stmt_list_to_stream(
+                            &mut res,
+                            *span,
+                            body.as_ref().unwrap(),
+                        )
                         .is_err()
                     {
                         self.scopes.pop();
@@ -493,6 +499,9 @@ impl Context {
                 }
                 Ok(Rc::new(MetaValue::Tuple(elements)))
             }
+            MetaExpr::RawOutputToken { tok } => {
+                Ok(Rc::new(MetaValue::TokenTree(tok.clone())))
+            }
         }
     }
 
@@ -505,14 +514,14 @@ impl Context {
         match &*self.lookup_throw(*span, name)? {
             MetaValue::Fn(function) => {
                 if function.params.len() != args.len() {
-                    self.errors.push(MetaError {
-                                        span: *span,
-                                        message: format!(
+                    self.error(
+                                 *span,
+                                 format!(
                                             "function `{name}` with {} parameters called with {} arguments",
                                             function.params.len(),
                                             args.len()
                                         ),
-                                    });
+                                );
                     return Err(());
                 }
                 self.scopes.push(Default::default());
@@ -551,13 +560,13 @@ impl Context {
                 (builtin_fn.builtin)(self, *span, &param_bindings)
             }
             other => {
-                self.errors.push(MetaError {
-                    span: *span,
-                    message: format!(
+                self.error(
+                    *span,
+                    format!(
                         "value of type {} is not callable",
                         other.type_id()
                     ),
-                });
+                );
                 Err(())
             }
         }
@@ -582,34 +591,23 @@ impl Context {
         }
         TokenStream::from_iter(errors)
     }
-    fn evaluate_to_token_stream(
-        &mut self,
-        eval_span: Span,
-        expr: &MetaExpr,
-    ) -> TokenStream {
-        match self.eval(eval_span, expr) {
-            Ok(val) => {
-                let mut res = Vec::new();
-                if self
-                    .append_value_to_stream(&mut res, eval_span, &val)
-                    .is_err()
-                {
-                    return self.expand_errors();
-                }
-                TokenStream::from_iter(res)
-            }
-            Err(()) => self.expand_errors(),
-        }
-    }
 }
 
 // parsing utils
-
 fn parse_ident(token: &TokenTree) -> Option<(Span, Rc<str>)> {
     if let TokenTree::Ident(ident) = token {
         Some((ident.span(), Rc::from(ident.to_string())))
     } else {
         None
+    }
+}
+
+fn delimiter_chars(d: Delimiter) -> (char, char) {
+    match d {
+        Delimiter::Parenthesis => ('(', ')'),
+        Delimiter::Brace => ('{', '}'),
+        Delimiter::Bracket => ('[', ']'),
+        Delimiter::None => (' ', ' '),
     }
 }
 
@@ -641,41 +639,40 @@ impl Context {
         tokens: &'a [TokenTree],
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
         if tokens.is_empty() {
-            self.errors.push(MetaError {
-                span: parent_span,
-                message: "unexpected end of input".to_owned(),
-            });
+            self.error(parent_span, "unexpected end of input".to_owned());
             return Err(());
         }
-        todo!()
-    }
-    fn parse_value<'a>(
-        &mut self,
-        parent_span: Span,
-        token: &TokenTree,
-    ) -> Result<Rc<MetaExpr>> {
-        match token {
+        match &tokens[0] {
             TokenTree::Group(group) => {
                 let content = group.stream().into_iter().collect::<Vec<_>>();
                 match group.delimiter() {
                     Delimiter::Parenthesis => {
-                        let list = self
-                            .parse_comma_separated(group.span(), &content)?;
-                        return Ok(Rc::new(MetaExpr::Tuple {
-                            span: group.span(),
-                            exprs: list,
-                        }));
-                    }
-                    Delimiter::Brace => {
-                        self.parse_scope(group.span(), &content)
+                        let list = self.parse_comma_separated(
+                            group.delimiter(),
+                            group.span(),
+                            &content,
+                        )?;
+                        Ok((
+                            Rc::new(MetaExpr::Tuple {
+                                span: group.span(),
+                                exprs: list,
+                            }),
+                            &tokens[1..],
+                        ))
                     }
                     Delimiter::Bracket => {
-                        let list = self
-                            .parse_comma_separated(group.span(), &content)?;
-                        return Ok(Rc::new(MetaExpr::List {
-                            span: group.span(),
-                            exprs: list,
-                        }));
+                        let list = self.parse_comma_separated(
+                            group.delimiter(),
+                            group.span(),
+                            &content,
+                        )?;
+                        Ok((
+                            Rc::new(MetaExpr::List {
+                                span: group.span(),
+                                exprs: list,
+                            }),
+                            &tokens[1..],
+                        ))
                     }
                     Delimiter::None => {
                         let (expr, rest) =
@@ -687,8 +684,15 @@ impl Context {
                             );
                             return Err(());
                         }
-                        Ok(expr)
+                        Ok((expr, &tokens[1..]))
                     }
+                    Delimiter::Brace => Ok((
+                        Rc::new(MetaExpr::Scope {
+                            span: group.span(),
+                            contents: self.parse_body(group.span(), &content),
+                        }),
+                        &tokens[1..],
+                    )),
                 }
             }
 
@@ -697,13 +701,13 @@ impl Context {
                 let name = Rc::from(ident.to_string());
 
                 if &*name == "let" && tokens.len() > 1 {
-                    return self.parse_let(&tokens[1..], span);
+                    return self.parse_let(span, &tokens[1..]);
                 }
                 if &*name == "fn" && tokens.len() > 1 {
-                    return self.parse_fn(&tokens[1..], span);
+                    return self.parse_fn(span, &tokens[1..]);
                 }
                 if &*name == "for" && tokens.len() > 1 {
-                    return self.parse_for(&tokens[1..], span);
+                    return self.parse_for(span, &tokens[1..]);
                 }
 
                 // Check if it's a function call
@@ -712,13 +716,16 @@ impl Context {
                         if group.delimiter() == Delimiter::Parenthesis {
                             let args =
                                 group.stream().into_iter().collect::<Vec<_>>();
-                            let (parsed_args, _) =
-                                self.parse_comma_separated(&args)?;
+                            let fn_args = self.parse_comma_separated(
+                                Delimiter::Parenthesis,
+                                group.span(),
+                                &args,
+                            )?;
                             return Ok((
                                 Rc::new(MetaExpr::FnCall {
                                     span,
                                     name,
-                                    args: parsed_args,
+                                    args: fn_args,
                                 }),
                                 &tokens[2..],
                             ));
@@ -737,10 +744,7 @@ impl Context {
                         &tokens[1..],
                     ))
                 } else {
-                    self.errors.push(MetaError {
-                        span,
-                        message: "invalid literal".to_owned(),
-                    });
+                    self.error(span, "invalid literal".to_owned());
                     Err(())
                 }
             }
@@ -750,7 +754,6 @@ impl Context {
                 Err(())
             }
         }
-        // TODO:
     }
 
     fn error(&mut self, span: Span, message: impl Into<String>) {
@@ -760,50 +763,36 @@ impl Context {
         });
     }
 
-    fn parse_scope(
-        &self,
-        span: Span,
-        content: &[TokenTree],
-    ) -> std::result::Result<Rc<MetaExpr>, ()> {
-        todo!()
-    }
-
-    fn parse_let(
+    fn parse_let<'a>(
         &mut self,
-        tokens: &[TokenTree],
         let_span: Span,
-    ) -> Result<(Rc<MetaExpr>, &[TokenTree])> {
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
         if tokens.is_empty() {
-            self.errors.push(MetaError {
-                span: let_span,
-                message: "expected identifier after let".to_owned(),
-            });
+            self.error(let_span, "expected identifier after let");
             return Err(());
         }
 
         let (name_span, name) = parse_ident(&tokens[0]).ok_or_else(|| {
-            self.errors.push(MetaError {
-                span: tokens[0].span(),
-                message: "expected identifier".to_owned(),
-            });
+            self.error(tokens[0].span(), "expected identifier");
         })?;
 
         let mut is_eq = false;
-        if let Some(TokenTree::Punct(p)) = tokens.get(2) {
+        if let Some(TokenTree::Punct(p)) = tokens.get(1) {
             if p.as_char() == '=' {
                 is_eq = true;
             }
         }
 
         if !is_eq {
-            self.errors.push(MetaError {
-                span: tokens.get(2).map(|t| t.span()).unwrap_or(name_span),
-                message: "expected = after identifier".to_owned(),
-            });
+            self.error(
+                tokens.get(1).map(|t| t.span()).unwrap_or(name_span),
+                "expected = after let identifier",
+            );
             return Err(());
         }
 
-        let (expr, rest) = self.parse_expr(&tokens[2..])?;
+        let (expr, rest) = self.parse_expr(let_span, &tokens[2..])?;
 
         Ok((
             Rc::new(MetaExpr::LetBinding {
@@ -815,42 +804,29 @@ impl Context {
         ))
     }
 
-    fn parse_fn(
+    fn parse_fn<'a>(
         &mut self,
-        tokens: &[TokenTree],
         fn_span: Span,
-    ) -> Result<(Rc<MetaExpr>, &[TokenTree])> {
-        // Parse function name
-        let (name_span, name) = parse_ident(&tokens[0]).ok_or_else(|| {
-            self.errors.push(MetaError {
-                span: tokens[0].span(),
-                message: "expected function name".to_owned(),
-            });
-        })?;
-
-        // Parse parameter list
-        if tokens.len() < 2 {
-            self.errors.push(MetaError {
-                span: name_span,
-                message: "expected parameter list".to_owned(),
-            });
-            return Err(());
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
+        if tokens.is_empty() {
+            self.error(fn_span, "expected identifier after `fn`");
         }
 
-        let TokenTree::Group(param_group) = &tokens[1] else {
-            self.errors.push(MetaError {
-                span: tokens[1].span(),
-                message: "expected parameter list".to_owned(),
-            });
+        let (name_span, name) = parse_ident(&tokens[0]).ok_or_else(|| {
+            self.error(tokens[0].span(), "expected function name");
+        })?;
+
+        let Some(TokenTree::Group(param_group)) = tokens.get(1) else {
+            self.error(tokens[1].span(), "expected parameter list");
             return Err(());
         };
 
         if param_group.delimiter() != Delimiter::Parenthesis {
-            self.errors.push(MetaError {
-                span: param_group.span(),
-                message: "expected parentheses around parameter list"
-                    .to_owned(),
-            });
+            self.error(
+                param_group.span(),
+                "expected parentheses around parameter list".to_owned(),
+            );
             return Err(());
         }
 
@@ -863,10 +839,10 @@ impl Context {
         while !rest.is_empty() {
             let (param_span, param_name) =
                 parse_ident(&rest[0]).ok_or_else(|| {
-                    self.errors.push(MetaError {
-                        span: rest[0].span(),
-                        message: "expected parameter name".to_owned(),
-                    });
+                    self.error(
+                        rest[0].span(),
+                        "expected parameter name".to_owned(),
+                    );
                 })?;
 
             params.push(BindingParameter {
@@ -883,11 +859,10 @@ impl Context {
                     }
                 }
                 if !rest.is_empty() {
-                    self.errors.push(MetaError {
-                        span: rest[0].span(),
-                        message: "expected comma between parameters"
-                            .to_owned(),
-                    });
+                    self.error(
+                        rest[0].span(),
+                        "expected comma between parameters".to_owned(),
+                    );
                     return Err(());
                 }
             }
@@ -895,38 +870,29 @@ impl Context {
 
         // Parse function body
         if tokens.len() < 3 {
-            self.errors.push(MetaError {
-                span: param_group.span(),
-                message: "expected function body".to_owned(),
-            });
+            self.error(param_group.span(), "expected function body");
             return Err(());
         }
 
         let TokenTree::Group(body_group) = &tokens[2] else {
-            self.errors.push(MetaError {
-                span: tokens[2].span(),
-                message: "expected function body".to_owned(),
-            });
+            self.error(tokens[2].span(), "expected function body");
             return Err(());
         };
 
         if body_group.delimiter() != Delimiter::Brace {
-            self.errors.push(MetaError {
-                span: body_group.span(),
-                message: "expected braces around function body".to_owned(),
-            });
+            self.error(
+                body_group.span(),
+                "expected braces around function body",
+            );
             return Err(());
         }
 
         let body_tokens = body_group.stream().into_iter().collect::<Vec<_>>();
-        let body = match self.parse_body(&body_tokens) {
-            Ok(MetaExpr::StatementList { exprs }) => exprs,
-            _ => return Err(()),
-        };
+        let body = self.parse_body(name_span, &body_tokens);
 
         Ok((
             Rc::new(MetaExpr::FnDecl(Rc::new(Function {
-                span: fn_span,
+                span: name_span,
                 name: name.clone(),
                 params,
                 body,
@@ -935,97 +901,144 @@ impl Context {
         ))
     }
 
-    fn parse_for(
+    fn parse_for<'a>(
         &mut self,
-        tokens: &[TokenTree],
         for_span: Span,
-    ) -> Result<(Rc<MetaExpr>, &[TokenTree])> {
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
         // Parse pattern
-        let (pattern, rest) = self.parse_pattern(&tokens[0])?;
+        let (pattern, rest) = self.parse_pattern(for_span, tokens)?;
 
-        // Expect "in" keyword
-        if rest.is_empty() {
-            self.errors.push(MetaError {
-                span: for_span,
-                message: "expected 'in' after pattern".to_owned(),
-            });
+        let mut is_in = false;
+        if let Some(TokenTree::Ident(i)) = rest.first() {
+            is_in = i.to_string() == "in";
+        }
+        if !is_in {
+            self.error(
+                rest.first().map(|f| f.span()).unwrap_or(for_span),
+                "expected 'in' after pattern",
+            );
             return Err(());
         }
 
-        let TokenTree::Ident(in_ident) = &rest[0] else {
-            self.errors.push(MetaError {
-                span: rest[0].span(),
-                message: "expected 'in'".to_owned(),
-            });
-            return Err(());
-        };
-
-        if in_ident.to_string() != "in" {
-            self.errors.push(MetaError {
-                span: in_ident.span(),
-                message: "expected 'in'".to_owned(),
-            });
-            return Err(());
-        }
-
-        // Parse variants expression
         if rest.len() < 2 {
-            self.errors.push(MetaError {
-                span: in_ident.span(),
-                message: "expected expression after 'in'".to_owned(),
-            });
+            self.error(rest[0].span(), "expected expression after 'in'");
             return Err(());
         }
 
-        let (variants_expr, rest) = self.parse_expr(&rest[1..])?;
+        let last_tok = rest.last().unwrap();
+
+        let (variants_expr, rest) = self.parse_expr(for_span, &rest[1..])?;
 
         // Parse body
-        if rest.is_empty() {
-            self.errors.push(MetaError {
-                span: variants_expr.span(),
-                message: "expected for loop body".to_owned(),
-            });
-            return Err(());
-        }
-
-        let TokenTree::Group(body_group) = &rest[0] else {
-            self.errors.push(MetaError {
-                span: rest[0].span(),
-                message: "expected for loop body".to_owned(),
-            });
+        let Some(TokenTree::Group(body_group)) = rest.first() else {
+            self.error(
+                rest.first().unwrap_or(last_tok).span(),
+                "expected for loop body",
+            );
             return Err(());
         };
 
         if body_group.delimiter() != Delimiter::Brace {
-            self.errors.push(MetaError {
-                span: body_group.span(),
-                message: "expected braces around for loop body".to_owned(),
-            });
+            self.error(
+                body_group.span(),
+                "expected braces around for loop body",
+            );
             return Err(());
         }
 
         let body_tokens = body_group.stream().into_iter().collect::<Vec<_>>();
-        let body = match self.parse_body(&body_tokens) {
-            Ok(MetaExpr::StatementList { exprs }) => exprs,
-            _ => return Err(()),
-        };
+        // errors are contained within that body, we can continue parsing
+        // either way
+        let body = self.parse_body(body_group.span(), &body_tokens);
 
         Ok((
             Rc::new(MetaExpr::ForExpansion {
                 span: for_span,
                 pattern,
                 variants_expr,
-                body,
+                body: Some(body),
             }),
             &rest[1..],
         ))
     }
 
-    fn parse_pattern(
+    fn parse_pattern_group<'a>(
         &mut self,
-        token: &TokenTree,
-    ) -> Result<(Pattern, &[TokenTree])> {
-        match token {
+        parent_span: Span,
+        group: &Group,
+    ) -> Result<(Pattern, &'a [TokenTree])> {
+        let tokens = group.stream().into_iter().collect::<Vec<_>>();
+        let mut patterns = Vec::new();
+        let mut rest = &tokens[..];
+
+        let mut final_comma = None;
+
+        while !rest.is_empty() {
+            let (pat, new_rest) = self.parse_pattern(parent_span, rest)?;
+            patterns.push(pat);
+            rest = new_rest;
+
+            let Some(first) = rest.first() else {
+                break;
+            };
+            if let TokenTree::Punct(p) = first {
+                if p.as_char() == ',' {
+                    rest = &rest[1..];
+                    if rest.is_empty() {
+                        final_comma = Some(p.span());
+                        break;
+                    }
+                    continue;
+                }
+            };
+            self.error(
+                first.span(),
+                format!(
+                    "expected comma or {}",
+                    delimiter_chars(group.delimiter()).1
+                ),
+            );
+            return Err(());
+        }
+
+        match group.delimiter() {
+            Delimiter::Parenthesis => {
+                if patterns.len() == 1 && final_comma.is_none() {
+                    return Ok((patterns.into_iter().next().unwrap(), &[]));
+                }
+                Ok((
+                    Pattern::Tuple {
+                        span: group.span(),
+                        elems: patterns,
+                    },
+                    &[],
+                ))
+            }
+            Delimiter::Bracket => Ok((
+                Pattern::List {
+                    span: group.span(),
+                    elems: patterns,
+                },
+                &[],
+            )),
+            Delimiter::Brace | Delimiter::None => {
+                self.error(group.span(), "invalid pattern");
+                Err(())
+            }
+        }
+    }
+
+    fn parse_pattern<'a>(
+        &mut self,
+        parent_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(Pattern, &'a [TokenTree])> {
+        if tokens.is_empty() {
+            self.error(parent_span, "unexpected end of input".to_owned());
+            return Err(());
+        }
+        match &tokens[0] {
             TokenTree::Ident(ident) => Ok((
                 Pattern::Ident(BindingParameter {
                     span: ident.span(),
@@ -1034,54 +1047,13 @@ impl Context {
                 &[],
             )),
             TokenTree::Group(group) => {
-                let tokens = group.stream().into_iter().collect::<Vec<_>>();
-                let mut patterns = Vec::new();
-                let mut rest = &tokens[..];
-
-                while !rest.is_empty() {
-                    let (pattern, new_rest) = self.parse_pattern(&rest[0])?;
-                    patterns.push(pattern);
-                    rest = new_rest;
-
-                    if !rest.is_empty() {
-                        if let TokenTree::Punct(p) = &rest[0] {
-                            if p.as_char() == ',' {
-                                rest = &rest[1..];
-                                continue;
-                            }
-                        }
-                    }
-                }
-
-                match group.delimiter() {
-                    Delimiter::Parenthesis => Ok((
-                        Pattern::Tuple {
-                            span: group.span(),
-                            elems: patterns,
-                        },
-                        &[],
-                    )),
-                    Delimiter::Bracket => Ok((
-                        Pattern::List {
-                            span: group.span(),
-                            elems: patterns,
-                        },
-                        &[],
-                    )),
-                    _ => {
-                        self.errors.push(MetaError {
-                            span: group.span(),
-                            message: "invalid pattern delimiter".to_owned(),
-                        });
-                        Err(())
-                    }
-                }
+                self.parse_pattern_group(parent_span, group)
             }
             _ => {
-                self.errors.push(MetaError {
-                    span: token.span(),
-                    message: "invalid pattern".to_owned(),
-                });
+                self.error(
+                    tokens[0].span(),
+                    "invalid token, expected pattern".to_owned(),
+                );
                 Err(())
             }
         }
@@ -1089,46 +1061,92 @@ impl Context {
 
     fn parse_comma_separated(
         &mut self,
+        delimiter: Delimiter,
         parent_span: Span,
         tokens: &[TokenTree],
     ) -> Result<Vec<Rc<MetaExpr>>> {
+        let (list, _final_comma_span) = self
+            .parse_comma_separated_with_final_comma(
+                delimiter,
+                parent_span,
+                tokens,
+            )?;
+        Ok(list)
+    }
+
+    fn parse_comma_separated_with_final_comma(
+        &mut self,
+        delimiter: Delimiter,
+        parent_span: Span,
+        tokens: &[TokenTree],
+    ) -> Result<(Vec<Rc<MetaExpr>>, Option<Span>)> {
         let mut exprs = Vec::new();
         let mut rest = tokens;
+        let mut final_comma = None;
 
         while !rest.is_empty() {
             let (expr, new_rest) = self.parse_expr(parent_span, rest)?;
             exprs.push(expr);
             rest = new_rest;
 
-            if rest.is_empty() {
+            let Some(first) = rest.first() else {
                 break;
-            }
-            if let TokenTree::Punct(p) = &rest[0] {
+            };
+            if let TokenTree::Punct(p) = first {
                 if p.as_char() == ',' {
                     rest = &rest[1..];
+                    if rest.is_empty() {
+                        final_comma = Some(p.span());
+                        break;
+                    }
                     continue;
                 }
-            }
-            break;
+            };
+            self.error(
+                first.span(),
+                format!("expected comma or {}", delimiter_chars(delimiter).1),
+            );
+            return Err(());
         }
 
-        Ok(exprs)
+        Ok((exprs, final_comma))
     }
 
+    // syntax errors are contained withing the body
+    // we return all the exprs that we were able to parse
     fn parse_body(
         &mut self,
         parent_span: Span,
         tokens: &[TokenTree],
-    ) -> Result<MetaExpr> {
+    ) -> Vec<Rc<MetaExpr>> {
         let mut exprs = Vec::new();
         let mut rest = tokens;
 
         while !rest.is_empty() {
-            let (expr, new_rest) = self.parse_expr(parent_span, rest)?;
+            let Ok((expr, new_rest)) = self.parse_expr(parent_span, rest)
+            else {
+                break;
+            };
             exprs.push(expr);
             rest = new_rest;
+            if let Some(first) = rest.first() {
+                let mut is_semi = false;
+                if let TokenTree::Punct(p) = first {
+                    if p.as_char() == ';' {
+                        is_semi = true;
+                    }
+                }
+                // TODO: define exceptions that may drop the semi
+                if !is_semi {
+                    self.error(
+                        first.span(),
+                        "missing semicolon after expression",
+                    );
+                } else {
+                    rest = &rest[1..];
+                }
+            }
         }
-
-        Ok(MetaExpr::StatementList { exprs })
+        exprs
     }
 }
