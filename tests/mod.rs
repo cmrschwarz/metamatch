@@ -1,17 +1,30 @@
 use metamatch::template;
 
 #[test]
-fn foo() {
+fn basic_enum_variants() {
     template! {
-        #[derive(PartialEq, Eq)]
         enum Foo{
-            [<for VARIANT in [A, B, C]>]
+            [<for (i, VARIANT) in enumerate([A, B, C])>]
                 VARIANT,
             [</for>]
         }
     };
 
-    let x = Foo::A != Foo::C;
+    let _ = [Foo::A, Foo::B, Foo::C];
+}
+
+#[test]
+fn let_bindings() {
+    template! {
+        [<let VARIANTS = [A, B, C]>]
+        enum Foo{
+            [<for VARIANT in VARIANTS >]
+                VARIANT,
+            [</for>]
+        }
+    };
+
+    let _ = [Foo::A, Foo::B, Foo::C];
 }
 
 #[test]

@@ -265,6 +265,17 @@ impl Context {
                 String::new()
             }
         });
+        self.insert_builtin_list_fn("enumerate", |l| {
+            l.iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    Rc::new(MetaValue::Tuple(vec![
+                        Rc::new(MetaValue::Int(i as i64)),
+                        v.clone(),
+                    ]))
+                })
+                .collect::<Vec<_>>()
+        });
         // TODO: camel_case, pascal_case, ...
     }
     fn attempt_pattern_match(
@@ -372,6 +383,33 @@ impl Context {
         })));
         self.insert_binding(Span::call_site(), Rc::from(name), builtin_fn_v);
     }
+    fn insert_builtin_list_fn(
+        &mut self,
+        name: &'static str,
+        f: impl 'static + Fn(&[Rc<MetaValue>]) -> Vec<Rc<MetaValue>>,
+    ) {
+        let builtin_fn = move |ctx: &mut Context,
+                               span: Span,
+                               args: &[Rc<MetaValue>]|
+              -> Result<Rc<MetaValue>> {
+            let MetaValue::List(list) = &*args[0] else {
+                ctx.error(
+                    span,
+                    format!(
+                        "builtin function `{name}` expects a list, got a {}",
+                        args[0].type_id()
+                    ),
+                );
+                return Err(());
+            };
+            Ok(Rc::new(MetaValue::List(f(list))))
+        };
+        let builtin_fn_v = Rc::new(MetaValue::BuiltinFn(Rc::new(BuiltinFn {
+            param_count: 1,
+            builtin: Box::new(builtin_fn),
+        })));
+        self.insert_binding(Span::call_site(), Rc::from(name), builtin_fn_v);
+    }
     fn append_value_to_stream(
         &mut self,
         tgt: &mut Vec<TokenTree>,
@@ -445,17 +483,6 @@ impl Context {
             }
         }
         None
-    }
-    fn lookup_throw(
-        &mut self,
-        loc: Span,
-        name: &str,
-    ) -> Result<Rc<MetaValue>> {
-        if let Some(val) = self.lookup(name) {
-            return Ok(val);
-        }
-        self.error(loc, format!("undefined identifier `{name}`"));
-        Err(())
     }
     fn eval_to_token_stream(
         &mut self,
@@ -626,16 +653,20 @@ impl Context {
         name: &Rc<str>,
         args: &Vec<Rc<MetaExpr>>,
     ) -> std::result::Result<Rc<MetaValue>, ()> {
-        match &*self.lookup_throw(*span, name)? {
+        let Some(binding) = self.lookup(name) else {
+            self.error(*span, format!("undefined function `{name}`"));
+            return Err(());
+        };
+        match &*binding {
             MetaValue::Fn(function) => {
                 if function.params.len() != args.len() {
                     self.error(
                         *span,
                         format!(
-                                "function `{name}` with {} parameters called with {} arguments",
-                                function.params.len(),
-                                args.len()
-                            ),
+                            "function `{name}` with {} parameters called with {} arguments",
+                            function.params.len(),
+                            args.len()
+                        ),
                     );
                     return Err(());
                 }
