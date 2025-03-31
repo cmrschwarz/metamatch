@@ -46,8 +46,8 @@ pub fn pretty_print_token_stream(input: TokenStream) -> String {
 enum MacroKind {
     #[default]
     Expand,
-    Metamatch,
-    Replicate,
+    // Metamatch,
+    // Replicate,
 }
 
 #[derive(Parser)]
@@ -59,7 +59,7 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let kind = args.subcommand.unwrap_or(MacroKind::Metamatch);
+    let kind = args.subcommand.unwrap_or(MacroKind::Expand);
 
     let sandbox = format!("{}/sandbox", env!("CARGO_MANIFEST_DIR"));
 
@@ -88,14 +88,14 @@ fn main() {
 
     let result = match kind {
         MacroKind::Expand => metamatch_impl::expand(body_tt),
-        MacroKind::Metamatch => metamatch_impl::metamatch(body_tt),
-        MacroKind::Replicate => {
-            let attrib_str = std::fs::read_to_string(&attrib)
-                .unwrap_or_else(|_| panic!("failed to stringify {attrib}"));
-            let attrib_tt = syn::parse_str::<TokenStream>(&attrib_str)
-                .unwrap_or_else(|_| panic!("failed to stringify {body}"));
-            metamatch_impl::replicate(attrib_tt, body_tt)
-        }
+        // MacroKind::Metamatch => metamatch_impl::metamatch(body_tt),
+        // MacroKind::Replicate => {
+        //    let attrib_str = std::fs::read_to_string(&attrib)
+        //        .unwrap_or_else(|_| panic!("failed to stringify {attrib}"));
+        //    let attrib_tt = syn::parse_str::<TokenStream>(&attrib_str)
+        //        .unwrap_or_else(|_| panic!("failed to stringify {body}"));
+        //    metamatch_impl::replicate(attrib_tt, body_tt)
+        //}
     };
 
     println!("{}", pretty_print_token_stream(result));

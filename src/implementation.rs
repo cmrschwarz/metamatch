@@ -111,7 +111,6 @@ struct Binding {
     value: Rc<MetaValue>,
 }
 
-#[derive(Default)]
 struct Context {
     empty_token_list: Rc<MetaValue>,
     scopes: Vec<HashMap<Rc<str>, Binding>>,
@@ -136,7 +135,6 @@ impl MetaValue {
 pub fn expand(body: TokenStream) -> TokenStream {
     let body = body.into_iter().collect::<Vec<_>>();
     let mut ctx = Context::default();
-    ctx.insert_builtins();
 
     let expr = ctx.parse_body(Span::call_site(), &body);
 
@@ -178,6 +176,18 @@ fn append_compile_error(tgt: &mut Vec<TokenTree>, message: &str, span: Span) {
             group
         }),
     ]);
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        let mut ctx = Self {
+            empty_token_list: Default::default(),
+            scopes: vec![Default::default()],
+            errors: Default::default(),
+        };
+        ctx.insert_builtins();
+        ctx
+    }
 }
 
 // evaluation
@@ -963,11 +973,11 @@ impl Context {
         ))
     }
 
-    fn parse_pattern_group<'a>(
+    fn parse_pattern_group(
         &mut self,
         parent_span: Span,
         group: &Group,
-    ) -> Result<(Pattern, &'a [TokenTree])> {
+    ) -> Pattern {
         let tokens = group.stream().into_iter().collect::<Vec<_>>();
         let mut patterns = Vec::new();
         let mut rest = &tokens[..];
@@ -975,7 +985,10 @@ impl Context {
         let mut final_comma = None;
 
         while !rest.is_empty() {
-            let (pat, new_rest) = self.parse_pattern(parent_span, rest)?;
+            let Ok((pat, new_rest)) = self.parse_pattern(parent_span, rest)
+            else {
+                break;
+            };
             patterns.push(pat);
             rest = new_rest;
 
@@ -999,32 +1012,28 @@ impl Context {
                     delimiter_chars(group.delimiter()).1
                 ),
             );
-            return Err(());
         }
 
         match group.delimiter() {
             Delimiter::Parenthesis => {
                 if patterns.len() == 1 && final_comma.is_none() {
-                    return Ok((patterns.into_iter().next().unwrap(), &[]));
+                    return patterns.into_iter().next().unwrap();
                 }
-                Ok((
-                    Pattern::Tuple {
-                        span: group.span(),
-                        elems: patterns,
-                    },
-                    &[],
-                ))
-            }
-            Delimiter::Bracket => Ok((
-                Pattern::List {
+                Pattern::Tuple {
                     span: group.span(),
                     elems: patterns,
-                },
-                &[],
-            )),
+                }
+            }
+            Delimiter::Bracket => Pattern::List {
+                span: group.span(),
+                elems: patterns,
+            },
             Delimiter::Brace | Delimiter::None => {
                 self.error(group.span(), "invalid pattern");
-                Err(())
+                Pattern::List {
+                    span: parent_span,
+                    elems: Vec::new(),
+                }
             }
         }
     }
@@ -1044,11 +1053,12 @@ impl Context {
                     span: ident.span(),
                     name: Rc::from(ident.to_string()),
                 }),
-                &[],
+                &tokens[1..],
             )),
-            TokenTree::Group(group) => {
-                self.parse_pattern_group(parent_span, group)
-            }
+            TokenTree::Group(group) => Ok((
+                self.parse_pattern_group(parent_span, group),
+                &tokens[1..],
+            )),
             _ => {
                 self.error(
                     tokens[0].span(),
