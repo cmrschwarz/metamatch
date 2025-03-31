@@ -500,7 +500,14 @@ impl Context {
     fn eval(&mut self, expr: &MetaExpr) -> Result<Rc<MetaValue>> {
         match expr {
             MetaExpr::Literal { span: _, value } => Ok(value.clone()),
-            MetaExpr::Ident { span, name } => self.lookup_throw(*span, name),
+            MetaExpr::Ident { span, name } => {
+                if let Some(expr) = self.lookup(name) {
+                    return Ok(expr);
+                }
+                Ok(Rc::new(MetaValue::TokenTree(TokenTree::Ident(
+                    Ident::new(name, *span),
+                ))))
+            }
             MetaExpr::LetBinding { span, expr, name } => {
                 let val = self.eval(expr.as_ref().unwrap())?;
                 self.insert_binding(*span, name.clone(), val);
