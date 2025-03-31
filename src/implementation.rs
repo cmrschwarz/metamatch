@@ -464,8 +464,10 @@ impl Context {
     ) -> TokenStream {
         if self.errors.is_empty() {
             let mut res = Vec::new();
-            if let Ok(()) =
-                self.eval_stmt_list_to_stream(&mut res, eval_span, exprs)
+            if self
+                .eval_stmt_list_to_stream(&mut res, eval_span, exprs)
+                .is_ok()
+                && self.errors.is_empty()
             {
                 return TokenStream::from_iter(res);
             }
