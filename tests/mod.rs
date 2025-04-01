@@ -41,9 +41,9 @@ fn raw_expr() {
 #[test]
 fn raw_scope() {
     let res = eval! {
-        raw!(0);
-        for X in [1, 2, 3] {
-            raw!(+ X)
+        raw!(1);
+        for X in [2, 3, 4] {
+            raw!(+ X);
         }
     };
 
@@ -51,14 +51,14 @@ fn raw_scope() {
 }
 
 #[test]
-fn raw_block() {
-    let res = eval! {
-        raw!(0);
-        for X in [1, 2, 3] {
-            raw!{
-                +X
-            }
+fn eval_block() {
+    let res = template! {
+        1
+        [<eval>]
+        for X in [2, 3, 4] {
+            raw!(+X)
         }
+        [</eval>]
     };
 
     assert_eq!(res, 6);

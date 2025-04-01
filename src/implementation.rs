@@ -40,9 +40,28 @@ struct BuiltinFn {
 enum MetaValue {
     Token(TokenTree),
     Tokens(Vec<TokenTree>),
-    Bool(bool),
-    Int(i64),
-    String(Rc<str>),
+    Int {
+        value: i64,
+        // For literals that come straight from source code this
+        // is set and will be used for the span in case occurs in output.
+        // For 'generated' literals like from a computed expression or
+        // an `enumerate` this is not set, and we use the span
+        // of the final expression that caused the output instead.
+        // Because this language is fuzzy about the types of things it can
+        // happen that the user really intended a *token* but ended up
+        // with an integer. In order to mimic the token semantics more closely
+        // and prevent users from having to use `raw!` everwhere this
+        // seems like a worthwile tradeoff.
+        span: Option<Span>,
+    },
+    Bool {
+        value: bool,
+        span: Option<Span>, // same reasoning as `Int`
+    },
+    String {
+        value: Rc<str>,
+        span: Option<Span>, // same reasoning as `Int`
+    },
     Fn(Rc<Function>),
     BuiltinFn(Rc<BuiltinFn>),
     List(Vec<Rc<MetaValue>>),
@@ -137,7 +156,7 @@ enum TrailingBlockKind {
     If,
     Else,
     Let,
-    Raw,
+    Unquote,
     Fn,
 }
 
@@ -157,12 +176,12 @@ impl MetaValue {
         match self {
             MetaValue::Token(_) => "token",
             MetaValue::Tokens(_) => "tokens",
-            MetaValue::Int(_) => "int",
-            MetaValue::String(_) => "string",
+            MetaValue::Int { .. } => "int",
+            MetaValue::String { .. } => "string",
+            MetaValue::Bool { .. } => "bool",
             MetaValue::Fn(_) | MetaValue::BuiltinFn(_) => "fn",
             MetaValue::List(_) => "list",
             MetaValue::Tuple(_) => "tuple",
-            MetaValue::Bool(_) => "bool",
         }
     }
 }
@@ -193,7 +212,7 @@ impl TrailingBlockKind {
             TrailingBlockKind::Else => "else",
             TrailingBlockKind::Let => "let",
             TrailingBlockKind::Fn => "fn",
-            TrailingBlockKind::Raw => "raw",
+            TrailingBlockKind::Unquote => "unquote",
         }
     }
 }
@@ -293,7 +312,10 @@ impl Context {
                 .enumerate()
                 .map(|(i, v)| {
                     Rc::new(MetaValue::Tuple(vec![
-                        Rc::new(MetaValue::Int(i as i64)),
+                        Rc::new(MetaValue::Int {
+                            value: i as i64,
+                            span: None,
+                        }),
                         v.clone(),
                     ]))
                 })
@@ -305,9 +327,9 @@ impl Context {
                 MetaValue::Tokens(token_trees) => token_trees.len(),
                 MetaValue::List(list) => list.len(),
                 MetaValue::Tuple(tup) => tup.len(),
-                MetaValue::String(s) => s.len(),
-                MetaValue::Bool(_)
-                | MetaValue::Int(_)
+                MetaValue::String { value: s, span: _ } => s.len(),
+                MetaValue::Bool { .. }
+                | MetaValue::Int { .. }
                 | MetaValue::Fn(_)
                 | MetaValue::BuiltinFn(_) => {
                     ctx.error(
@@ -320,7 +342,10 @@ impl Context {
                     return Err(());
                 }
             };
-            Ok(Rc::new(MetaValue::Int(v as i64)))
+            Ok(Rc::new(MetaValue::Int {
+                value: v as i64,
+                span: None,
+            }))
         });
         // TODO: camel_case, pascal_case, ...
     }
@@ -426,7 +451,7 @@ impl Context {
                            span: Span,
                            args: &[Rc<MetaValue>]|
               -> Result<Rc<MetaValue>> {
-            let MetaValue::String(s) = &*args[0] else {
+            let MetaValue::String { value: s, span: _ } = &*args[0] else {
                 ctx.error(
                     span,
                     format!(
@@ -436,7 +461,10 @@ impl Context {
                 );
                 return Err(());
             };
-            Ok(Rc::new(MetaValue::String(Rc::from(f(s)))))
+            Ok(Rc::new(MetaValue::String {
+                value: Rc::from(f(s)),
+                span: None,
+            }))
         };
         self.insert_builtin_fn(name, 1, str_fn);
     }
@@ -476,21 +504,21 @@ impl Context {
             MetaValue::Tokens(list) => {
                 tgt.extend(list.iter().cloned());
             }
-            MetaValue::Int(value) => {
+            MetaValue::Int { value, span } => {
                 let mut lit = Literal::i64_unsuffixed(*value);
-                lit.set_span(eval_span);
+                lit.set_span(span.unwrap_or(eval_span));
                 tgt.push(TokenTree::Literal(lit));
             }
-            MetaValue::Bool(value) => {
+            MetaValue::Bool { value, span } => {
                 let ident = Ident::new(
                     if *value { "true" } else { "false" },
-                    eval_span,
+                    span.unwrap_or(eval_span),
                 );
                 tgt.push(TokenTree::Ident(ident));
             }
-            MetaValue::String(value) => {
+            MetaValue::String { value, span } => {
                 let mut lit = Literal::string(value);
-                lit.set_span(eval_span);
+                lit.set_span(span.unwrap_or(eval_span));
                 tgt.push(TokenTree::Literal(lit));
             }
             MetaValue::Fn(_) | MetaValue::BuiltinFn(_) => {
@@ -683,7 +711,11 @@ impl Context {
                 else_expr,
             } => {
                 let condition_val = self.eval(condition)?;
-                let MetaValue::Bool(condition) = &*condition_val else {
+                let MetaValue::Bool {
+                    value: condition,
+                    span: _,
+                } = &*condition_val
+                else {
                     self.error(
                         condition.span(),
                         format!(
@@ -821,12 +853,19 @@ fn parse_literal(token: &TokenTree) -> Option<(Span, Rc<MetaValue>)> {
         if s.starts_with('"') {
             Some((
                 span,
-                Rc::new(MetaValue::String(Rc::from(
-                    s[1..s.len() - 1].to_string(),
-                ))),
+                Rc::new(MetaValue::String {
+                    value: Rc::from(s[1..s.len() - 1].to_string()),
+                    span: Some(token.span()),
+                }),
             ))
         } else if let Ok(n) = s.parse::<i64>() {
-            Some((span, Rc::new(MetaValue::Int(n))))
+            Some((
+                span,
+                Rc::new(MetaValue::Int {
+                    value: n,
+                    span: Some(token.span()),
+                }),
+            ))
         } else {
             None
         }
@@ -949,8 +988,9 @@ impl Context {
                             allow_trailing_block,
                         );
                     }
-                    "raw" => {
-                        return self.parse_raw_expr(
+                    "raw" => return self.parse_raw_expr(span, &tokens[1..]),
+                    "unquote" => {
+                        return self.parse_unquote_expr(
                             span,
                             &tokens[1..],
                             allow_trailing_block,
@@ -961,7 +1001,10 @@ impl Context {
                         return Ok((
                             Rc::new(MetaExpr::Literal {
                                 span,
-                                value: Rc::new(MetaValue::Bool(val)),
+                                value: Rc::new(MetaValue::Bool {
+                                    value: val,
+                                    span: Some(ident.span()),
+                                }),
                             }),
                             &tokens[1..],
                             None,
@@ -1123,7 +1166,6 @@ impl Context {
         &mut self,
         raw_span: Span,
         tokens: &'a [TokenTree],
-        allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
         let mut has_exclam = false;
@@ -1143,21 +1185,10 @@ impl Context {
         // for dummy bindings
         self.scopes.push(Default::default());
 
-        if tokens.is_empty() && allow_trailing_block {
-            return Ok((
-                Rc::new(MetaExpr::Scope {
-                    span: raw_span,
-                    body: Vec::new(),
-                }),
-                &[],
-                Some(TrailingBlockKind::Raw),
-            ));
-        }
-
         let Some(TokenTree::Group(p)) = tokens.first() else {
             self.error(
                 tokens.first().map(|t| t.span()).unwrap_or(raw_span),
-                "expected block after `raw`",
+                "expected block after `raw!`",
             );
             return Err(());
         };
@@ -1177,6 +1208,34 @@ impl Context {
             }),
             &tokens[1..],
             None,
+        ))
+    }
+
+    fn parse_unquote_expr<'a>(
+        &mut self,
+        raw_span: Span,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool, // must be true, otherwise error
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        if !allow_trailing_block || !tokens.is_empty() {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(raw_span),
+                "`eval` is only allowed as a template block",
+            );
+            return Err(());
+        }
+
+        // for dummy bindings
+        self.scopes.push(Default::default());
+
+        Ok((
+            Rc::new(MetaExpr::Scope {
+                span: raw_span,
+                body: Vec::new(),
+            }),
+            &[],
+            Some(TrailingBlockKind::Unquote),
         ))
     }
 
@@ -1752,7 +1811,7 @@ impl Context {
                 self.scopes.pop();
             }
             TrailingBlockKind::Else => unreachable!(),
-            TrailingBlockKind::Raw => {
+            TrailingBlockKind::Unquote => {
                 let MetaExpr::Scope { body, .. } = expr else {
                     unreachable!()
                 };
@@ -1913,7 +1972,7 @@ impl Context {
                         "for" => TrailingBlockKind::For,
                         "let" => TrailingBlockKind::Let,
                         "fn" => TrailingBlockKind::Fn,
-                        "raw" => TrailingBlockKind::Raw,
+                        "unquote" => TrailingBlockKind::Unquote,
                         "if" => TrailingBlockKind::If,
                         "else" => TrailingBlockKind::Else,
                         _ => {
