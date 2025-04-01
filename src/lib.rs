@@ -6,11 +6,11 @@ use proc_macro::TokenStream;
 mod implementation;
 
 #[proc_macro]
-pub fn eval(body: TokenStream) -> TokenStream {
-    implementation::eval(body)
+pub fn unquote(body: TokenStream) -> TokenStream {
+    implementation::unquote(body)
 }
 
 #[proc_macro]
-pub fn template(body: TokenStream) -> TokenStream {
-    implementation::template(body)
+pub fn quote(body: TokenStream) -> TokenStream {
+    implementation::quote(body)
 }

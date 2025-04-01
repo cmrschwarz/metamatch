@@ -144,10 +144,22 @@ struct Binding {
     value: Rc<MetaValue>,
 }
 
+#[derive(PartialEq, Eq)]
+enum ScopeKind {
+    Quoted,
+    Unquoted,
+    Evaluation,
+}
+
+struct Scope {
+    kind: ScopeKind,
+    bindings: HashMap<Rc<str>, Binding>,
+}
+
 struct Context {
     empty_token_list: Rc<MetaValue>,
     empty_token_list_expr: Rc<MetaExpr>,
-    scopes: Vec<HashMap<Rc<str>, Binding>>,
+    scopes: Vec<Scope>,
     errors: Vec<MetaError>,
 }
 
@@ -220,18 +232,18 @@ impl TrailingBlockKind {
     }
 }
 
-pub fn eval(body: TokenStream) -> TokenStream {
+pub fn unquote(body: TokenStream) -> TokenStream {
     let body = body.into_vec();
-    let mut ctx = Context::default();
+    let mut ctx = Context::new(ScopeKind::Unquoted);
 
     let expr = ctx.parse_body_deny_trailing(Span::call_site(), &body);
 
     ctx.eval_to_token_stream(Span::call_site(), &expr)
 }
 
-pub fn template(body: TokenStream) -> TokenStream {
+pub fn quote(body: TokenStream) -> TokenStream {
     let body = body.into_vec();
-    let mut ctx = Context::default();
+    let mut ctx = Context::new(ScopeKind::Quoted);
 
     let Ok(exprs) = ctx.parse_raw_body_to_exprs(Span::call_site(), &body)
     else {
@@ -300,8 +312,8 @@ fn append_token_list(
     }
 }
 
-impl Default for Context {
-    fn default() -> Self {
+impl Context {
+    fn new(primary_scope_kind: ScopeKind) -> Self {
         let empty_token_list = Rc::new(MetaValue::Tokens(Vec::new()));
         let mut ctx = Self {
             empty_token_list_expr: Rc::new(MetaExpr::Literal {
@@ -309,8 +321,11 @@ impl Default for Context {
                 value: empty_token_list.clone(),
             }),
             empty_token_list,
-            scopes: vec![Default::default()],
-            errors: Default::default(),
+            scopes: vec![Scope {
+                kind: primary_scope_kind,
+                bindings: HashMap::new(),
+            }],
+            errors: Vec::new(),
         };
         ctx.insert_builtins();
         ctx
@@ -581,7 +596,7 @@ impl Context {
     }
     fn lookup(&self, name: &str) -> Option<Rc<MetaValue>> {
         for scope in &self.scopes {
-            if let Some(binding) = scope.get(name) {
+            if let Some(binding) = scope.bindings.get(name) {
                 return Some(binding.value.clone());
             }
         }
@@ -626,6 +641,18 @@ impl Context {
         let mut res = Vec::new();
         self.eval_stmt_list_to_stream(&mut res, eval_span, exprs)?;
         Ok(Rc::new(MetaValue::Tokens(res)))
+    }
+    fn push_eval_scope(&mut self) {
+        self.scopes.push(Scope {
+            kind: ScopeKind::Evaluation,
+            bindings: HashMap::new(),
+        });
+    }
+    fn push_dummy_scope(&mut self, kind: ScopeKind) {
+        self.scopes.push(Scope {
+            kind,
+            bindings: HashMap::new(),
+        });
     }
     fn eval(&mut self, expr: &MetaExpr) -> Result<Rc<MetaValue>> {
         match expr {
@@ -676,7 +703,7 @@ impl Context {
                     return Err(());
                 };
                 let mut res = Vec::new();
-                self.scopes.push(Default::default());
+                self.push_eval_scope();
                 for elem in list_elems {
                     if self
                         .attempt_pattern_match(pattern, elem.clone())
@@ -699,7 +726,7 @@ impl Context {
                 span,
                 body: contents,
             } => {
-                self.scopes.push(Default::default());
+                self.push_eval_scope();
                 let res = self.eval_stmt_list_to_meta_val(*span, contents);
                 self.scopes.pop();
                 res
@@ -781,7 +808,7 @@ impl Context {
                     );
                     return Err(());
                 }
-                self.scopes.push(Default::default());
+                self.push_eval_scope();
                 for (i, arg) in args.iter().enumerate() {
                     let Ok(val) = self.eval(arg) else {
                         self.scopes.pop();
@@ -839,6 +866,7 @@ impl Context {
         self.scopes
             .last_mut()
             .unwrap()
+            .bindings
             .insert(name.clone(), binding);
     }
     fn expand_errors(&self) -> TokenStream {
@@ -943,12 +971,11 @@ impl Context {
         }
 
         if !is_quote {
-            self.error(group.span(), "template tags besides `quote` are not supported in metamatch source");
+            self.error(group.span(), "template tags besides `quote` are only supported in quoted output");
             return Err(()); // TODO: debatable?
         }
 
-        // for dummy bindings
-        self.scopes.push(Default::default());
+        self.push_dummy_scope(ScopeKind::Quoted);
 
         let res = self.parse_raw_body(group.span(), rest_tokens);
 
@@ -1189,7 +1216,7 @@ impl Context {
 
     fn insert_dummy_binding(&mut self, name: Rc<str>) {
         // dummy binding during parsing so raw blocks can detect identifiers
-        self.scopes.last_mut().unwrap().insert(
+        self.scopes.last_mut().unwrap().bindings.insert(
             name.clone(),
             Binding {
                 span: Span::call_site(),
@@ -1300,8 +1327,11 @@ impl Context {
                 );
             }
 
-            // for dummy bindings
-            self.scopes.push(Default::default());
+            if self.scopes.last().as_mut().unwrap().kind == ScopeKind::Quoted {
+                self.error(raw_span, "redundant quote tag, arlready quoted");
+            }
+
+            self.push_dummy_scope(ScopeKind::Quoted);
             return Ok((
                 Rc::new(MetaExpr::Scope {
                     span: raw_span,
@@ -1321,8 +1351,7 @@ impl Context {
 
         let tokens = &tokens[usize::from(has_exclam)..];
 
-        // for dummy bindings
-        self.scopes.push(Default::default());
+        self.push_dummy_scope(ScopeKind::Quoted);
 
         let Some(TokenTree::Group(p)) = tokens.first() else {
             self.error(
@@ -1365,8 +1394,7 @@ impl Context {
             return Err(());
         }
 
-        // for dummy bindings
-        self.scopes.push(Default::default());
+        self.push_dummy_scope(ScopeKind::Unquoted);
 
         Ok((
             Rc::new(MetaExpr::Scope {
@@ -1410,8 +1438,7 @@ impl Context {
         let mut params = Vec::new();
         let mut rest = &param_tokens[..];
 
-        // for dummy bindings
-        self.scopes.push(Default::default());
+        self.push_dummy_scope(ScopeKind::Unquoted);
 
         while !rest.is_empty() {
             let (param_span, param_name) =
@@ -1521,8 +1548,7 @@ impl Context {
 
         let (variants_expr, rest) = self.parse_expr(for_span, &rest[1..])?;
 
-        // for dummy bindings
-        self.scopes.push(Default::default());
+        self.push_dummy_scope(ScopeKind::Unquoted);
 
         self.insert_dummy_bindings_for_pattern(&pattern);
 
@@ -1580,8 +1606,7 @@ impl Context {
     {
         let (condition, rest) = self.parse_expr(if_span, tokens)?;
 
-        // for dummy bindings
-        self.scopes.push(Default::default());
+        self.push_dummy_scope(ScopeKind::Unquoted);
 
         if rest.is_empty() && allow_trailing_block {
             return Ok((

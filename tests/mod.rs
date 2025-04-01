@@ -1,8 +1,8 @@
-use metamatch::{eval, template};
+use metamatch::{quote, unquote};
 
 #[test]
 fn basic_enum_variants() {
-    template! {
+    quote! {
         enum Foo{
             [<for (i, VARIANT) in enumerate([A, B, C])>]
                 VARIANT = i,
@@ -15,7 +15,7 @@ fn basic_enum_variants() {
 
 #[test]
 fn let_bindings() {
-    template! {
+    quote! {
         [<let VARIANTS = [A, B, C]>]
         enum Foo{
             [<for VARIANT in VARIANTS >]
@@ -29,7 +29,7 @@ fn let_bindings() {
 
 #[test]
 fn quote_expr() {
-    let res = template! {
+    let res = quote! {
         [<for X in [1, quote!(+2), quote!(+3)]>]
             X
         [</for>]
@@ -40,7 +40,7 @@ fn quote_expr() {
 
 #[test]
 fn quote_stmt() {
-    let res = eval! {
+    let res = unquote! {
         quote!(1);
         for X in [2, 3, 4] {
             quote!(+ X);
@@ -52,7 +52,7 @@ fn quote_stmt() {
 
 #[test]
 fn quote_block() {
-    let res = eval! {
+    let res = unquote! {
         quote!(1);
         for X in [2, 3, 4] {
             [<quote>]
@@ -66,7 +66,7 @@ fn quote_block() {
 
 #[test]
 fn unquote_block() {
-    let res = template! {
+    let res = quote! {
         1
         [<unquote>]
         for X in [2, 3, 4] {

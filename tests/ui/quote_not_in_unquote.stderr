@@ -1,0 +1,5 @@
+error: redundant quote tag, arlready quoted
+ --> tests/ui/quote_not_in_unquote.rs:5:11
+  |
+5 |         [<quote>]
+  |           ^^^^^
