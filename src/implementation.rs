@@ -159,7 +159,6 @@ enum TrailingBlockKind {
     Let,
     Quote,
     Unquote,
-    UnquoteEnd,
     Fn,
 }
 
@@ -216,7 +215,6 @@ impl TrailingBlockKind {
             TrailingBlockKind::Let => "let",
             TrailingBlockKind::Fn => "fn",
             TrailingBlockKind::Unquote => "unquote",
-            TrailingBlockKind::UnquoteEnd => "/unquote",
             TrailingBlockKind::Quote => "quote",
         }
     }
@@ -286,6 +284,20 @@ fn has_template_angle_backets(tokens: &[TokenTree]) -> bool {
         return false;
     }
     true
+}
+
+fn append_token_list(
+    exprs: &mut Vec<Rc<MetaExpr>>,
+    tokens: &[TokenTree],
+    start: usize,
+    end: usize,
+) {
+    if start != end {
+        exprs.push(Rc::new(MetaExpr::Literal {
+            span: tokens[start].span(),
+            value: Rc::new(MetaValue::Tokens(tokens[start..end].to_vec())),
+        }));
+    }
 }
 
 impl Default for Context {
@@ -901,12 +913,13 @@ impl Context {
         rest_tokens: &'a [TokenTree],
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
-        let content = &group_tokens[1..&group_tokens.len() - 1];
+        let template_tokens = &group_tokens[1..&group_tokens.len() - 1];
 
-        if let Some(TokenTree::Punct(p)) = content.first() {
+        if let Some(TokenTree::Punct(p)) = template_tokens.first() {
             if p.as_char() == '/' {
-                let end_tag = self.parse_closing_tag(group, group_tokens)?;
-                if end_tag == TrailingBlockKind::UnquoteEnd {
+                let end_tag =
+                    self.parse_closing_tag(group, template_tokens)?;
+                if end_tag == TrailingBlockKind::Unquote {
                     return Ok((
                         self.empty_token_list_expr.clone(),
                         rest_tokens,
@@ -923,8 +936,8 @@ impl Context {
         }
 
         let mut is_quote = false;
-        if content.len() == 1 {
-            if let Some(TokenTree::Ident(i)) = content.first() {
+        if template_tokens.len() == 1 {
+            if let Some(TokenTree::Ident(i)) = template_tokens.first() {
                 is_quote = i.to_string() == "quote";
             }
         }
@@ -1006,7 +1019,7 @@ impl Context {
                             if has_template_angle_backets(&group_tokens) {
                                 self.parse_template_expr(
                                     group,
-                                    &group_tokens[1..&group_tokens.len() - 1],
+                                    &group_tokens,
                                     rest,
                                 )?
                             } else {
@@ -1839,14 +1852,19 @@ impl Context {
 
     // syntax errors are contained withing the body
     // we return all the exprs that we were able to parse
-    fn parse_body(
+    fn parse_body<'a>(
         &mut self,
         parent_span: Span,
-        tokens: &[TokenTree],
+        tokens: &'a [TokenTree],
         allow_trailing_block: bool,
-    ) -> (Vec<Rc<MetaExpr>>, Option<TrailingBlockKind>) {
+    ) -> (
+        Vec<Rc<MetaExpr>>,
+        &'a [TokenTree],
+        Option<TrailingBlockKind>,
+    ) {
         let mut exprs = Vec::new();
         let mut rest = tokens;
+        let mut pending_trailing_semi_error = None;
 
         while !rest.is_empty() {
             let Ok((expr, new_rest, trailing_block)) = self
@@ -1855,12 +1873,22 @@ impl Context {
                 break;
             };
 
+            // we have delay this error by once iteration because if the
+            // expression after the one with the missing semi
+            // might be an `[</unquote>]`, in qhich case it was fine
+            // to drop the semi
+            if let Some(tse) = pending_trailing_semi_error {
+                if trailing_block != Some(TrailingBlockKind::Unquote) {
+                    self.error(tse, "missing semicolon after expression");
+                }
+                pending_trailing_semi_error = None;
+            }
+
             rest = new_rest;
             exprs.push(expr);
 
             if trailing_block.is_some() {
-                debug_assert!(allow_trailing_block && rest.is_empty());
-                return (exprs, trailing_block);
+                return (exprs, rest, trailing_block);
             }
 
             if let Some(first) = rest.first() {
@@ -1872,16 +1900,13 @@ impl Context {
                 }
                 // TODO: define exceptions that may drop the semi
                 if !is_semi {
-                    self.error(
-                        first.span(),
-                        "missing semicolon after expression",
-                    );
+                    pending_trailing_semi_error = Some(first.span());
                 } else {
                     rest = &rest[1..];
                 }
             }
         }
-        (exprs, None)
+        (exprs, &[], None)
     }
 
     fn close_expr_after_trailing_body(
@@ -1944,7 +1969,6 @@ impl Context {
                 *body = contents;
                 self.scopes.pop();
             }
-            TrailingBlockKind::UnquoteEnd => unreachable!(),
         }
     }
 
@@ -1989,11 +2013,11 @@ impl Context {
     fn parse_closing_tag(
         &mut self,
         group: &Group,
-        group_tokens: &[TokenTree],
+        template_tokens: &[TokenTree],
     ) -> Result<TrailingBlockKind> {
-        let Some(TokenTree::Ident(ident)) = group_tokens.get(1) else {
+        let Some(TokenTree::Ident(ident)) = template_tokens.get(1) else {
             self.error(
-                group_tokens
+                template_tokens
                     .get(1)
                     .map(|t| t.span())
                     .unwrap_or(group.span()),
@@ -2018,7 +2042,7 @@ impl Context {
                 return Err(());
             }
         };
-        if let Some(tok) = group_tokens.get(3) {
+        if let Some(tok) = template_tokens.get(3) {
             self.error(tok.span(), "stray token after closing tag");
         }
         Ok(kind)
@@ -2029,22 +2053,6 @@ impl Context {
         parent_span: Span,
         tokens: &[TokenTree],
     ) -> Result<RawBodyParseResult> {
-        fn append_previous(
-            exprs: &mut Vec<Rc<MetaExpr>>,
-            tokens: &[TokenTree],
-            raw_token_list_start: usize,
-            offset: usize,
-        ) {
-            if raw_token_list_start != offset {
-                exprs.push(Rc::new(MetaExpr::Literal {
-                    span: tokens[raw_token_list_start].span(),
-                    value: Rc::new(MetaValue::Tokens(
-                        tokens[raw_token_list_start..offset].to_vec(),
-                    )),
-                }));
-            }
-        }
-
         let mut exprs = Vec::new();
 
         let mut raw_token_list_start = 0;
@@ -2058,7 +2066,7 @@ impl Context {
             if let TokenTree::Ident(ident) = t {
                 let name = ident.to_string();
                 if self.lookup(&name).is_some() {
-                    append_previous(
+                    append_token_list(
                         &mut exprs,
                         tokens,
                         raw_token_list_start,
@@ -2085,7 +2093,7 @@ impl Context {
                 {
                     Err(()) | Ok(None) => (),
                     Ok(Some(body_exprs)) => {
-                        append_previous(
+                        append_token_list(
                             &mut exprs,
                             tokens,
                             raw_token_list_start,
@@ -2101,96 +2109,24 @@ impl Context {
                 }
                 continue;
             }
+            append_token_list(
+                &mut exprs,
+                tokens,
+                raw_token_list_start,
+                offset,
+            );
             let inner_tokens = &group_tokens[1..group_tokens.len() - 1];
-            let first_tok = inner_tokens.first();
-            if let Some(TokenTree::Ident(ident)) = first_tok {
-                if ident.to_string() == "else" {
-                    append_previous(
-                        &mut exprs,
-                        tokens,
-                        raw_token_list_start,
-                        offset,
-                    );
-                    return Ok(RawBodyParseResult::UnmatchedEnd {
-                        span: group.span(),
-                        kind: TrailingBlockKind::Else,
-                        offset,
-                        contents: exprs,
-                    });
-                }
-            }
-            if let Some(TokenTree::Punct(p)) = first_tok {
-                if p.as_char() == '/' {
-                    // this is a closing tag
-                    let end_tag =
-                        self.parse_closing_tag(group, inner_tokens)?;
-                    append_previous(
-                        &mut exprs,
-                        tokens,
-                        raw_token_list_start,
-                        offset,
-                    );
-                    return Ok(RawBodyParseResult::UnmatchedEnd {
-                        span: group.span(),
-                        kind: end_tag,
-                        offset,
-                        contents: exprs,
-                    });
-                }
-            }
-            let (expr, trailing_block) =
-                self.parse_body(parent_span, inner_tokens, true);
-            exprs.extend(expr);
-            let Some(trailing_block) = trailing_block else {
-                raw_token_list_start = i;
-                continue;
-            };
-            match self.parse_raw_body(parent_span, &tokens[i..tokens.len()])? {
-                RawBodyParseResult::Plain
-                | RawBodyParseResult::Complete(_) => {
-                    self.error(
-                        group.span(),
-                        format!(
-                            "missing closing tag for `{}`",
-                            trailing_block.to_str()
-                        ),
-                    );
-                    return Err(());
-                }
-                RawBodyParseResult::UnmatchedEnd {
-                    span,
-                    kind,
-                    offset,
-                    contents,
-                } => {
-                    let mut wrong_tag = kind != trailing_block;
-                    if trailing_block == TrailingBlockKind::If
-                        && kind == TrailingBlockKind::Else
-                    {
-                        let TokenTree::Group(_else_tag) = &tokens[i + offset]
-                        else {
-                            unreachable!()
-                        };
-                        // TODO: handle else expr
-                        wrong_tag = false;
-                    }
-                    if wrong_tag {
-                        self.error(
-                            span,
-                            format!(
-                                "expected closing tag for `{}`, found `{}`",
-                                trailing_block.to_str(),
-                                kind.to_str()
-                            ),
-                        );
-                        return Err(());
-                    }
-                    self.close_expr_after_trailing_body(
-                        &mut exprs, kind, contents,
-                    );
-                    i += offset + 1;
-                    raw_token_list_start = i;
-                }
+            if let Some(res) = self.handle_template_in_raw_block(
+                parent_span,
+                tokens,
+                offset,
+                &mut raw_token_list_start,
+                &mut i,
+                group,
+                inner_tokens,
+                &mut exprs,
+            )? {
+                return Ok(res);
             }
         }
         if raw_token_list_start == 0 {
@@ -2206,5 +2142,132 @@ impl Context {
             }));
         }
         Ok(RawBodyParseResult::Complete(exprs))
+    }
+
+    #[allow(clippy::too_many_arguments)] // dude stop shaming my code ik this is not ideal
+    fn handle_template_in_raw_block(
+        &mut self,
+        block_parent_span: Span,
+        block_tokens: &[TokenTree],
+        offset_in_block: usize,
+        raw_token_list_start: &mut usize,
+        block_continuation: &mut usize,
+        group: &Group,
+        template_inner_tokens: &[TokenTree],
+        exprs: &mut Vec<Rc<MetaExpr>>,
+    ) -> Result<Option<RawBodyParseResult>> {
+        let first_tok = template_inner_tokens.first();
+        if let Some(TokenTree::Ident(ident)) = first_tok {
+            if ident.to_string() == "else" {
+                return Ok(Some(RawBodyParseResult::UnmatchedEnd {
+                    span: group.span(),
+                    kind: TrailingBlockKind::Else,
+                    offset: offset_in_block,
+                    contents: std::mem::take(exprs),
+                }));
+            }
+        }
+        if let Some(TokenTree::Punct(p)) = first_tok {
+            if p.as_char() == '/' {
+                // this is a closing tag
+                let end_tag =
+                    self.parse_closing_tag(group, template_inner_tokens)?;
+                return Ok(Some(RawBodyParseResult::UnmatchedEnd {
+                    span: group.span(),
+                    kind: end_tag,
+                    offset: offset_in_block,
+                    contents: std::mem::take(exprs),
+                }));
+            }
+        }
+        let (expr, rest, trailing_block) =
+            self.parse_body(group.span(), template_inner_tokens, true);
+        debug_assert!(rest.is_empty());
+        exprs.extend(expr);
+        let Some(trailing_block) = trailing_block else {
+            *raw_token_list_start = *block_continuation;
+            return Ok(None);
+        };
+
+        let continuation = &block_tokens[*block_continuation..];
+
+        if trailing_block == TrailingBlockKind::Unquote {
+            let (contents, rest, trailing_block_kind) =
+                self.parse_body(block_parent_span, continuation, false);
+
+            let tokens_consumed = continuation.len() - rest.len();
+
+            let Some(trailing_block_kind) = trailing_block_kind else {
+                self.error(group.span(), "`unquote` tag is never terminated");
+                return Err(());
+            };
+            if trailing_block_kind != TrailingBlockKind::Unquote {
+                let continuation_tag_span =
+                    continuation[tokens_consumed - 1].span();
+                self.error(
+                    continuation_tag_span,
+                    format!(
+                        "unexpected end tag `{}`",
+                        trailing_block_kind.to_str()
+                    ),
+                );
+                return Err(());
+            }
+
+            self.close_expr_after_trailing_body(
+                exprs,
+                trailing_block_kind,
+                contents,
+            );
+            *block_continuation += tokens_consumed;
+            *raw_token_list_start = *block_continuation;
+            return Ok(None);
+        }
+        match self.parse_raw_body(block_parent_span, continuation)? {
+            RawBodyParseResult::Plain | RawBodyParseResult::Complete(_) => {
+                self.error(
+                    group.span(),
+                    format!(
+                        "missing closing tag for `{}`",
+                        trailing_block.to_str()
+                    ),
+                );
+                Err(())
+            }
+            RawBodyParseResult::UnmatchedEnd {
+                span,
+                kind,
+                offset,
+                contents,
+            } => {
+                let mut wrong_tag = kind != trailing_block;
+                if trailing_block == TrailingBlockKind::If
+                    && kind == TrailingBlockKind::Else
+                {
+                    let TokenTree::Group(_else_tag) =
+                        &block_tokens[*block_continuation + offset]
+                    else {
+                        unreachable!()
+                    };
+                    // TODO: handle else expr
+                    wrong_tag = false;
+                }
+                if wrong_tag {
+                    self.error(
+                        span,
+                        format!(
+                            "expected closing tag for `{}`, found `{}`",
+                            trailing_block.to_str(),
+                            kind.to_str()
+                        ),
+                    );
+                    return Err(());
+                }
+                self.close_expr_after_trailing_body(exprs, kind, contents);
+                *block_continuation += offset + 1;
+                *raw_token_list_start = *block_continuation;
+                Ok(None)
+            }
+        }
     }
 }

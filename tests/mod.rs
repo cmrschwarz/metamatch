@@ -69,7 +69,7 @@ fn unquote_block() {
         1
         [<unquote>]
         for X in [1, 2, 3] {
-            raw!(+X)
+            quote!(+X)
         }
         [</unquote>]
     };
