@@ -1132,6 +1132,13 @@ impl Context {
                             allow_trailing_block,
                         )
                     }
+                    "raw" => {
+                        return self.parse_raw_expr(
+                            span,
+                            &tokens[1..],
+                            allow_trailing_block,
+                        )
+                    }
                     "unquote" => {
                         return self.parse_unquote_expr(
                             span,
@@ -1354,10 +1361,12 @@ impl Context {
         self.push_dummy_scope(ScopeKind::Quoted);
 
         let Some(TokenTree::Group(p)) = tokens.first() else {
-            self.error(
-                tokens.first().map(|t| t.span()).unwrap_or(raw_span),
-                "expected block after `quote!`",
-            );
+            if has_exclam {
+                self.error(
+                    tokens.first().map(|t| t.span()).unwrap_or(raw_span),
+                    "expected block after `quote!`",
+                );
+            }
             return Err(());
         };
 
@@ -1373,6 +1382,59 @@ impl Context {
             Rc::new(MetaExpr::Scope {
                 span: raw_span,
                 body: contents,
+            }),
+            &tokens[1..],
+            None,
+        ))
+    }
+
+    fn parse_raw_expr<'a>(
+        &mut self,
+        raw_span: Span,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        let mut has_exclam = false;
+        if let Some(TokenTree::Punct(p)) = tokens.first() {
+            has_exclam = p.as_char() == '!';
+        }
+
+        if allow_trailing_block
+            && (tokens.is_empty() || has_exclam && tokens.len() == 1)
+        {
+            self.error(
+                tokens.first().unwrap().span(),
+                "`raw` cannot be used as a template",
+            );
+            return Err(());
+        }
+
+        if !has_exclam {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(raw_span),
+                "expected `!` after `raw`",
+            );
+        }
+
+        let tokens = &tokens[usize::from(has_exclam)..];
+
+        let Some(TokenTree::Group(group)) = tokens.first() else {
+            if has_exclam {
+                self.error(
+                    tokens.first().map(|t| t.span()).unwrap_or(raw_span),
+                    "expected block after `quote!`",
+                );
+            }
+            return Err(());
+        };
+
+        let raw_block_contents = group.stream().into_vec();
+
+        Ok((
+            Rc::new(MetaExpr::Literal {
+                span: group.span(),
+                value: Rc::new(MetaValue::Tokens(raw_block_contents)),
             }),
             &tokens[1..],
             None,

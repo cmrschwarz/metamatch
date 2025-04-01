@@ -79,6 +79,31 @@ fn unquote_block() {
 }
 
 #[test]
+fn raw_expr() {
+    let res = quote! {
+        [<for X in [1, raw!(+2), raw!(+3)]>]
+            X
+        [</for>]
+    };
+
+    assert_eq!(res, 6);
+}
+
+#[test]
+fn raw_stmt() {
+    const X: i64 = 5;
+    let res = unquote! {
+        raw!(1);
+        for X in [2, 3, 4] {
+            // this will *not* evaluate the X
+            raw!(+ X);
+        }
+    };
+
+    assert_eq!(res, 16);
+}
+
+#[test]
 fn macro_errors() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/**/*.rs");
