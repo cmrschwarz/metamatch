@@ -1276,15 +1276,37 @@ impl Context {
         if let Some(TokenTree::Punct(p)) = tokens.first() {
             has_exclam = p.as_char() == '!';
         }
+
+        if allow_trailing_block
+            && (tokens.is_empty() || has_exclam && tokens.len() == 1)
+        {
+            if has_exclam {
+                self.error(
+                    tokens.first().unwrap().span(),
+                    "the `quote` template tag does not use an `!`",
+                );
+            }
+
+            // for dummy bindings
+            self.scopes.push(Default::default());
+            return Ok((
+                Rc::new(MetaExpr::Scope {
+                    span: raw_span,
+                    body: Vec::new(),
+                }),
+                &[],
+                Some(TrailingBlockKind::Quote),
+            ));
+        }
+
         if !has_exclam {
             self.error(
                 tokens.first().map(|t| t.span()).unwrap_or(raw_span),
                 "expected `!` after `quote`",
             );
-            return Err(());
         }
 
-        let tokens = &tokens[1..];
+        let tokens = &tokens[usize::from(has_exclam)..];
 
         // for dummy bindings
         self.scopes.push(Default::default());
