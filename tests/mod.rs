@@ -28,9 +28,9 @@ fn let_bindings() {
 }
 
 #[test]
-fn raw_expr() {
+fn quote_expr() {
     let res = template! {
-        [<for X in [1, raw!(+2), raw!(+3)]>]
+        [<for X in [1, quote!(+2), quote!(+3)]>]
             X
         [</for>]
     };
@@ -39,28 +39,29 @@ fn raw_expr() {
 }
 
 #[test]
-fn raw_scope() {
+fn quote_stmt() {
     let res = eval! {
-        raw!(1);
+        quote!(1);
         for X in [2, 3, 4] {
-            raw!(+ X);
+            quote!(+ X);
         }
     };
 
-    assert_eq!(res, 6);
+    assert_eq!(res, 10);
 }
 
+#[test]
 fn quote_block() {
     let res = eval! {
-        raw!(0);
-        for X in [1, 2, 3] {
+        quote!(1);
+        for X in [2, 3, 4] {
             [<quote>]
                 +X
             [</quote>]
         }
     };
 
-    assert_eq!(res, 6);
+    assert_eq!(res, 10);
 }
 
 #[test]
@@ -68,13 +69,13 @@ fn unquote_block() {
     let res = template! {
         1
         [<unquote>]
-        for X in [1, 2, 3] {
+        for X in [2, 3, 4] {
             quote!(+X)
         }
         [</unquote>]
     };
 
-    assert_eq!(res, 6);
+    assert_eq!(res, 10);
 }
 
 #[test]
