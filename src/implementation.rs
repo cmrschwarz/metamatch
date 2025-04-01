@@ -26,6 +26,7 @@ struct MetaError {
 struct BindingParameter {
     span: Span,
     name: Rc<str>,
+    super_bound: bool,
 }
 
 struct BuiltinFn {
@@ -74,12 +75,6 @@ enum Pattern {
     List { span: Span, elems: Vec<Pattern> },
 }
 
-impl Default for MetaValue {
-    fn default() -> Self {
-        Self::Tokens(Vec::new())
-    }
-}
-
 struct Function {
     span: Span,
     name: Rc<str>,
@@ -99,6 +94,7 @@ enum MetaExpr {
     LetBinding {
         span: Span,
         name: Rc<str>,
+        super_bound: bool,
         expr: Option<Rc<MetaExpr>>,
     },
     FnCall {
@@ -141,6 +137,8 @@ enum MetaExpr {
 struct Binding {
     #[allow(unused)] // Todo: im sure we will need this at some point?
     span: Span,
+    // super bound bindings are available in quoted contexts
+    super_bound: bool,
     value: Rc<MetaValue>,
 }
 
@@ -185,6 +183,30 @@ enum RawBodyParseResult {
         offset: usize,
         contents: Vec<Rc<MetaExpr>>,
     },
+}
+
+impl Pattern {
+    fn make_super_bound(&mut self) {
+        match self {
+            Pattern::Ident(binding) => binding.super_bound = true,
+            Pattern::Tuple { span: _, elems } => {
+                for elem in elems {
+                    elem.make_super_bound();
+                }
+            }
+            Pattern::List { span: _, elems } => {
+                for elem in elems {
+                    elem.make_super_bound();
+                }
+            }
+        }
+    }
+}
+
+impl Default for MetaValue {
+    fn default() -> Self {
+        Self::Tokens(Vec::new())
+    }
 }
 
 impl MetaValue {
@@ -396,7 +418,12 @@ impl Context {
     ) -> Result<()> {
         match pat {
             Pattern::Ident(bind) => {
-                self.insert_binding(bind.span, bind.name.clone(), val);
+                self.insert_binding(
+                    bind.span,
+                    bind.name.clone(),
+                    bind.super_bound,
+                    val,
+                );
                 Ok(())
             }
             Pattern::Tuple {
@@ -479,7 +506,12 @@ impl Context {
             param_count,
             builtin: Box::new(f),
         })));
-        self.insert_binding(Span::call_site(), Rc::from(name), builtin_fn_v);
+        self.insert_binding(
+            Span::call_site(),
+            Rc::from(name),
+            false,
+            builtin_fn_v,
+        );
     }
 
     fn insert_builtin_str_fn(
@@ -597,10 +629,12 @@ impl Context {
         }
         Ok(())
     }
-    fn lookup(&self, name: &str) -> Option<Rc<MetaValue>> {
+    fn lookup(&self, name: &str, super_only: bool) -> Option<Rc<MetaValue>> {
         for scope in &self.scopes {
             if let Some(binding) = scope.bindings.get(name) {
-                return Some(binding.value.clone());
+                if binding.super_bound || !super_only {
+                    return Some(binding.value.clone());
+                }
             }
         }
         None
@@ -661,16 +695,21 @@ impl Context {
         match expr {
             MetaExpr::Literal { span: _, value } => Ok(value.clone()),
             MetaExpr::Ident { span, name } => {
-                if let Some(expr) = self.lookup(name) {
+                if let Some(expr) = self.lookup(name, false) {
                     return Ok(expr);
                 }
                 Ok(Rc::new(MetaValue::Token(TokenTree::Ident(Ident::new(
                     name, *span,
                 )))))
             }
-            MetaExpr::LetBinding { span, expr, name } => {
+            MetaExpr::LetBinding {
+                span,
+                expr,
+                super_bound,
+                name,
+            } => {
                 let val = self.eval(expr.as_ref().unwrap())?;
-                self.insert_binding(*span, name.clone(), val);
+                self.insert_binding(*span, name.clone(), *super_bound, val);
                 Ok(self.empty_token_list.clone())
             }
             MetaExpr::FnCall { span, name, args } => {
@@ -738,6 +777,7 @@ impl Context {
                 self.insert_binding(
                     f.span,
                     f.name.clone(),
+                    false,
                     Rc::new(MetaValue::Fn(f.clone())),
                 );
                 Ok(self.empty_token_list.clone())
@@ -794,7 +834,7 @@ impl Context {
         name: &Rc<str>,
         args: &Vec<Rc<MetaExpr>>,
     ) -> std::result::Result<Rc<MetaValue>, ()> {
-        let Some(binding) = self.lookup(name) else {
+        let Some(binding) = self.lookup(name, false) else {
             self.error(*span, format!("undefined function `{name}`"));
             return Err(());
         };
@@ -818,7 +858,12 @@ impl Context {
                         return Err(());
                     };
                     let param = &function.params[i];
-                    self.insert_binding(param.span, param.name.clone(), val);
+                    self.insert_binding(
+                        param.span,
+                        param.name.clone(),
+                        param.super_bound,
+                        val,
+                    );
                 }
                 let res =
                     self.eval_stmt_list_to_meta_val(*span, &function.body);
@@ -863,9 +908,14 @@ impl Context {
         &mut self,
         span: Span,
         name: Rc<str>,
+        super_bound: bool,
         value: Rc<MetaValue>,
     ) {
-        let binding = Binding { span, value };
+        let binding = Binding {
+            span,
+            super_bound,
+            value,
+        };
         self.scopes
             .last_mut()
             .unwrap()
@@ -1108,12 +1158,28 @@ impl Context {
                 let name = Rc::from(ident.to_string());
 
                 match &*name {
-                    "let" => {
-                        return self.parse_let(
+                    "super" => {
+                        return self.parse_super(
                             span,
                             &tokens[1..],
                             allow_trailing_block,
                         )
+                    }
+                    "let" => {
+                        return self.parse_let(
+                            span,
+                            &tokens[1..],
+                            false,
+                            allow_trailing_block,
+                        )
+                    }
+                    "for" => {
+                        return self.parse_for(
+                            span,
+                            &tokens[1..],
+                            false,
+                            allow_trailing_block,
+                        );
                     }
                     "fn" => {
                         return self.parse_fn(
@@ -1122,13 +1188,7 @@ impl Context {
                             allow_trailing_block,
                         );
                     }
-                    "for" => {
-                        return self.parse_for(
-                            span,
-                            &tokens[1..],
-                            allow_trailing_block,
-                        );
-                    }
+
                     "if" => {
                         return self.parse_if(
                             span,
@@ -1232,12 +1292,13 @@ impl Context {
         });
     }
 
-    fn insert_dummy_binding(&mut self, name: Rc<str>) {
+    fn insert_dummy_binding(&mut self, name: Rc<str>, super_bound: bool) {
         // dummy binding during parsing so raw blocks can detect identifiers
         self.scopes.last_mut().unwrap().bindings.insert(
             name.clone(),
             Binding {
                 span: Span::call_site(),
+                super_bound,
                 value: self.empty_token_list.clone(),
             },
         );
@@ -1245,7 +1306,9 @@ impl Context {
 
     fn insert_dummy_bindings_for_pattern(&mut self, pattern: &Pattern) {
         match pattern {
-            Pattern::Ident(i) => self.insert_dummy_binding(i.name.clone()),
+            Pattern::Ident(i) => {
+                self.insert_dummy_binding(i.name.clone(), i.super_bound)
+            }
             Pattern::Tuple { span: _, elems } => {
                 for pat in elems {
                     self.insert_dummy_bindings_for_pattern(pat);
@@ -1259,10 +1322,50 @@ impl Context {
         }
     }
 
+    fn parse_super<'a>(
+        &mut self,
+        let_span: Span,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        const SUPPORTED: &str = "`let`, or `for`";
+        let Some(TokenTree::Ident(ident)) = tokens.first() else {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(let_span),
+                format!("expected {SUPPORTED} after `super`"),
+            );
+            return Err(());
+        };
+        let kw = ident.to_string();
+        match &*kw {
+            "for" => self.parse_for(
+                ident.span(),
+                &tokens[1..],
+                true,
+                allow_trailing_block,
+            ),
+            "let" => self.parse_let(
+                ident.span(),
+                &tokens[1..],
+                true,
+                allow_trailing_block,
+            ),
+            _ => {
+                self.error(
+                    let_span,
+                    format!("expected {SUPPORTED} after `super`, got `{kw}`"),
+                );
+                Err(())
+            }
+        }
+    }
+
     fn parse_let<'a>(
         &mut self,
         let_span: Span,
         tokens: &'a [TokenTree],
+        super_bound: bool,
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
@@ -1275,13 +1378,13 @@ impl Context {
             self.error(tokens[0].span(), "expected identifier");
         })?;
 
-        self.insert_dummy_binding(name.clone());
-
         if tokens.len() == 1 && allow_trailing_block {
+            self.insert_dummy_binding(name.clone(), true);
             return Ok((
                 Rc::new(MetaExpr::LetBinding {
                     span: let_span,
                     name,
+                    super_bound: true,
                     expr: None,
                 }),
                 &[],
@@ -1312,10 +1415,13 @@ impl Context {
         }
         let (expr, rest) = self.parse_expr(let_span, rest)?;
 
+        self.insert_dummy_binding(name.clone(), super_bound);
+
         Ok((
             Rc::new(MetaExpr::LetBinding {
                 span: let_span,
                 name,
+                super_bound,
                 expr: Some(expr),
             }),
             rest,
@@ -1519,44 +1625,47 @@ impl Context {
 
         let param_tokens = param_group.stream().into_vec();
         let mut params = Vec::new();
-        let mut rest = &param_tokens[..];
+        let mut params_rest = &param_tokens[..];
+
+        let rest = &tokens[3..];
+
+        let trailing_block = rest.is_empty() && allow_trailing_block;
 
         self.push_dummy_scope(ScopeKind::Unquoted);
 
-        while !rest.is_empty() {
-            let (param_span, param_name) =
-                parse_ident(&rest[0]).ok_or_else(|| {
+        while !params_rest.is_empty() {
+            let (param_span, param_name) = parse_ident(&params_rest[0])
+                .ok_or_else(|| {
                     self.error(
-                        rest[0].span(),
+                        params_rest[0].span(),
                         "expected parameter name".to_owned(),
                     );
                 })?;
-            self.insert_dummy_binding(param_name.clone());
+            self.insert_dummy_binding(param_name.clone(), trailing_block);
 
             params.push(BindingParameter {
                 span: param_span,
                 name: param_name,
+                super_bound: trailing_block,
             });
 
-            rest = &rest[1..];
-            if !rest.is_empty() {
-                if let TokenTree::Punct(p) = &rest[0] {
+            params_rest = &params_rest[1..];
+            if !params_rest.is_empty() {
+                if let TokenTree::Punct(p) = &params_rest[0] {
                     if p.as_char() == ',' {
-                        rest = &rest[1..];
+                        params_rest = &params_rest[1..];
                         continue;
                     }
                 }
-                if !rest.is_empty() {
+                if !params_rest.is_empty() {
                     self.error(
-                        rest[0].span(),
+                        params_rest[0].span(),
                         "expected comma between parameters".to_owned(),
                     );
                     return Err(());
                 }
             }
         }
-
-        let rest = &tokens[3..];
 
         let (body, rest, trailing_block) = if rest.is_empty() {
             if !allow_trailing_block {
@@ -1605,10 +1714,12 @@ impl Context {
         &mut self,
         for_span: Span,
         tokens: &'a [TokenTree],
+        super_bound: bool,
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
-        let (pattern, rest) = self.parse_pattern(for_span, tokens)?;
+        let (mut pattern, rest) =
+            self.parse_pattern(for_span, super_bound, tokens)?;
 
         let mut is_in = false;
         if let Some(TokenTree::Ident(i)) = rest.first() {
@@ -1633,14 +1744,15 @@ impl Context {
 
         self.push_dummy_scope(ScopeKind::Unquoted);
 
-        self.insert_dummy_bindings_for_pattern(&pattern);
-
         let (body, final_rest, trailing_block);
         if rest.is_empty() && allow_trailing_block {
             body = Vec::new();
             final_rest = rest;
+            pattern.make_super_bound();
+            self.insert_dummy_bindings_for_pattern(&pattern);
             trailing_block = Some(TrailingBlockKind::For);
         } else {
+            self.insert_dummy_bindings_for_pattern(&pattern);
             // Parse body
             let Some(TokenTree::Group(body_group)) = rest.first() else {
                 self.error(
@@ -1804,6 +1916,7 @@ impl Context {
     fn parse_pattern_group(
         &mut self,
         parent_span: Span,
+        super_bound: bool,
         group: &Group,
     ) -> Pattern {
         let tokens = group.stream().into_vec();
@@ -1813,7 +1926,8 @@ impl Context {
         let mut final_comma = None;
 
         while !rest.is_empty() {
-            let Ok((pat, new_rest)) = self.parse_pattern(parent_span, rest)
+            let Ok((pat, new_rest)) =
+                self.parse_pattern(parent_span, super_bound, rest)
             else {
                 break;
             };
@@ -1869,6 +1983,7 @@ impl Context {
     fn parse_pattern<'a>(
         &mut self,
         parent_span: Span,
+        super_bound: bool,
         tokens: &'a [TokenTree],
     ) -> Result<(Pattern, &'a [TokenTree])> {
         if tokens.is_empty() {
@@ -1876,15 +1991,17 @@ impl Context {
             return Err(());
         }
         match &tokens[0] {
+            // TODO: allow super ident
             TokenTree::Ident(ident) => Ok((
                 Pattern::Ident(BindingParameter {
                     span: ident.span(),
                     name: Rc::from(ident.to_string()),
+                    super_bound,
                 }),
                 &tokens[1..],
             )),
             TokenTree::Group(group) => Ok((
-                self.parse_pattern_group(parent_span, group),
+                self.parse_pattern_group(parent_span, super_bound, group),
                 &tokens[1..],
             )),
             _ => {
@@ -2180,7 +2297,7 @@ impl Context {
             if !is_raw_block {
                 if let TokenTree::Ident(ident) = t {
                     let name = ident.to_string();
-                    if self.lookup(&name).is_some() {
+                    if self.lookup(&name, true).is_some() {
                         append_token_list(
                             &mut exprs,
                             tokens,
