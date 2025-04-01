@@ -146,6 +146,7 @@ struct Binding {
 
 struct Context {
     empty_token_list: Rc<MetaValue>,
+    empty_token_list_expr: Rc<MetaExpr>,
     scopes: Vec<HashMap<Rc<str>, Binding>>,
     errors: Vec<MetaError>,
 }
@@ -156,7 +157,9 @@ enum TrailingBlockKind {
     If,
     Else,
     Let,
+    Quote,
     Unquote,
+    UnquoteEnd,
     Fn,
 }
 
@@ -213,6 +216,8 @@ impl TrailingBlockKind {
             TrailingBlockKind::Let => "let",
             TrailingBlockKind::Fn => "fn",
             TrailingBlockKind::Unquote => "unquote",
+            TrailingBlockKind::UnquoteEnd => "/unquote",
+            TrailingBlockKind::Quote => "quote",
         }
     }
 }
@@ -285,8 +290,13 @@ fn has_template_angle_backets(tokens: &[TokenTree]) -> bool {
 
 impl Default for Context {
     fn default() -> Self {
+        let empty_token_list = Rc::new(MetaValue::Tokens(Vec::new()));
         let mut ctx = Self {
-            empty_token_list: Default::default(),
+            empty_token_list_expr: Rc::new(MetaExpr::Literal {
+                span: Span::call_site(),
+                value: empty_token_list.clone(),
+            }),
+            empty_token_list,
             scopes: vec![Default::default()],
             errors: Default::default(),
         };
@@ -884,6 +894,82 @@ impl Context {
             self.parse_stmt_or_expr(parent_span, tokens, false)?;
         Ok((expr, rest))
     }
+    fn parse_template_expr<'a>(
+        &mut self,
+        group: &Group,
+        group_tokens: &[TokenTree],
+        rest_tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        let content = &group_tokens[1..&group_tokens.len() - 1];
+
+        if let Some(TokenTree::Punct(p)) = content.first() {
+            if p.as_char() == '/' {
+                let end_tag = self.parse_closing_tag(group, group_tokens)?;
+                if end_tag == TrailingBlockKind::UnquoteEnd {
+                    return Ok((
+                        self.empty_token_list_expr.clone(),
+                        rest_tokens,
+                        Some(end_tag),
+                    ));
+                } else {
+                    self.error(
+                        group.span(),
+                        format!("unexpected end tag `{}`", end_tag.to_str()),
+                    );
+                    return Err(());
+                }
+            }
+        }
+
+        let mut is_quote = false;
+        if content.len() == 1 {
+            if let Some(TokenTree::Ident(i)) = content.first() {
+                is_quote = i.to_string() == "quote";
+            }
+        }
+
+        if !is_quote {
+            self.error(group.span(), "template tags besides `quote` are not supported in metamatch source");
+            return Err(()); // TODO: debatable?
+        }
+
+        // for dummy bindings
+        self.scopes.push(Default::default());
+
+        let res = self.parse_raw_body(group.span(), rest_tokens);
+
+        self.scopes.pop();
+
+        match res? {
+            RawBodyParseResult::Plain | RawBodyParseResult::Complete(_) => {
+                self.error(group.span(), "`quote` tag is never closed");
+                Err(())
+            }
+            RawBodyParseResult::UnmatchedEnd {
+                span,
+                kind,
+                offset,
+                contents,
+            } => {
+                if kind != TrailingBlockKind::Quote {
+                    self.error(
+                        span,
+                        format!("unmatched closing tag `/{}`", kind.to_str()),
+                    );
+                    return Err(());
+                }
+                Ok((
+                    Rc::new(MetaExpr::Scope {
+                        span: group.span(),
+                        body: contents,
+                    }),
+                    &rest_tokens[offset + 1..],
+                    None,
+                ))
+            }
+        }
+    }
     fn parse_stmt_or_expr<'a>(
         &mut self,
         parent_span: Span,
@@ -915,19 +1001,30 @@ impl Context {
                         ))
                     }
                     Delimiter::Bracket => {
-                        let list = self.parse_comma_separated(
-                            group.delimiter(),
-                            group.span(),
-                            &group_tokens,
-                        )?;
-                        Ok((
-                            Rc::new(MetaExpr::List {
-                                span: group.span(),
-                                exprs: list,
-                            }),
-                            &tokens[1..],
-                            None,
-                        ))
+                        let rest = &tokens[1..];
+                        let (expr, rest, trailing_block_tag) =
+                            if has_template_angle_backets(&group_tokens) {
+                                self.parse_template_expr(
+                                    group,
+                                    &group_tokens[1..&group_tokens.len() - 1],
+                                    rest,
+                                )?
+                            } else {
+                                let list = self.parse_comma_separated(
+                                    group.delimiter(),
+                                    group.span(),
+                                    &group_tokens,
+                                )?;
+                                (
+                                    Rc::new(MetaExpr::List {
+                                        span: group.span(),
+                                        exprs: list,
+                                    }),
+                                    rest,
+                                    None,
+                                )
+                            };
+                        Ok((expr, rest, trailing_block_tag))
                     }
                     Delimiter::None => {
                         let (expr, rest) =
@@ -988,7 +1085,13 @@ impl Context {
                             allow_trailing_block,
                         );
                     }
-                    "raw" => return self.parse_raw_expr(span, &tokens[1..]),
+                    "quote" => {
+                        return self.parse_quote_expr(
+                            span,
+                            &tokens[1..],
+                            allow_trailing_block,
+                        )
+                    }
                     "unquote" => {
                         return self.parse_unquote_expr(
                             span,
@@ -1162,10 +1265,11 @@ impl Context {
         ))
     }
 
-    fn parse_raw_expr<'a>(
+    fn parse_quote_expr<'a>(
         &mut self,
         raw_span: Span,
         tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
         let mut has_exclam = false;
@@ -1175,7 +1279,7 @@ impl Context {
         if !has_exclam {
             self.error(
                 tokens.first().map(|t| t.span()).unwrap_or(raw_span),
-                "expected `!` after `raw`",
+                "expected `!` after `quote`",
             );
             return Err(());
         }
@@ -1188,7 +1292,7 @@ impl Context {
         let Some(TokenTree::Group(p)) = tokens.first() else {
             self.error(
                 tokens.first().map(|t| t.span()).unwrap_or(raw_span),
-                "expected block after `raw!`",
+                "expected block after `quote!`",
             );
             return Err(());
         };
@@ -1221,7 +1325,7 @@ impl Context {
         if !allow_trailing_block || !tokens.is_empty() {
             self.error(
                 tokens.first().map(|t| t.span()).unwrap_or(raw_span),
-                "`eval` is only allowed as a template block",
+                "`unquote` is only allowed as a template block",
             );
             return Err(());
         }
@@ -1811,13 +1915,14 @@ impl Context {
                 self.scopes.pop();
             }
             TrailingBlockKind::Else => unreachable!(),
-            TrailingBlockKind::Unquote => {
+            TrailingBlockKind::Unquote | TrailingBlockKind::Quote => {
                 let MetaExpr::Scope { body, .. } = expr else {
                     unreachable!()
                 };
                 *body = contents;
                 self.scopes.pop();
             }
+            TrailingBlockKind::UnquoteEnd => unreachable!(),
         }
     }
 
@@ -1857,6 +1962,44 @@ impl Context {
             }
             Err(()) => Err(()),
         }
+    }
+
+    fn parse_closing_tag(
+        &mut self,
+        group: &Group,
+        group_tokens: &[TokenTree],
+    ) -> Result<TrailingBlockKind> {
+        let Some(TokenTree::Ident(ident)) = group_tokens.get(1) else {
+            self.error(
+                group_tokens
+                    .get(1)
+                    .map(|t| t.span())
+                    .unwrap_or(group.span()),
+                "closing tag expects an identifier after `/`",
+            );
+            return Err(());
+        };
+        let tag = ident.to_string();
+        let kind = match &*tag {
+            "for" => TrailingBlockKind::For,
+            "let" => TrailingBlockKind::Let,
+            "fn" => TrailingBlockKind::Fn,
+            "quote" => TrailingBlockKind::Quote,
+            "unquote" => TrailingBlockKind::Unquote,
+            "if" => TrailingBlockKind::If,
+            "else" => TrailingBlockKind::Else,
+            _ => {
+                self.error(
+                    ident.span(),
+                    format!("unknown closing tag `{tag}`"),
+                );
+                return Err(());
+            }
+        };
+        if let Some(tok) = group_tokens.get(3) {
+            self.error(tok.span(), "stray token after closing tag");
+        }
+        Ok(kind)
     }
 
     fn parse_raw_body(
@@ -1936,7 +2079,8 @@ impl Context {
                 }
                 continue;
             }
-            let first_tok = group_tokens.get(1);
+            let inner_tokens = &group_tokens[1..group_tokens.len() - 1];
+            let first_tok = inner_tokens.first();
             if let Some(TokenTree::Ident(ident)) = first_tok {
                 if ident.to_string() == "else" {
                     append_previous(
@@ -1956,36 +2100,8 @@ impl Context {
             if let Some(TokenTree::Punct(p)) = first_tok {
                 if p.as_char() == '/' {
                     // this is a closing tag
-                    let Some(TokenTree::Ident(ident)) = group_tokens.get(2)
-                    else {
-                        self.error(
-                            group_tokens
-                                .get(2)
-                                .map(|t| t.span())
-                                .unwrap_or(group.span()),
-                            "closing tag expects an identifier after `/`",
-                        );
-                        return Err(());
-                    };
-                    let tag = ident.to_string();
-                    let kind = match &*tag {
-                        "for" => TrailingBlockKind::For,
-                        "let" => TrailingBlockKind::Let,
-                        "fn" => TrailingBlockKind::Fn,
-                        "unquote" => TrailingBlockKind::Unquote,
-                        "if" => TrailingBlockKind::If,
-                        "else" => TrailingBlockKind::Else,
-                        _ => {
-                            self.error(
-                                group_tokens
-                                    .get(2)
-                                    .map(|t| t.span())
-                                    .unwrap_or(group.span()),
-                                format!("unknown closing tag `{tag}`"),
-                            );
-                            return Err(());
-                        }
-                    };
+                    let end_tag =
+                        self.parse_closing_tag(group, inner_tokens)?;
                     append_previous(
                         &mut exprs,
                         tokens,
@@ -1994,17 +2110,14 @@ impl Context {
                     );
                     return Ok(RawBodyParseResult::UnmatchedEnd {
                         span: group.span(),
-                        kind,
+                        kind: end_tag,
                         offset,
                         contents: exprs,
                     });
                 }
             }
-            let (expr, trailing_block) = self.parse_body(
-                parent_span,
-                &group_tokens[1..group_tokens.len() - 1],
-                true,
-            );
+            let (expr, trailing_block) =
+                self.parse_body(parent_span, inner_tokens, true);
             exprs.extend(expr);
             let Some(trailing_block) = trailing_block else {
                 raw_token_list_start = i;

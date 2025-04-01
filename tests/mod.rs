@@ -50,15 +50,28 @@ fn raw_scope() {
     assert_eq!(res, 6);
 }
 
+fn quote_block() {
+    let res = eval! {
+        raw!(0);
+        for X in [1, 2, 3] {
+            [<quote>]
+                +X
+            [</quote>]
+        }
+    };
+
+    assert_eq!(res, 6);
+}
+
 #[test]
-fn eval_block() {
+fn unquote_block() {
     let res = template! {
         1
-        [<eval>]
-        for X in [2, 3, 4] {
+        [<unquote>]
+        for X in [1, 2, 3] {
             raw!(+X)
         }
-        [</eval>]
+        [</unquote>]
     };
 
     assert_eq!(res, 6);
