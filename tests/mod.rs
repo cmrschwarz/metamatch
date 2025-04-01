@@ -104,6 +104,21 @@ fn raw_stmt() {
 }
 
 #[test]
+fn raw_block() {
+    const X: i64 = 5;
+    let res = unquote! {
+        raw!(1);
+        for X in [2, 3, 4] {
+            // this will *not* evaluate the X
+            [<raw>]
+            + X
+            [</raw>]
+        }
+    };
+    assert_eq!(res, 16);
+}
+
+#[test]
 fn macro_errors() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/**/*.rs");

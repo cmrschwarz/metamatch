@@ -1,4 +1,4 @@
-error: template tags besides `quote` are only supported in quoted output
+error: template tags besides `raw` and `quote` are only supported in quoted output
  --> tests/ui/unquote_not_in_quote.rs:5:9
   |
 5 |         [<unquote>]

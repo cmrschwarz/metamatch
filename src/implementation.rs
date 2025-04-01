@@ -146,6 +146,7 @@ struct Binding {
 
 #[derive(PartialEq, Eq)]
 enum ScopeKind {
+    Raw,
     Quoted,
     Unquoted,
     Evaluation,
@@ -171,6 +172,7 @@ enum TrailingBlockKind {
     Let,
     Quote,
     Unquote,
+    Raw,
     Fn,
 }
 
@@ -228,6 +230,7 @@ impl TrailingBlockKind {
             TrailingBlockKind::Fn => "fn",
             TrailingBlockKind::Unquote => "unquote",
             TrailingBlockKind::Quote => "quote",
+            TrailingBlockKind::Raw => "raw",
         }
     }
 }
@@ -245,7 +248,7 @@ pub fn quote(body: TokenStream) -> TokenStream {
     let body = body.into_vec();
     let mut ctx = Context::new(ScopeKind::Quoted);
 
-    let Ok(exprs) = ctx.parse_raw_body_to_exprs(Span::call_site(), &body)
+    let Ok(exprs) = ctx.parse_raw_block_to_exprs(Span::call_site(), &body)
     else {
         return ctx.expand_errors();
     };
@@ -963,21 +966,29 @@ impl Context {
             }
         }
 
+        let mut is_raw = false;
         let mut is_quote = false;
         if template_tokens.len() == 1 {
             if let Some(TokenTree::Ident(i)) = template_tokens.first() {
                 is_quote = i.to_string() == "quote";
+                is_raw = i.to_string() == "raw";
             }
         }
 
-        if !is_quote {
-            self.error(group.span(), "template tags besides `quote` are only supported in quoted output");
+        if !is_quote && !is_raw {
+            self.error(group.span(), "template tags besides `raw` and `quote` are only supported in quoted output");
             return Err(()); // TODO: debatable?
         }
 
-        self.push_dummy_scope(ScopeKind::Quoted);
+        let (trail_kind, scope_kind) = if is_raw {
+            (TrailingBlockKind::Raw, ScopeKind::Raw)
+        } else {
+            (TrailingBlockKind::Quote, ScopeKind::Quoted)
+        };
 
-        let res = self.parse_raw_body(group.span(), rest_tokens);
+        self.push_dummy_scope(scope_kind);
+
+        let res = self.parse_raw_block(group.span(), rest_tokens);
 
         self.scopes.pop();
 
@@ -992,7 +1003,7 @@ impl Context {
                 offset,
                 contents,
             } => {
-                if kind != TrailingBlockKind::Quote {
+                if kind != trail_kind {
                     self.error(
                         span,
                         format!("unmatched closing tag `/{}`", kind.to_str()),
@@ -1373,7 +1384,7 @@ impl Context {
         let raw_block_contents = p.stream().into_vec();
 
         let contents = self
-            .parse_raw_body_to_exprs(raw_span, &raw_block_contents)
+            .parse_raw_block_to_exprs(raw_span, &raw_block_contents)
             .unwrap_or_default(); // we continue in case of a nested error
 
         self.scopes.pop();
@@ -1403,11 +1414,21 @@ impl Context {
         if allow_trailing_block
             && (tokens.is_empty() || has_exclam && tokens.len() == 1)
         {
-            self.error(
-                tokens.first().unwrap().span(),
-                "`raw` cannot be used as a template",
-            );
-            return Err(());
+            if has_exclam {
+                self.error(
+                    tokens.first().unwrap().span(),
+                    "the `raw` template tag does not use an `!`",
+                );
+            }
+            self.push_dummy_scope(ScopeKind::Raw);
+            return Ok((
+                Rc::new(MetaExpr::Scope {
+                    span: raw_span,
+                    body: Vec::new(),
+                }),
+                &[],
+                Some(TrailingBlockKind::Raw),
+            ));
         }
 
         if !has_exclam {
@@ -2049,7 +2070,9 @@ impl Context {
                 self.scopes.pop();
             }
             TrailingBlockKind::Else => unreachable!(),
-            TrailingBlockKind::Unquote | TrailingBlockKind::Quote => {
+            TrailingBlockKind::Unquote
+            | TrailingBlockKind::Quote
+            | TrailingBlockKind::Raw => {
                 let MetaExpr::Scope { body, .. } = expr else {
                     unreachable!()
                 };
@@ -2059,12 +2082,12 @@ impl Context {
         }
     }
 
-    fn parse_raw_body_to_exprs(
+    fn parse_raw_block_to_exprs(
         &mut self,
         parent_span: Span,
         tokens: &[TokenTree],
     ) -> Result<Vec<Rc<MetaExpr>>> {
-        match self.parse_raw_body_deny_unmatched(parent_span, tokens)? {
+        match self.parse_raw_block_deny_unmatched(parent_span, tokens)? {
             None => Ok(vec![Rc::new(MetaExpr::Literal {
                 span: parent_span,
                 value: Rc::new(MetaValue::Tokens(tokens.to_vec())),
@@ -2073,12 +2096,12 @@ impl Context {
         }
     }
 
-    fn parse_raw_body_deny_unmatched(
+    fn parse_raw_block_deny_unmatched(
         &mut self,
         parent_span: Span,
         tokens: &[TokenTree],
     ) -> Result<Option<Vec<Rc<MetaExpr>>>> {
-        match self.parse_raw_body(parent_span, tokens) {
+        match self.parse_raw_block(parent_span, tokens) {
             Ok(RawBodyParseResult::Plain) => Ok(None),
             Ok(RawBodyParseResult::Complete(exprs)) => Ok(Some(exprs)),
             Ok(RawBodyParseResult::UnmatchedEnd {
@@ -2119,6 +2142,7 @@ impl Context {
             "fn" => TrailingBlockKind::Fn,
             "quote" => TrailingBlockKind::Quote,
             "unquote" => TrailingBlockKind::Unquote,
+            "raw" => TrailingBlockKind::Raw,
             "if" => TrailingBlockKind::If,
             "else" => TrailingBlockKind::Else,
             _ => {
@@ -2135,11 +2159,14 @@ impl Context {
         Ok(kind)
     }
 
-    fn parse_raw_body(
+    fn parse_raw_block(
         &mut self,
         parent_span: Span,
         tokens: &[TokenTree],
     ) -> Result<RawBodyParseResult> {
+        let is_raw_block =
+            self.scopes.last().as_ref().unwrap().kind == ScopeKind::Raw;
+
         let mut exprs = Vec::new();
 
         let mut raw_token_list_start = 0;
@@ -2150,20 +2177,22 @@ impl Context {
             let offset = i;
             i += 1;
             let t = &tokens[offset];
-            if let TokenTree::Ident(ident) = t {
-                let name = ident.to_string();
-                if self.lookup(&name).is_some() {
-                    append_token_list(
-                        &mut exprs,
-                        tokens,
-                        raw_token_list_start,
-                        offset,
-                    );
-                    exprs.push(Rc::new(MetaExpr::Ident {
-                        span: ident.span(),
-                        name: Rc::from(name),
-                    }));
-                    raw_token_list_start = i;
+            if !is_raw_block {
+                if let TokenTree::Ident(ident) = t {
+                    let name = ident.to_string();
+                    if self.lookup(&name).is_some() {
+                        append_token_list(
+                            &mut exprs,
+                            tokens,
+                            raw_token_list_start,
+                            offset,
+                        );
+                        exprs.push(Rc::new(MetaExpr::Ident {
+                            span: ident.span(),
+                            name: Rc::from(name),
+                        }));
+                        raw_token_list_start = i;
+                    }
                 }
             }
             let TokenTree::Group(group) = t else {
@@ -2175,9 +2204,10 @@ impl Context {
                 && has_template_angle_backets(&group_tokens);
 
             if !is_template {
-                match self
-                    .parse_raw_body_deny_unmatched(group.span(), &group_tokens)
-                {
+                match self.parse_raw_block_deny_unmatched(
+                    group.span(),
+                    &group_tokens,
+                ) {
                     Err(()) | Ok(None) => (),
                     Ok(Some(body_exprs)) => {
                         append_token_list(
@@ -2196,12 +2226,6 @@ impl Context {
                 }
                 continue;
             }
-            append_token_list(
-                &mut exprs,
-                tokens,
-                raw_token_list_start,
-                offset,
-            );
             let inner_tokens = &group_tokens[1..group_tokens.len() - 1];
             if let Some(res) = self.handle_template_in_raw_block(
                 parent_span,
@@ -2243,9 +2267,17 @@ impl Context {
         template_inner_tokens: &[TokenTree],
         exprs: &mut Vec<Rc<MetaExpr>>,
     ) -> Result<Option<RawBodyParseResult>> {
+        let is_raw_block =
+            self.scopes.last().as_ref().unwrap().kind == ScopeKind::Raw;
         let first_tok = template_inner_tokens.first();
         if let Some(TokenTree::Ident(ident)) = first_tok {
-            if ident.to_string() == "else" {
+            if !is_raw_block && ident.to_string() == "else" {
+                append_token_list(
+                    exprs,
+                    block_tokens,
+                    *raw_token_list_start,
+                    offset_in_block,
+                );
                 return Ok(Some(RawBodyParseResult::UnmatchedEnd {
                     span: group.span(),
                     kind: TrailingBlockKind::Else,
@@ -2259,20 +2291,39 @@ impl Context {
                 // this is a closing tag
                 let end_tag =
                     self.parse_closing_tag(group, template_inner_tokens)?;
-                return Ok(Some(RawBodyParseResult::UnmatchedEnd {
-                    span: group.span(),
-                    kind: end_tag,
-                    offset: offset_in_block,
-                    contents: std::mem::take(exprs),
-                }));
+                if !is_raw_block || end_tag == TrailingBlockKind::Raw {
+                    append_token_list(
+                        exprs,
+                        block_tokens,
+                        *raw_token_list_start,
+                        offset_in_block,
+                    );
+                    return Ok(Some(RawBodyParseResult::UnmatchedEnd {
+                        span: group.span(),
+                        kind: end_tag,
+                        offset: offset_in_block,
+                        contents: std::mem::take(exprs),
+                    }));
+                }
             }
         }
+        if is_raw_block {
+            *block_continuation += offset_in_block + 1;
+            return Ok(None);
+        }
+        append_token_list(
+            exprs,
+            block_tokens,
+            *raw_token_list_start,
+            offset_in_block,
+        );
+        *raw_token_list_start = *block_continuation;
+
         let (expr, rest, trailing_block) =
             self.parse_body(group.span(), template_inner_tokens, true);
         debug_assert!(rest.is_empty());
         exprs.extend(expr);
         let Some(trailing_block) = trailing_block else {
-            *raw_token_list_start = *block_continuation;
             return Ok(None);
         };
 
@@ -2310,7 +2361,7 @@ impl Context {
             *raw_token_list_start = *block_continuation;
             return Ok(None);
         }
-        match self.parse_raw_body(block_parent_span, continuation)? {
+        match self.parse_raw_block(block_parent_span, continuation)? {
             RawBodyParseResult::Plain | RawBodyParseResult::Complete(_) => {
                 self.error(
                     group.span(),
