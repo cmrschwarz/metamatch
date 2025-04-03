@@ -30,7 +30,6 @@ keywords = ["match", "macro", "generator", "boilerplate", "repetition"]
 # None!
 
 [dev-dependencies]
-paste = "1.0.15"
 trybuild = "1.0.90"
 
 [lib]

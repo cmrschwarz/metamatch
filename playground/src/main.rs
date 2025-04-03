@@ -1,4 +1,4 @@
-// Include the metamatch implementation file directly.
+// Include the metamatch implementation files directly.
 // We do it this way to get the proc macros accessible as an
 // fn (TokenStream) -> TokenStream;
 // without messing with the cargo toml of the main crate.

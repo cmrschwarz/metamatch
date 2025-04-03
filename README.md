@@ -35,27 +35,27 @@ A proc-macro for generating repetitive match arms.
 
 ```rust
 use metamatch::metamatch;
-enum VarIntVec {
+enum DynVec {
     I8(Vec<i8>),
     I16(Vec<i16>),
     I32(Vec<i32>),
     I64(Vec<i64>),
 }
 
-impl VarIntVec{
+impl DynVec{
     fn len(&self) -> usize {
         metamatch!(match self {
             #[expand(for X in [I8, I16, I32, I64])]
-            VarIntVec::X(v) => v.len(),
+            DynVec::X(v) => v.len(),
         })
     }
     // v   expands into   v
     fn len_expanded(&self) -> usize {
         match self {
-            VarIntVec::I8(v) => v.len(),
-            VarIntVec::I16(v) => v.len(),
-            VarIntVec::I32(v) => v.len(),
-            VarIntVec::I64(v) => v.len(),
+            DynVec::I8(v) => v.len(),
+            DynVec::I16(v) => v.len(),
+            DynVec::I32(v) => v.len(),
+            DynVec::I64(v) => v.len(),
         }
     }
 }
@@ -74,6 +74,7 @@ This still works with `rustfmt`.
 ```rust
 use metamatch::replicate;
 
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct NodeIdx(usize);
 
 #[replicate(for (TRAIT, FN) in [
@@ -88,7 +89,7 @@ impl core::ops::TRAIT for NodeIdx {
         NodeIdx(self.0.FN(other.0))
     }
 }
-
+assert!(NodeIdx(1) + NodeIdx(2) == NodeIdx(3));
 ```
 
 ## [`quote!`](https://docs.rs/metamatch/latest/metamatch/macro.quote.html)
