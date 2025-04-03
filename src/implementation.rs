@@ -185,24 +185,6 @@ enum RawBodyParseResult {
     },
 }
 
-impl Pattern {
-    fn make_super_bound(&mut self) {
-        match self {
-            Pattern::Ident(binding) => binding.super_bound = true,
-            Pattern::Tuple { span: _, elems } => {
-                for elem in elems {
-                    elem.make_super_bound();
-                }
-            }
-            Pattern::List { span: _, elems } => {
-                for elem in elems {
-                    elem.make_super_bound();
-                }
-            }
-        }
-    }
-}
-
 impl Default for MetaValue {
     fn default() -> Self {
         Self::Tokens(Vec::new())
@@ -1158,18 +1140,10 @@ impl Context {
                 let name = Rc::from(ident.to_string());
 
                 match &*name {
-                    "super" => {
-                        return self.parse_super(
-                            span,
-                            &tokens[1..],
-                            allow_trailing_block,
-                        )
-                    }
                     "let" => {
                         return self.parse_let(
                             span,
                             &tokens[1..],
-                            false,
                             allow_trailing_block,
                         )
                     }
@@ -1177,7 +1151,6 @@ impl Context {
                         return self.parse_for(
                             span,
                             &tokens[1..],
-                            false,
                             allow_trailing_block,
                         );
                     }
@@ -1322,50 +1295,10 @@ impl Context {
         }
     }
 
-    fn parse_super<'a>(
-        &mut self,
-        let_span: Span,
-        tokens: &'a [TokenTree],
-        allow_trailing_block: bool,
-    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
-    {
-        const SUPPORTED: &str = "`let`, or `for`";
-        let Some(TokenTree::Ident(ident)) = tokens.first() else {
-            self.error(
-                tokens.first().map(|t| t.span()).unwrap_or(let_span),
-                format!("expected {SUPPORTED} after `super`"),
-            );
-            return Err(());
-        };
-        let kw = ident.to_string();
-        match &*kw {
-            "for" => self.parse_for(
-                ident.span(),
-                &tokens[1..],
-                true,
-                allow_trailing_block,
-            ),
-            "let" => self.parse_let(
-                ident.span(),
-                &tokens[1..],
-                true,
-                allow_trailing_block,
-            ),
-            _ => {
-                self.error(
-                    let_span,
-                    format!("expected {SUPPORTED} after `super`, got `{kw}`"),
-                );
-                Err(())
-            }
-        }
-    }
-
     fn parse_let<'a>(
         &mut self,
         let_span: Span,
         tokens: &'a [TokenTree],
-        super_bound: bool,
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
@@ -1378,13 +1311,15 @@ impl Context {
             self.error(tokens[0].span(), "expected identifier");
         })?;
 
+        let super_bound = name.chars().next().unwrap().is_uppercase();
+
         if tokens.len() == 1 && allow_trailing_block {
             self.insert_dummy_binding(name.clone(), true);
             return Ok((
                 Rc::new(MetaExpr::LetBinding {
                     span: let_span,
                     name,
-                    super_bound: true,
+                    super_bound,
                     expr: None,
                 }),
                 &[],
@@ -1714,12 +1649,10 @@ impl Context {
         &mut self,
         for_span: Span,
         tokens: &'a [TokenTree],
-        super_bound: bool,
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
-        let (mut pattern, rest) =
-            self.parse_pattern(for_span, super_bound, tokens)?;
+        let (pattern, rest) = self.parse_pattern(for_span, tokens)?;
 
         let mut is_in = false;
         if let Some(TokenTree::Ident(i)) = rest.first() {
@@ -1743,16 +1676,14 @@ impl Context {
         let (variants_expr, rest) = self.parse_expr(for_span, &rest[1..])?;
 
         self.push_dummy_scope(ScopeKind::Unquoted);
+        self.insert_dummy_bindings_for_pattern(&pattern);
 
         let (body, final_rest, trailing_block);
         if rest.is_empty() && allow_trailing_block {
             body = Vec::new();
             final_rest = rest;
-            pattern.make_super_bound();
-            self.insert_dummy_bindings_for_pattern(&pattern);
             trailing_block = Some(TrailingBlockKind::For);
         } else {
-            self.insert_dummy_bindings_for_pattern(&pattern);
             // Parse body
             let Some(TokenTree::Group(body_group)) = rest.first() else {
                 self.error(
@@ -1916,7 +1847,6 @@ impl Context {
     fn parse_pattern_group(
         &mut self,
         parent_span: Span,
-        super_bound: bool,
         group: &Group,
     ) -> Pattern {
         let tokens = group.stream().into_vec();
@@ -1926,8 +1856,7 @@ impl Context {
         let mut final_comma = None;
 
         while !rest.is_empty() {
-            let Ok((pat, new_rest)) =
-                self.parse_pattern(parent_span, super_bound, rest)
+            let Ok((pat, new_rest)) = self.parse_pattern(parent_span, rest)
             else {
                 break;
             };
@@ -1983,7 +1912,6 @@ impl Context {
     fn parse_pattern<'a>(
         &mut self,
         parent_span: Span,
-        super_bound: bool,
         tokens: &'a [TokenTree],
     ) -> Result<(Pattern, &'a [TokenTree])> {
         if tokens.is_empty() {
@@ -1992,16 +1920,32 @@ impl Context {
         }
         match &tokens[0] {
             // TODO: allow super ident
-            TokenTree::Ident(ident) => Ok((
-                Pattern::Ident(BindingParameter {
-                    span: ident.span(),
-                    name: Rc::from(ident.to_string()),
-                    super_bound,
-                }),
-                &tokens[1..],
-            )),
+            TokenTree::Ident(ident) => {
+                let name = ident.to_string();
+                if &*name == "super" {
+                    if let Some(TokenTree::Ident(ident)) = tokens.get(1) {
+                        return Ok((
+                            Pattern::Ident(BindingParameter {
+                                span: ident.span(),
+                                name: Rc::from(ident.to_string()),
+                                super_bound: true,
+                            }),
+                            &tokens[2..],
+                        ));
+                    }
+                }
+                let super_bound = name.chars().next().unwrap().is_uppercase();
+                Ok((
+                    Pattern::Ident(BindingParameter {
+                        span: ident.span(),
+                        name: Rc::from(name),
+                        super_bound,
+                    }),
+                    &tokens[1..],
+                ))
+            }
             TokenTree::Group(group) => Ok((
-                self.parse_pattern_group(parent_span, super_bound, group),
+                self.parse_pattern_group(parent_span, group),
                 &tokens[1..],
             )),
             _ => {

@@ -4,7 +4,7 @@ use metamatch::{quote, unquote};
 fn basic_enum_variants() {
     quote! {
         enum Foo{
-            [<for (i, VARIANT) in enumerate([A, B, C])>]
+            [<for (super i, VARIANT) in enumerate([A, B, C])>]
                 VARIANT = i,
             [</for>]
         }
