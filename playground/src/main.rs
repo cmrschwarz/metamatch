@@ -47,8 +47,8 @@ enum MacroKind {
     #[default]
     Quote,
     Unquote,
-    // Metamatch,
-    // Replicate,
+    Metamatch,
+    Replicate,
 }
 
 #[derive(Parser)]
@@ -90,14 +90,14 @@ fn main() {
     let result = match kind {
         MacroKind::Quote => metamatch_impl::quote(body_tt),
         MacroKind::Unquote => metamatch_impl::unquote(body_tt),
-        // MacroKind::Metamatch => metamatch_impl::metamatch(body_tt),
-        // MacroKind::Replicate => {
-        //    let attrib_str = std::fs::read_to_string(&attrib)
-        //        .unwrap_or_else(|_| panic!("failed to stringify {attrib}"));
-        //    let attrib_tt = syn::parse_str::<TokenStream>(&attrib_str)
-        //        .unwrap_or_else(|_| panic!("failed to stringify {body}"));
-        //    metamatch_impl::replicate(attrib_tt, body_tt)
-        //}
+        MacroKind::Metamatch => metamatch_impl::metamatch(body_tt),
+        MacroKind::Replicate => {
+            let attrib_str = std::fs::read_to_string(&attrib)
+                .unwrap_or_else(|_| panic!("failed to stringify {attrib}"));
+            let attrib_tt = syn::parse_str::<TokenStream>(&attrib_str)
+                .unwrap_or_else(|_| panic!("failed to stringify {body}"));
+            metamatch_impl::replicate(attrib_tt, body_tt)
+        }
     };
 
     println!("{}", pretty_print_token_stream(result));

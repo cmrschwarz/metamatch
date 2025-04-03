@@ -12,7 +12,7 @@
 [msrv]: https://img.shields.io/crates/msrv/metamatch?logo=rust
 [docs-rs]: https://img.shields.io/badge/docs.rs-metamatch-66c2a5?logo=docs.rs
 
-A Rust proc-macro for generating repetitive `match` arms.
+A zero dependency proc-macro for generating repetitive `match` arms.
 
 Match arms for differently typed variants usually cannot be combined,
 even if the are syntactically identical.
@@ -25,7 +25,9 @@ a regular `match` expression. Rust-analyzer also works correctly within this mac
 Even auto refactorings that affect the `#[expand]` (like changing the
 name of an enum variant) work correctly.
 
-`metamatch!` has zero dependencies on other crates.
+`metamatch!` has since gained a few additional features that make it useful for
+a wider range of token manipulation tasks. See the `replicate!` and `quote!`
+variants below.
 
 ## [`metamatch!`](https://docs.rs/metamatch/latest/metamatch/macro.metamatch.html)
 
@@ -59,14 +61,17 @@ impl VarIntVec{
 }
 ```
 
-For more complex examples have a look at the
-[documentation](https://docs.rs/metamatch/latest/metamatch/macro.metamatch.html).
-
+Note that `#[expand(..)]` is not an actual attribute,
+as Rust does not allow attributes on match arms.
+`rustfmt` does though, and that's the trick behind this syntax.
+The `metamatch!` proc macro simply replaces
+`#[expand(..)]` with the generated match arms.
 
 ## [`#[replicate]`](https://docs.rs/metamatch/latest/metamatch/attr.replicate.html)
-An attribute styled proc-macro with similar syntax to `metamatch!`.
+An attribute styled proc-macro with the same syntax as `#[expand]`.
+This still works with `rustfmt`.
 
-```
+```rust
 use metamatch::replicate;
 
 struct NodeIdx(usize);
@@ -86,32 +91,52 @@ impl core::ops::TRAIT for NodeIdx {
 
 ```
 
-## [`expand!`](https://docs.rs/metamatch/latest/metamatch/macro.expand.html)
-A generalized version of `metamatch!` for arbitrary expressions.
+## [`quote!`](https://docs.rs/metamatch/latest/metamatch/macro.quote.html)
+A generalized version for arbitrary expressions.
+This version gives up on `rustfmt` in exchange for more expressive power.
 
 ```rust
-use metamatch::expand;
+use metamatch::quote;
 
-let multi_dim_array: [[i32; 2]; 9] = expand!(
-    for (X, Y) in matrix([1, 2, 3], [1, 2, 3]) [
-        [X, Y],
+const ARRAY: [i32; 4] = quote!{
+    [
+        [<for X in 1..5>]
+        X,
+        [</for>]
     ]
-);
-let result: [[i32; 2]; 9] = [
-    [1, 1],
-    [1, 2],
-    [1, 3],
-    [2, 1],
-    [2, 2],
-    [2, 3],
-    [3, 1],
-    [3, 2],
-    [3, 3],
-];
-assert_eq!(multi_dim_array, result);
+};
+assert_eq!(ARRAY, [1, 2, 3, 4]);
 ```
 
+It uses `[< ... >]` styled template tags inspired by the `paste` crate.
+These tags also work within regular `metatmatch` blocks.
 
+## [`unquote!`](https://docs.rs/metamatch/latest/metamatch/macro.quote.html)
+Just like `quote!`, but starts out in unquoted mode.
+Here's the same example as above expressed using `unquote!`:
+
+```rust
+use metamatch::unquote;
+
+const ARRAY: [i32; 4] = unquote! {
+    let ELEMENTS = for X in 1..5 {
+        quote!(X,)
+    }:
+    quote!([ELEMENTS])
+};
+assert_eq!(ARRAY, [1, 2, 3, 4]);
+```
+You can switch between quoted and unquoted mode from within any macro using
+the `[<quote>]` and `[<unquote>]` template tags.
+The `quote!(..)` used above is a covenience alias for `[<quote>]..[</quote>]`
+
+The syntax inside the `unquote!` is not full Rust, but a tiny subset
+thats evaluated by metamatch. It is dynamically typed and only supports a
+few constructs, so no traits etc. inside an `unquote`.
+(You can of course use whatever you want inside the quoted context).
+
+All other macros also allow this syntax, despite `for` blocks
+being the main usecase in those.
 
 
 ## License

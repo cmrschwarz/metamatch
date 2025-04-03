@@ -19,3 +19,8 @@ pub fn quote(body: TokenStream) -> TokenStream {
 pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
     implementation::replicate(attrib, body)
 }
+
+#[proc_macro]
+pub fn metamatch(body: TokenStream) -> TokenStream {
+    implementation::metamatch(body)
+}

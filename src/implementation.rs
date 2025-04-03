@@ -141,12 +141,13 @@ struct Binding {
     value: Rc<MetaValue>,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ScopeKind {
     Raw,
     Quoted,
     Unquoted,
     Evaluation,
+    Metamatch,
 }
 
 struct Scope {
@@ -277,7 +278,7 @@ pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
     let Some(trailing_block) = trailing_block else {
         ctx.error(
             exprs.last().map(|e| e.span()).unwrap_or(Span::call_site()),
-            "replicate expression ignores the attribute body",
+            "replicate ignores the attribute body",
         );
         return ctx.expand_errors();
     };
@@ -289,6 +290,18 @@ pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
     };
 
     ctx.close_expr_after_trailing_body(&mut exprs, trailing_block, contents);
+
+    ctx.eval_to_token_stream(Span::call_site(), &exprs)
+}
+
+pub fn metamatch(body: TokenStream) -> TokenStream {
+    let body = body.into_vec();
+    let mut ctx = Context::new(ScopeKind::Metamatch);
+
+    let Ok(exprs) = ctx.parse_raw_block_to_exprs(Span::call_site(), &body)
+    else {
+        return ctx.expand_errors();
+    };
 
     ctx.eval_to_token_stream(Span::call_site(), &exprs)
 }
@@ -2251,8 +2264,7 @@ impl Context {
         parent_span: Span,
         tokens: &[TokenTree],
     ) -> Result<RawBodyParseResult> {
-        let is_raw_block =
-            self.scopes.last().as_ref().unwrap().kind == ScopeKind::Raw;
+        let scope_kind = self.scopes.last().as_ref().unwrap().kind;
 
         let mut exprs = Vec::new();
 
@@ -2260,11 +2272,20 @@ impl Context {
 
         let mut i = 0;
 
+        let mut after_hash = false;
+
         while i < tokens.len() {
             let offset = i;
             i += 1;
             let t = &tokens[offset];
-            if !is_raw_block {
+            if scope_kind == ScopeKind::Metamatch {
+                if let TokenTree::Punct(p) = t {
+                    after_hash = p.as_char() == '#';
+                    continue;
+                }
+                after_hash = false;
+            }
+            if scope_kind != ScopeKind::Raw {
                 if let TokenTree::Ident(ident) = t {
                     let name = ident.to_string();
                     if self.lookup(&name, true).is_some() {
@@ -2285,10 +2306,17 @@ impl Context {
             let TokenTree::Group(group) = t else {
                 continue;
             };
+            let is_bracketed = group.delimiter() == Delimiter::Bracket;
+
             let group_tokens = group.stream().into_vec();
 
-            let is_template = group.delimiter() == Delimiter::Bracket
-                && has_template_angle_backets(&group_tokens);
+            let is_template =
+                is_bracketed && has_template_angle_backets(&group_tokens);
+
+            if scope_kind == ScopeKind::Metamatch && after_hash && !is_template
+            {
+                todo!("parse expand attrib")
+            }
 
             if !is_template {
                 match self.parse_raw_block_deny_unmatched(

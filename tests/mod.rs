@@ -166,6 +166,29 @@ fn replicate_trait_defs() {
 }
 
 #[test]
+fn quote_array() {
+    let array: [i32; 10] = quote! {
+        [
+            [<for X in 0..5>]
+            X,
+            [</for>]
+        ]
+    };
+    assert_eq!(array, [0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn unquote_array() {
+    const ARRAY: [i32; 4] = unquote! {
+        let ELEMENTS = for X in 1..5 {
+            quote!(X,)
+        }:
+        quote!([ELEMENTS])
+    };
+    assert_eq!(ARRAY, [1, 2, 3, 4]);
+}
+
+#[test]
 fn macro_errors() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/**/*.rs");
