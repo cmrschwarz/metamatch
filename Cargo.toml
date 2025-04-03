@@ -7,9 +7,10 @@ name = "metamatch"
 version = "0.2.4"
 edition = "2021"
 
-# needed for let .. else
+# 1.65 needed for let .. else
+# 1.70 needed for Rc::into_inner
 # remember to update in ci when bumping this
-rust-version = "1.65.0"
+rust-version = "1.70.0"
 
 authors = ["Christian Schwarz <cmrs@cmrs.io>"]
 license = "MIT OR Apache-2.0"

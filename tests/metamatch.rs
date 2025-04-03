@@ -26,6 +26,7 @@ impl DynVec {
 
     fn promote_to_64(&mut self) {
         metamatch!(match self {
+            // multiple replacement expressions supported
             #[expand(for (SRC, TGT, TYPE) in [
                 (I32, I64, i64),
                 (F32, F64, f64),
@@ -36,7 +37,8 @@ impl DynVec {
                 );
             }
 
-            #[expand(for T in [I64, F64])]
+            // the types are unused, the match body can be shared
+            #[expand_pattern(for T in [I64, F64])]
             DynVec::T(_) => (),
         })
     }
@@ -123,7 +125,7 @@ fn multi_pattern() {
 }
 
 #[test]
-fn template_expr() {
+fn paste_macro_interaction() {
     let src = DynVec::F32(vec![42.0]);
     let res = metamatch!(match src {
         #[expand(for (SRC, TGT) in [
@@ -134,7 +136,7 @@ fn template_expr() {
         ])]
         #[allow(clippy::unnecessary_cast)]
         DynVec::SRC(v) => DynVec::TGT(
-            v.iter().map(|v| *v as [<lowercase(TGT)>]).collect()
+            v.iter().map(|v| *v as [< lowercase(TGT) >]).collect()
         ),
     });
     assert_eq!(res, DynVec::F64(vec![42.0]));
@@ -171,13 +173,26 @@ fn braced_match_expression() {
 fn expand_pattern() {
     let f = DynVec::I32(vec![]);
     let is_int = metamatch!(match f {
-        #[expand(for T in [I32, I64])]
+        #[expand_pattern(for T in [I32, I64])]
         DynVec::T(_) => true,
 
-        #[expand(for T in [F32, F64])]
+        #[expand_pattern(for T in [F32, F64])]
         DynVec::T(_) => {
             false
         }
+    });
+    assert!(is_int);
+}
+
+#[test]
+fn expand_pattern_single_variant() {
+    let f = DynVec::I32(vec![]);
+    let is_int = metamatch!(match f {
+        #[expand_pattern(for T in [()])]
+        DynVec::I32(_) | DynVec::I64(_) => true,
+
+        #[expand_pattern(for T in [F32, F64])]
+        DynVec::T(_) => false,
     });
     assert!(is_int);
 }

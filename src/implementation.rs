@@ -2,7 +2,7 @@ use proc_macro::{
     Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream,
     TokenTree,
 };
-use std::{collections::HashMap, fmt::Debug, rc::Rc, usize};
+use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 trait IntoIterIntoVec {
     type Item;
@@ -86,6 +86,16 @@ struct Function {
 }
 
 #[derive(Debug)]
+struct ExpandPattern {
+    span: Span,
+    for_pattern: Pattern,
+    for_expr: Rc<MetaExpr>,
+    match_arm_patterns: Vec<Rc<MetaExpr>>,
+    match_arm_guard: Vec<Rc<MetaExpr>>,
+    match_arm_body: Vec<Rc<MetaExpr>>,
+}
+
+#[derive(Debug)]
 enum MetaExpr {
     Literal {
         span: Span,
@@ -123,6 +133,8 @@ enum MetaExpr {
         variants_expr: Rc<MetaExpr>,
         body: Vec<Rc<MetaExpr>>,
     },
+    // boxed cause large
+    ExpandPattern(Box<ExpandPattern>),
     Scope {
         span: Span,
         body: Vec<Rc<MetaExpr>>,
@@ -197,6 +209,12 @@ enum RawBodyParseResult {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExpandKind {
+    ExpandFull,
+    ExpandPattern,
+}
+
 impl Default for MetaValue {
     fn default() -> Self {
         Self::Tokens(Vec::new())
@@ -234,6 +252,7 @@ impl MetaExpr {
             MetaExpr::Ident { span, .. } => span,
             MetaExpr::LetBinding { span, .. } => span,
             MetaExpr::FnCall { span, .. } => span,
+            MetaExpr::ExpandPattern(ep) => &ep.span,
             MetaExpr::FnDecl(function) => &function.span,
             MetaExpr::RawOutputGroup { span, .. } => span,
             MetaExpr::IfExpr { span, .. } => span,
@@ -792,7 +811,7 @@ impl Context {
                 let input_list = self.eval(variants_expr)?;
                 let MetaValue::List(list_elems) = &*input_list else {
                     self.error(
-                        *span,
+                        variants_expr.span(),
                         format!(
                             "cannot iterate over {}",
                             input_list.type_id()
@@ -893,12 +912,12 @@ impl Context {
                     let mv = ctx.eval(x)?;
                     let MetaValue::Int { value, .. } = &*mv else {
                         ctx.error(
-                            x.span(),
-                            format!(
-                                "range expression bound must be `int`, not `{}`",
-                                mv.type_id()
-                            ),
-                        );
+                                    x.span(),
+                                    format!(
+                                        "range expression bound must be `int`, not `{}`",
+                                        mv.type_id()
+                                    ),
+                                );
                         return Err(());
                     };
                     Ok(*value)
@@ -931,6 +950,60 @@ impl Context {
                     }));
                 }
                 Ok(Rc::new(MetaValue::List(res)))
+            }
+            MetaExpr::ExpandPattern(ep) => {
+                let input_list = self.eval(&ep.for_expr)?;
+                let MetaValue::List(list_elems) = &*input_list else {
+                    self.error(
+                        ep.for_expr.span(),
+                        format!(
+                            "cannot iterate over {}",
+                            input_list.type_id()
+                        ),
+                    );
+                    return Err(());
+                };
+                let mut res = Vec::new();
+                for (i, elem) in list_elems.iter().enumerate() {
+                    self.push_eval_scope();
+                    if i != 0 {
+                        res.push(TokenTree::Punct(Punct::new(
+                            '|',
+                            Spacing::Alone,
+                        )));
+                    }
+                    if self
+                        .match_and_bind_pattern(&ep.for_pattern, elem.clone())
+                        .is_err()
+                    {
+                        self.scopes.pop();
+                        return Err(());
+                    }
+                    if self
+                        .eval_stmt_list_to_stream(
+                            &mut res,
+                            ep.span,
+                            &ep.match_arm_patterns,
+                        )
+                        .is_err()
+                    {
+                        self.scopes.pop();
+                        return Err(());
+                    }
+
+                    self.scopes.pop();
+                }
+                self.eval_stmt_list_to_stream(
+                    &mut res,
+                    ep.span,
+                    &ep.match_arm_guard,
+                )?;
+                self.eval_stmt_list_to_stream(
+                    &mut res,
+                    ep.span,
+                    &ep.match_arm_body,
+                )?;
+                Ok(Rc::new(MetaValue::Tokens(res)))
             }
         }
     }
@@ -1084,12 +1157,34 @@ fn parse_literal(token: &TokenTree) -> Option<(Span, Rc<MetaValue>)> {
     }
 }
 
-fn seek_match_arm_end(tokens: &[TokenTree]) -> usize {
+struct MatchArmEnds {
+    pattern_end: usize,
+    guard_end: usize,
+    body_end: usize,
+}
+
+// for a match arm ( ... => ... )
+// returns the location before the fat arrow and the location after the end of
+// match expression body, and after a potential trailing comma
+fn find_match_arm_bounds(tokens: &[TokenTree]) -> Option<MatchArmEnds> {
     let mut i = 0;
     // ... =>
+    let mut pattern_end = None;
+    let mut guard_end = None;
     while i < tokens.len() {
         let t = &tokens[i];
         i += 1;
+
+        if let TokenTree::Ident(ident) = t {
+            if ident.to_string() == "if" {
+                if pattern_end.is_some() {
+                    // not possible in a valid match arm
+                    return None;
+                }
+                pattern_end = Some(i);
+            }
+        }
+
         let TokenTree::Punct(p) = t else {
             continue;
         };
@@ -1109,29 +1204,45 @@ fn seek_match_arm_end(tokens: &[TokenTree]) -> usize {
             continue;
         }
         i += 1;
+        guard_end = Some(i - 2);
         break;
     }
+
+    if pattern_end.is_none() {
+        pattern_end = guard_end;
+    }
+
+    let mut ends = MatchArmEnds {
+        pattern_end: pattern_end?,
+        guard_end: guard_end?,
+        body_end: 0,
+    };
+
     if let Some(TokenTree::Group(g)) = tokens.get(i) {
         if g.delimiter() == Delimiter::Brace {
             // => {}
             if let Some(TokenTree::Punct(p)) = &tokens.get(i + 1) {
                 if p.as_char() == ',' {
-                    return i + 2;
+                    ends.body_end = i + 2;
+                    return Some(ends);
                 }
             }
-            return i + 1;
+            ends.body_end = i + 1;
+            return Some(ends);
         }
     }
     // => ... ,
     while i < tokens.len() {
         if let TokenTree::Punct(p) = &tokens[i] {
             if p.as_char() == ',' {
-                return i + 1;
+                ends.body_end = i + 1;
+                return Some(ends);
             }
         }
         i += 1;
     }
-    i
+    ends.body_end = i;
+    Some(ends)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2462,6 +2573,7 @@ impl Context {
 
     fn parse_expand_attrib<'a>(
         &mut self,
+        expand_kind: ExpandKind,
         tokens: &'a [TokenTree],
         offset: usize,
         group: &Group,
@@ -2515,29 +2627,82 @@ impl Context {
             return Ok((self.empty_token_list_expr.clone(), parent_rest));
         };
 
-        let match_arm_end = seek_match_arm_end(parent_rest);
+        let Some(match_arm_ends) = find_match_arm_bounds(parent_rest) else {
+            self.error(
+                parent_rest
+                    .first()
+                    .map(|t| t.span())
+                    .unwrap_or(group.span()),
+                "invalid match arm",
+            );
+            return Err(());
+        };
 
-        let contents = self.parse_raw_block_to_exprs(
-            group.span(),
-            &parent_rest[0..match_arm_end],
-        );
+        match expand_kind {
+            ExpandKind::ExpandFull => {
+                let contents = self.parse_raw_block_to_exprs(
+                    group.span(),
+                    &parent_rest[0..match_arm_ends.body_end],
+                );
+                self.scopes.pop();
+                self.close_expr_after_trailing_body(
+                    &mut exprs,
+                    trailing_block,
+                    contents?,
+                );
+            }
+            ExpandKind::ExpandPattern => {
+                if trailing_block != TrailingBlockKind::For {
+                    self.error(
+                        group.span(),
+                        "expand_pattern only works with a trailing `for` expression"
+                    );
+                }
 
-        self.scopes.pop();
+                let pat = self.parse_raw_block_to_exprs(
+                    group.span(),
+                    &parent_rest[0..match_arm_ends.pattern_end],
+                );
+                let guard_plus_fat_arrow = self.parse_raw_block_to_exprs(
+                    group.span(),
+                    &parent_rest[match_arm_ends.pattern_end
+                        ..match_arm_ends.guard_end + 2],
+                );
+                let body = self.parse_raw_block_to_exprs(
+                    group.span(),
+                    &parent_rest[match_arm_ends.guard_end + 2
+                        ..match_arm_ends.body_end],
+                );
+                self.scopes.pop();
 
-        let contents = contents?;
-
-        self.close_expr_after_trailing_body(
-            &mut exprs,
-            trailing_block,
-            contents,
-        );
+                let MetaExpr::ForExpansion {
+                    span: _,
+                    pattern: for_pattern,
+                    variants_expr: for_expr,
+                    body: _,
+                } = Rc::into_inner(exprs.pop().unwrap()).unwrap()
+                else {
+                    unreachable!()
+                };
+                exprs.push(Rc::new(MetaExpr::ExpandPattern(Box::new(
+                    ExpandPattern {
+                        span: group.span(),
+                        for_pattern,
+                        for_expr,
+                        match_arm_patterns: pat?,
+                        match_arm_guard: guard_plus_fat_arrow?,
+                        match_arm_body: body?,
+                    },
+                ))));
+            }
+        };
 
         Ok((
             Rc::new(MetaExpr::Scope {
                 span: group.span(),
                 body: exprs,
             }),
-            &parent_rest[match_arm_end..],
+            &parent_rest[match_arm_ends.body_end..],
         ))
     }
 
@@ -2601,7 +2766,13 @@ impl Context {
                 && !is_template
             {
                 if let Some(TokenTree::Ident(ident)) = group_tokens.first() {
-                    if ident.to_string() == "expand" {
+                    let attrib_name = ident.to_string();
+                    let expand_kind = match &*attrib_name {
+                        "expand" => Some(ExpandKind::ExpandFull),
+                        "expand_pattern" => Some(ExpandKind::ExpandPattern),
+                        _ => None,
+                    };
+                    if let Some(expand_kind) = expand_kind {
                         append_token_list(
                             &mut exprs,
                             tokens,
@@ -2609,6 +2780,7 @@ impl Context {
                             last_hash,
                         );
                         let (expr, rest) = self.parse_expand_attrib(
+                            expand_kind,
                             tokens,
                             offset,
                             group,
