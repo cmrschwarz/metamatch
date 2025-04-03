@@ -1422,6 +1422,7 @@ impl Context {
                 match group.delimiter() {
                     Delimiter::Parenthesis => {
                         let list = self.parse_comma_separated(
+                            None,
                             group.delimiter(),
                             group.span(),
                             &group_tokens,
@@ -1446,6 +1447,7 @@ impl Context {
                                 )?
                             } else {
                                 let list = self.parse_comma_separated(
+                                    Some("list"),
                                     group.delimiter(),
                                     group.span(),
                                     &group_tokens,
@@ -1567,6 +1569,7 @@ impl Context {
                         if group.delimiter() == Delimiter::Parenthesis {
                             let args = group.stream().into_vec();
                             let fn_args = self.parse_comma_separated(
+                                Some("function call arguments"),
                                 Delimiter::Parenthesis,
                                 group.span(),
                                 &args,
@@ -2229,7 +2232,7 @@ impl Context {
             self.error(
                 first.span(),
                 format!(
-                    "expected comma or {}",
+                    "expected `,` or {}",
                     delimiter_chars(group.delimiter()).1
                 ),
             );
@@ -2310,12 +2313,14 @@ impl Context {
 
     fn parse_comma_separated(
         &mut self,
+        kind: Option<&'static str>,
         delimiter: Delimiter,
         parent_span: Span,
         tokens: &[TokenTree],
     ) -> Result<Vec<Rc<MetaExpr>>> {
         let (list, _final_comma_span) = self
             .parse_comma_separated_with_final_comma(
+                kind,
                 delimiter,
                 parent_span,
                 tokens,
@@ -2325,6 +2330,7 @@ impl Context {
 
     fn parse_comma_separated_with_final_comma(
         &mut self,
+        kind: Option<&'static str>,
         delimiter: Delimiter,
         parent_span: Span,
         tokens: &[TokenTree],
@@ -2354,7 +2360,11 @@ impl Context {
             };
             self.error(
                 first.span(),
-                format!("expected comma or {}", delimiter_chars(delimiter).1),
+                format!(
+                    "syntax error{}: expected comma or `{}`",
+                    kind.map(|k| format!(" in {k}")).unwrap_or_default(),
+                    delimiter_chars(delimiter).1
+                ),
             );
             return Err(());
         }
@@ -2608,21 +2618,27 @@ impl Context {
         let (mut exprs, rest, trailing_block) =
             self.parse_body(Span::call_site(), &expand_inner, true);
 
-        if !rest.is_empty() && error_count_before_body == self.errors.len() {
-            let tb = trailing_block.expect("rest without trailing block");
-            self.error(
-                expand_inner[expand_inner.len() - rest.len() - 1].span(),
-                format!("template tag `{}` is never closed", tb.to_str()),
-            );
+        let errors_in_body = error_count_before_body != self.errors.len();
+
+        if !rest.is_empty() {
+            if !errors_in_body {
+                let tb = trailing_block.expect("rest without trailing block");
+                self.error(
+                    expand_inner[expand_inner.len() - rest.len() - 1].span(),
+                    format!("template tag `{}` is never closed", tb.to_str()),
+                );
+            }
             self.scopes.pop();
             return Err(());
         }
 
         let Some(trailing_block) = trailing_block else {
-            self.error(
-                exprs.last().map(|e| e.span()).unwrap_or(Span::call_site()),
-                "expand ignores the attribute body",
-            );
+            if !errors_in_body {
+                self.error(
+                    exprs.last().map(|e| e.span()).unwrap_or(group.span()),
+                    "expand ignores the attribute body",
+                );
+            }
             self.scopes.pop();
             return Ok((self.empty_token_list_expr.clone(), parent_rest));
         };

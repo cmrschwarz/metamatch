@@ -1,0 +1,5 @@
+error: syntax error in list: expected comma or `]`
+ --> tests/ui/expr_in_expand_list.rs:6:31
+  |
+6 |         #[expand(for FOO in [v.as_bytes()])],
+  |                               ^

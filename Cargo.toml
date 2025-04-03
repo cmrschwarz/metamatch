@@ -7,8 +7,8 @@ name = "metamatch"
 version = "0.2.4"
 edition = "2021"
 
-# 1.65 needed for let .. else
-# 1.70 needed for Rc::into_inner
+# bump: 1.65 needed for let .. else
+# bump: 1.70 needed for Rc::into_inner
 # remember to update in ci when bumping this
 rust-version = "1.70.0"
 
