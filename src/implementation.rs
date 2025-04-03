@@ -1129,32 +1129,23 @@ fn delimiter_chars(d: Delimiter) -> (char, char) {
     }
 }
 
-fn parse_literal(token: &TokenTree) -> Option<(Span, Rc<MetaValue>)> {
+fn parse_literal(token: &TokenTree) -> Rc<MetaValue> {
     if let TokenTree::Literal(lit) = token {
-        let span = lit.span();
         let s = lit.to_string();
         if s.starts_with('"') {
-            Some((
-                span,
-                Rc::new(MetaValue::String {
-                    value: Rc::from(s[1..s.len() - 1].to_string()),
-                    span: Some(token.span()),
-                }),
-            ))
-        } else if let Ok(n) = s.parse::<i64>() {
-            Some((
-                span,
-                Rc::new(MetaValue::Int {
-                    value: n,
-                    span: Some(token.span()),
-                }),
-            ))
-        } else {
-            None
+            return Rc::new(MetaValue::String {
+                value: Rc::from(s[1..s.len() - 1].to_string()),
+                span: Some(token.span()),
+            });
         }
-    } else {
-        None
+        if let Ok(n) = s.parse::<i64>() {
+            return Rc::new(MetaValue::Int {
+                value: n,
+                span: Some(token.span()),
+            });
+        }
     }
+    return Rc::new(MetaValue::Token(token.clone()));
 }
 
 struct MatchArmEnds {
@@ -1594,19 +1585,14 @@ impl Context {
                 ))
             }
 
-            TokenTree::Literal(lit) => {
-                let span = lit.span();
-                if let Some((_, value)) = parse_literal(&tokens[0]) {
-                    Ok((
-                        Rc::new(MetaExpr::Literal { span, value }),
-                        &tokens[1..],
-                        None,
-                    ))
-                } else {
-                    self.error(span, "invalid literal".to_owned());
-                    Err(())
-                }
-            }
+            TokenTree::Literal(lit) => Ok((
+                Rc::new(MetaExpr::Literal {
+                    span: lit.span(),
+                    value: parse_literal(&tokens[0]),
+                }),
+                &tokens[1..],
+                None,
+            )),
 
             token => {
                 self.error(token.span(), "unexpected token");

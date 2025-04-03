@@ -196,3 +196,14 @@ fn expand_pattern_single_variant() {
     });
     assert!(is_int);
 }
+
+#[test]
+fn expand_chars() {
+    let c = 'b';
+    let v = metamatch!(match c {
+        #[expand_pattern(for C in ['a', 'b', 'c'])]
+        C => 42,
+        _ => 69,
+    });
+    assert_eq!(v, 42);
+}
