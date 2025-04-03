@@ -33,8 +33,7 @@ variants below.
 
 A proc-macro for generating repetitive match arms.
 
-<code>
-//TODO: fixme
+```rust
 use metamatch::metamatch;
 enum VarIntVec {
     I8(Vec<i8>),
@@ -60,7 +59,7 @@ impl VarIntVec{
         }
     }
 }
-</code>
+```
 
 Note that `#[expand(..)]` is not an actual attribute,
 as Rust does not allow attributes on match arms.

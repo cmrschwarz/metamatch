@@ -1,4 +1,4 @@
-use metamatch::{quote, replicate, unquote};
+use metamatch::{metamatch, quote, replicate, unquote};
 
 #[test]
 fn basic_enum_variants() {
@@ -186,6 +186,14 @@ fn unquote_array() {
         quote!([ELEMENTS])
     };
     assert_eq!(ARRAY, [1, 2, 3, 4]);
+}
+
+#[test]
+fn simple_metamatch() {
+    metamatch!(match self {
+        #[expand(for X in [I8, I16, I32, I64])]
+        VarIntVec::X(v) => v.len(),
+    })
 }
 
 #[test]

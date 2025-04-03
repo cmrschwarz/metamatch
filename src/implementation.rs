@@ -2,7 +2,7 @@ use proc_macro::{
     Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream,
     TokenTree,
 };
-use std::{collections::HashMap, fmt::Debug, rc::Rc};
+use std::{collections::HashMap, fmt::Debug, rc::Rc, usize};
 
 trait IntoIterIntoVec {
     type Item;
@@ -1075,6 +1075,56 @@ fn parse_literal(token: &TokenTree) -> Option<(Span, Rc<MetaValue>)> {
     } else {
         None
     }
+}
+
+fn seek_match_arm_end(tokens: &[TokenTree]) -> usize {
+    let mut i = 0;
+    // ... =>
+    while i < tokens.len() {
+        let t = &tokens[i];
+        i += 1;
+        let TokenTree::Punct(p) = t else {
+            continue;
+        };
+        if p.as_char() != '=' {
+            continue;
+        }
+        if p.spacing() != Spacing::Joint {
+            continue;
+        }
+        let Some(t) = &tokens.get(i) else {
+            break;
+        };
+        let TokenTree::Punct(p) = t else {
+            continue;
+        };
+        if p.as_char() != '>' {
+            continue;
+        }
+        i += 1;
+        break;
+    }
+    if let Some(TokenTree::Group(g)) = tokens.get(i) {
+        if g.delimiter() == Delimiter::Brace {
+            // => {}
+            if let Some(TokenTree::Punct(p)) = &tokens.get(i + 1) {
+                if p.as_char() == ',' {
+                    return i + 2;
+                }
+            }
+            return i + 1;
+        }
+    }
+    // => ... ,
+    while i < tokens.len() {
+        if let TokenTree::Punct(p) = &tokens[i] {
+            if p.as_char() == ',' {
+                return i + 1;
+            }
+        }
+        i += 1;
+    }
+    i
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2403,6 +2453,87 @@ impl Context {
         Ok(kind)
     }
 
+    fn parse_expand_attrib<'a>(
+        &mut self,
+        tokens: &'a [TokenTree],
+        offset: usize,
+        group: &Group,
+        group_tokens: Vec<TokenTree>,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
+        let parent_rest = &tokens[offset + 1..];
+
+        let mut paren_group = None;
+        if let Some(TokenTree::Group(inner)) = group_tokens.get(1) {
+            if inner.delimiter() == Delimiter::Parenthesis {
+                paren_group = Some(inner);
+            }
+        };
+        let Some(paren_group) = paren_group else {
+            self.error(
+                group_tokens.get(1).unwrap_or(&group_tokens[0]).span(),
+                "expected `(` after `expand`",
+            );
+            return Ok((self.empty_token_list_expr.clone(), parent_rest));
+        };
+
+        if let Some(stray) = group_tokens.get(2) {
+            self.error(stray.span(), "stray token after `expand(..)`");
+        }
+
+        let expand_inner = paren_group.stream().into_vec();
+
+        let error_count_before_body = self.errors.len();
+
+        self.push_dummy_scope(ScopeKind::Unquoted);
+
+        let (mut exprs, rest, trailing_block) =
+            self.parse_body(Span::call_site(), &expand_inner, true);
+
+        if !rest.is_empty() && error_count_before_body == self.errors.len() {
+            let tb = trailing_block.expect("rest without trailing block");
+            self.error(
+                expand_inner[expand_inner.len() - rest.len() - 1].span(),
+                format!("template tag `{}` is never closed", tb.to_str()),
+            );
+            self.scopes.pop();
+            return Err(());
+        }
+
+        let Some(trailing_block) = trailing_block else {
+            self.error(
+                exprs.last().map(|e| e.span()).unwrap_or(Span::call_site()),
+                "expand ignores the attribute body",
+            );
+            self.scopes.pop();
+            return Ok((self.empty_token_list_expr.clone(), parent_rest));
+        };
+
+        let match_arm_end = seek_match_arm_end(parent_rest);
+
+        let contents = self.parse_raw_block_to_exprs(
+            group.span(),
+            &parent_rest[0..match_arm_end],
+        );
+
+        self.scopes.pop();
+
+        let contents = contents?;
+
+        self.close_expr_after_trailing_body(
+            &mut exprs,
+            trailing_block,
+            contents,
+        );
+
+        Ok((
+            Rc::new(MetaExpr::Scope {
+                span: group.span(),
+                body: exprs,
+            }),
+            &parent_rest[match_arm_end..],
+        ))
+    }
+
     fn parse_raw_block(
         &mut self,
         parent_span: Span,
@@ -2416,7 +2547,7 @@ impl Context {
 
         let mut i = 0;
 
-        let mut after_hash = false;
+        let mut last_hash = tokens.len();
 
         while i < tokens.len() {
             let offset = i;
@@ -2424,10 +2555,11 @@ impl Context {
             let t = &tokens[offset];
             if scope_kind == ScopeKind::Metamatch {
                 if let TokenTree::Punct(p) = t {
-                    after_hash = p.as_char() == '#';
+                    if p.as_char() == '#' {
+                        last_hash = offset;
+                    }
                     continue;
                 }
-                after_hash = false;
             }
             if scope_kind != ScopeKind::Raw {
                 if let TokenTree::Ident(ident) = t {
@@ -2457,9 +2589,30 @@ impl Context {
             let is_template =
                 is_bracketed && has_template_angle_backets(&group_tokens);
 
-            if scope_kind == ScopeKind::Metamatch && after_hash && !is_template
+            if scope_kind == ScopeKind::Metamatch
+                && last_hash + 1 == offset
+                && !is_template
             {
-                todo!("parse expand attrib")
+                if let Some(TokenTree::Ident(ident)) = group_tokens.first() {
+                    if ident.to_string() == "expand" {
+                        append_token_list(
+                            &mut exprs,
+                            tokens,
+                            raw_token_list_start,
+                            last_hash,
+                        );
+                        let (expr, rest) = self.parse_expand_attrib(
+                            tokens,
+                            offset,
+                            group,
+                            group_tokens,
+                        )?;
+                        exprs.push(expr);
+                        i = tokens.len() - rest.len() + 1;
+                        raw_token_list_start = i;
+                        continue;
+                    }
+                }
             }
 
             if !is_template {
