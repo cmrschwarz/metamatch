@@ -93,8 +93,7 @@ enum MetaExpr {
     },
     LetBinding {
         span: Span,
-        name: Rc<str>,
-        super_bound: bool,
+        pattern: Pattern,
         expr: Option<Rc<MetaExpr>>,
     },
     FnCall {
@@ -393,7 +392,7 @@ impl Context {
         });
         // TODO: camel_case, pascal_case, ...
     }
-    fn attempt_pattern_match(
+    fn match_and_bind_pattern(
         &mut self,
         pat: &Pattern,
         val: Rc<MetaValue>,
@@ -434,7 +433,7 @@ impl Context {
                     return Err(());
                 }
                 for i in 0..val_elems.len() {
-                    self.attempt_pattern_match(
+                    self.match_and_bind_pattern(
                         &pat_bindings[i],
                         val_elems[i].clone(),
                     )?;
@@ -467,7 +466,7 @@ impl Context {
                     return Err(());
                 }
                 for i in 0..val_elems.len() {
-                    self.attempt_pattern_match(
+                    self.match_and_bind_pattern(
                         &pat_bindings[i],
                         val_elems[i].clone(),
                     )?;
@@ -685,13 +684,12 @@ impl Context {
                 )))))
             }
             MetaExpr::LetBinding {
-                span,
+                span: _,
+                pattern,
                 expr,
-                super_bound,
-                name,
             } => {
                 let val = self.eval(expr.as_ref().unwrap())?;
-                self.insert_binding(*span, name.clone(), *super_bound, val);
+                self.match_and_bind_pattern(pattern, val)?;
                 Ok(self.empty_token_list.clone())
             }
             MetaExpr::FnCall { span, name, args } => {
@@ -730,7 +728,7 @@ impl Context {
                 self.push_eval_scope();
                 for elem in list_elems {
                     if self
-                        .attempt_pattern_match(pattern, elem.clone())
+                        .match_and_bind_pattern(pattern, elem.clone())
                         .is_err()
                     {
                         self.scopes.pop();
@@ -1303,23 +1301,18 @@ impl Context {
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
         if tokens.is_empty() {
-            self.error(let_span, "expected identifier after `let`");
+            self.error(let_span, "expected pattern after `let`");
             return Err(());
         }
 
-        let (name_span, name) = parse_ident(&tokens[0]).ok_or_else(|| {
-            self.error(tokens[0].span(), "expected identifier");
-        })?;
+        let (pattern, rest) = self.parse_pattern(let_span, tokens)?;
 
-        let super_bound = name.chars().next().unwrap().is_uppercase();
-
-        if tokens.len() == 1 && allow_trailing_block {
-            self.insert_dummy_binding(name.clone(), true);
+        if rest.is_empty() && allow_trailing_block {
+            self.insert_dummy_bindings_for_pattern(&pattern);
             return Ok((
                 Rc::new(MetaExpr::LetBinding {
                     span: let_span,
-                    name,
-                    super_bound,
+                    pattern,
                     expr: None,
                 }),
                 &[],
@@ -1328,7 +1321,7 @@ impl Context {
         }
 
         let mut eq_span = None;
-        if let Some(TokenTree::Punct(p)) = tokens.get(1) {
+        if let Some(TokenTree::Punct(p)) = rest.first() {
             if p.as_char() == '=' {
                 eq_span = Some(p.span());
             }
@@ -1336,27 +1329,26 @@ impl Context {
 
         let Some(eq_span) = eq_span else {
             self.error(
-                tokens.get(1).map(|t| t.span()).unwrap_or(name_span),
-                "expected = after let identifier",
+                rest.first().map(|t| t.span()).unwrap_or(let_span),
+                "expected = after let pattern",
             );
             return Err(());
         };
 
-        let rest = &tokens[2..];
+        let rest = &rest[1..];
 
-        if tokens.is_empty() {
+        if rest.is_empty() {
             self.error(eq_span, "expected expression after `=`");
             return Err(());
         }
         let (expr, rest) = self.parse_expr(let_span, rest)?;
 
-        self.insert_dummy_binding(name.clone(), super_bound);
+        self.insert_dummy_bindings_for_pattern(&pattern);
 
         Ok((
             Rc::new(MetaExpr::LetBinding {
                 span: let_span,
-                name,
-                super_bound,
+                pattern,
                 expr: Some(expr),
             }),
             rest,

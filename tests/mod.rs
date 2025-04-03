@@ -28,6 +28,16 @@ fn let_bindings() {
 }
 
 #[test]
+fn let_pattern() {
+    let asdf = quote! {
+        [<let (FOO, BAR) = (42, 27)>]
+        FOO + BAR
+    };
+
+    assert_eq!(asdf, 69);
+}
+
+#[test]
 fn quote_expr() {
     let res = quote! {
         [<for X in [1, quote!(+2), quote!(+3)]>]
@@ -113,6 +123,20 @@ fn raw_block() {
             [<raw>]
             + X
             [</raw>]
+        }
+    };
+    assert_eq!(res, 16);
+}
+
+#[test]
+fn lowercase_vars_not_superbound() {
+    let x: i64 = 5;
+    let res = unquote! {
+        raw!(1);
+        for x in [2, 3, 4] {
+            quote!{
+                + x
+            }
         }
     };
     assert_eq!(res, 16);
