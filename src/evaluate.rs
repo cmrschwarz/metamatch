@@ -102,13 +102,14 @@ impl Context {
                     return Err(());
                 };
                 if pat_bindings.len() != val_elems.len() {
-                    self.error( *span,
-                                 format!(
-                                    "tuple pattern missmatch: expected length {}, got {}",
-                                    pat_bindings.len(),
-                                    val_elems.len()
-                                ),
-                            );
+                    self.error(
+                        *span,
+                        format!(
+                            "tuple pattern missmatch: expected length {}, got {}",
+                            pat_bindings.len(),
+                            val_elems.len()
+                        ),
+                    );
                     return Err(());
                 }
                 for i in 0..val_elems.len() {
@@ -135,13 +136,14 @@ impl Context {
                     return Err(());
                 };
                 if pat_bindings.len() != val_elems.len() {
-                    self.error(  *span,
-                                 format!(
-                                    "list pattern missmatch: expected length {}, got {}",
-                                    pat_bindings.len(),
-                                    val_elems.len()
-                                ),
-                            );
+                    self.error(
+                        *span,
+                        format!(
+                            "list pattern missmatch: expected length {}, got {}",
+                            pat_bindings.len(),
+                            val_elems.len()
+                        ),
+                    );
                     return Err(());
                 }
                 for i in 0..val_elems.len() {
@@ -501,12 +503,12 @@ impl Context {
                     let mv = ctx.eval(x)?;
                     let MetaValue::Int { value, .. } = &*mv else {
                         ctx.error(
-                                    x.span(),
-                                    format!(
-                                        "range expression bound must be `int`, not `{}`",
-                                        mv.type_id()
-                                    ),
-                                );
+                            x.span(),
+                            format!(
+                                "range expression bound must be `int`, not `{}`",
+                                mv.type_id()
+                            ),
+                        );
                         return Err(());
                     };
                     Ok(*value)
