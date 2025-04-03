@@ -14,3 +14,8 @@ pub fn unquote(body: TokenStream) -> TokenStream {
 pub fn quote(body: TokenStream) -> TokenStream {
     implementation::quote(body)
 }
+
+#[proc_macro_attribute]
+pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
+    implementation::replicate(attrib, body)
+}

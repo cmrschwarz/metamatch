@@ -1,4 +1,4 @@
-use metamatch::{quote, unquote};
+use metamatch::{quote, replicate, unquote};
 
 #[test]
 fn basic_enum_variants() {
@@ -140,6 +140,29 @@ fn lowercase_vars_not_superbound() {
         }
     };
     assert_eq!(res, 16);
+}
+
+#[test]
+fn replicate_trait_defs() {
+    #[derive(Debug, PartialEq)]
+    struct NodeIdx(usize);
+
+    #[replicate(for (TRAIT, FUNC) in [
+        (Add, add),
+        (Sub, sub),
+        (Mul, mul),
+        (Div, div),
+    ])]
+    impl core::ops::TRAIT for NodeIdx {
+        type Output = Self;
+        fn FUNC(self, other: Self) -> Self {
+            NodeIdx(self.0.FUNC(other.0))
+        }
+    }
+
+    assert_eq!(NodeIdx(1) + NodeIdx(2), NodeIdx(3));
+
+    assert_eq!(NodeIdx(2) * NodeIdx(3), NodeIdx(6));
 }
 
 #[test]
