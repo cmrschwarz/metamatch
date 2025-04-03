@@ -8,8 +8,24 @@ mod metamatch_impl {
     // incorrect. We also already lint it when using it through metamatch
     // directly.
     #![allow(clippy::all, clippy::pedantic)]
-    use proc_macro2 as proc_macro;
-    include!("../../src/implementation.rs");
+
+    mod ast {
+        use proc_macro2 as proc_macro;
+        include!("../../src/ast.rs");
+    }
+    mod parse {
+        use proc_macro2 as proc_macro;
+        include!("../../src/parse.rs");
+    }
+    mod evaluate {
+        use proc_macro2 as proc_macro;
+        include!("../../src/evaluate.rs");
+    }
+    pub mod macro_impls {
+        use proc_macro2 as proc_macro;
+        include!("../../src/macro_impls.rs");
+    }
+    pub use macro_impls::*;
 }
 
 use clap::Parser;

@@ -1,204 +1,18 @@
-use proc_macro::{
-    Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream,
-    TokenTree,
-};
+use proc_macro::{Delimiter, Group, Spacing, Span, TokenTree};
 use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
-trait IntoIterIntoVec {
-    type Item;
-    fn into_vec(self) -> Vec<Self::Item>;
-}
-impl<I: IntoIterator> IntoIterIntoVec for I {
-    type Item = I::Item;
-
-    fn into_vec(self) -> Vec<Self::Item> {
-        self.into_iter().collect()
-    }
-}
-
-type Result<T, E = ()> = std::result::Result<T, E>;
-
-struct MetaError {
-    span: Span,
-    message: String,
-}
-
-#[derive(Debug)]
-struct BindingParameter {
-    span: Span,
-    name: Rc<str>,
-    super_bound: bool,
-}
-
-struct BuiltinFn {
-    param_count: usize,
-    #[allow(clippy::type_complexity)]
-    builtin: Box<
-        dyn Fn(&mut Context, Span, &[Rc<MetaValue>]) -> Result<Rc<MetaValue>>,
-    >,
-}
-
-#[derive(Clone, Debug)]
-enum MetaValue {
-    Token(TokenTree),
-    Tokens(Vec<TokenTree>),
-    Int {
-        value: i64,
-        // For literals that come straight from source code this
-        // is set and will be used for the span in case occurs in output.
-        // For 'generated' literals like from a computed expression or
-        // an `enumerate` this is not set, and we use the span
-        // of the final expression that caused the output instead.
-        // Because this language is fuzzy about the types of things it can
-        // happen that the user really intended a *token* but ended up
-        // with an integer. In order to mimic the token semantics more closely
-        // and prevent users from having to use `raw!` everwhere this
-        // seems like a worthwile tradeoff.
-        span: Option<Span>,
+use super::{
+    ast::{
+        Binding, BindingParameter, Context, ExpandPattern, Function,
+        MetaError, MetaExpr, MetaValue, Pattern, Scope, ScopeKind,
+        TrailingBlockKind,
     },
-    Bool {
-        value: bool,
-        span: Option<Span>, // same reasoning as `Int`
-    },
-    String {
-        value: Rc<str>,
-        span: Option<Span>, // same reasoning as `Int`
-    },
-    Fn(Rc<Function>),
-    BuiltinFn(Rc<BuiltinFn>),
-    List(Vec<Rc<MetaValue>>),
-    Tuple(Vec<Rc<MetaValue>>),
-}
+    macro_impls::IntoIterIntoVec,
+};
 
-#[derive(Debug)]
-enum Pattern {
-    Ident(BindingParameter),
-    Tuple { span: Span, elems: Vec<Pattern> },
-    List { span: Span, elems: Vec<Pattern> },
-}
+type Result<T> = std::result::Result<T, ()>;
 
-#[derive(Debug)]
-struct Function {
-    span: Span,
-    name: Rc<str>,
-    params: Vec<BindingParameter>,
-    body: Vec<Rc<MetaExpr>>,
-}
-
-#[derive(Debug)]
-struct ExpandPattern {
-    span: Span,
-    for_pattern: Pattern,
-    for_expr: Rc<MetaExpr>,
-    match_arm_patterns: Vec<Rc<MetaExpr>>,
-    match_arm_guard: Vec<Rc<MetaExpr>>,
-    match_arm_body: Vec<Rc<MetaExpr>>,
-}
-
-#[derive(Debug)]
-enum MetaExpr {
-    Literal {
-        span: Span,
-        value: Rc<MetaValue>,
-    },
-    Ident {
-        span: Span,
-        name: Rc<str>,
-    },
-    LetBinding {
-        span: Span,
-        pattern: Pattern,
-        expr: Option<Rc<MetaExpr>>,
-    },
-    FnCall {
-        span: Span,
-        name: Rc<str>,
-        args: Vec<Rc<MetaExpr>>,
-    },
-    FnDecl(Rc<Function>),
-    RawOutputGroup {
-        span: Span,
-        delimiter: Delimiter,
-        contents: Vec<Rc<MetaExpr>>,
-    },
-    IfExpr {
-        span: Span,
-        condition: Rc<MetaExpr>,
-        body: Vec<Rc<MetaExpr>>,
-        else_expr: Option<Rc<MetaExpr>>,
-    },
-    ForExpansion {
-        span: Span,
-        pattern: Pattern,
-        variants_expr: Rc<MetaExpr>,
-        body: Vec<Rc<MetaExpr>>,
-    },
-    // boxed cause large
-    ExpandPattern(Box<ExpandPattern>),
-    Scope {
-        span: Span,
-        body: Vec<Rc<MetaExpr>>,
-    },
-    List {
-        span: Span,
-        exprs: Vec<Rc<MetaExpr>>,
-    },
-    Tuple {
-        span: Span,
-        exprs: Vec<Rc<MetaExpr>>,
-    },
-    Range {
-        span: Span,
-        inclusive: bool,
-        lhs: Option<Rc<MetaExpr>>,
-        rhs: Option<Rc<MetaExpr>>,
-    },
-}
-
-#[derive(Debug)]
-struct Binding {
-    #[allow(unused)] // Todo: im sure we will need this at some point?
-    span: Span,
-    // super bound bindings are available in quoted contexts
-    super_bound: bool,
-    value: Rc<MetaValue>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ScopeKind {
-    Raw,
-    Quoted,
-    Unquoted,
-    Evaluation,
-    Metamatch,
-}
-
-#[derive(Debug)]
-struct Scope {
-    kind: ScopeKind,
-    bindings: HashMap<Rc<str>, Binding>,
-}
-
-struct Context {
-    empty_token_list: Rc<MetaValue>,
-    empty_token_list_expr: Rc<MetaExpr>,
-    scopes: Vec<Scope>,
-    errors: Vec<MetaError>,
-}
-
-#[derive(PartialEq, Eq)]
-enum TrailingBlockKind {
-    For,
-    If,
-    Else,
-    Let,
-    Quote,
-    Unquote,
-    Raw,
-    Fn,
-}
-
-enum RawBodyParseResult {
+pub enum RawBodyParseResult {
     Plain,
     Complete(Vec<Rc<MetaExpr>>),
     UnmatchedEnd {
@@ -210,942 +24,15 @@ enum RawBodyParseResult {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExpandKind {
+pub enum ExpandKind {
     ExpandFull,
     ExpandPattern,
 }
 
-impl Default for MetaValue {
-    fn default() -> Self {
-        Self::Tokens(Vec::new())
-    }
-}
-
-impl Debug for BuiltinFn {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BuiltinFn")
-            .field("param_count", &self.param_count)
-            .field("builtin", &"..")
-            .finish()
-    }
-}
-
-impl MetaValue {
-    fn type_id(&self) -> &'static str {
-        match self {
-            MetaValue::Token(_) => "token",
-            MetaValue::Tokens(_) => "tokens",
-            MetaValue::Int { .. } => "int",
-            MetaValue::String { .. } => "string",
-            MetaValue::Bool { .. } => "bool",
-            MetaValue::Fn(_) | MetaValue::BuiltinFn(_) => "fn",
-            MetaValue::List(_) => "list",
-            MetaValue::Tuple(_) => "tuple",
-        }
-    }
-}
-
-impl MetaExpr {
-    fn span(&self) -> Span {
-        *match self {
-            MetaExpr::Literal { span, .. } => span,
-            MetaExpr::Ident { span, .. } => span,
-            MetaExpr::LetBinding { span, .. } => span,
-            MetaExpr::FnCall { span, .. } => span,
-            MetaExpr::ExpandPattern(ep) => &ep.span,
-            MetaExpr::FnDecl(function) => &function.span,
-            MetaExpr::RawOutputGroup { span, .. } => span,
-            MetaExpr::IfExpr { span, .. } => span,
-            MetaExpr::ForExpansion { span, .. } => span,
-            MetaExpr::Scope { span, .. } => span,
-            MetaExpr::List { span, .. } => span,
-            MetaExpr::Tuple { span, .. } => span,
-            MetaExpr::Range { span, .. } => span,
-        }
-    }
-}
-
-impl TrailingBlockKind {
-    fn to_str(&self) -> &'static str {
-        match self {
-            TrailingBlockKind::For => "for",
-            TrailingBlockKind::If => "if",
-            TrailingBlockKind::Else => "else",
-            TrailingBlockKind::Let => "let",
-            TrailingBlockKind::Fn => "fn",
-            TrailingBlockKind::Unquote => "unquote",
-            TrailingBlockKind::Quote => "quote",
-            TrailingBlockKind::Raw => "raw",
-        }
-    }
-}
-
-pub fn unquote(body: TokenStream) -> TokenStream {
-    let body = body.into_vec();
-    let mut ctx = Context::new(ScopeKind::Unquoted);
-
-    let expr = ctx.parse_body_deny_trailing(Span::call_site(), &body);
-
-    ctx.eval_to_token_stream(Span::call_site(), &expr)
-}
-
-pub fn quote(body: TokenStream) -> TokenStream {
-    let body = body.into_vec();
-    let mut ctx = Context::new(ScopeKind::Quoted);
-
-    let Ok(exprs) = ctx.parse_raw_block_to_exprs(Span::call_site(), &body)
-    else {
-        return ctx.expand_errors();
-    };
-
-    ctx.eval_to_token_stream(Span::call_site(), &exprs)
-}
-
-pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
-    let attrib = attrib.into_vec();
-    let mut ctx = Context::new(ScopeKind::Unquoted);
-    let (mut exprs, rest, trailing_block) =
-        ctx.parse_body(Span::call_site(), &attrib, true);
-
-    if !rest.is_empty() && ctx.errors.is_empty() {
-        let tb = trailing_block.expect("rest without trailing block");
-        ctx.error(
-            attrib[attrib.len() - rest.len() - 1].span(),
-            format!("template tag `{}` is never closed", tb.to_str()),
-        );
-        return ctx.expand_errors();
-    }
-
-    let Some(trailing_block) = trailing_block else {
-        ctx.error(
-            exprs.last().map(|e| e.span()).unwrap_or(Span::call_site()),
-            "replicate ignores the attribute body",
-        );
-        return ctx.expand_errors();
-    };
-
-    let body = body.into_vec();
-    let Ok(contents) = ctx.parse_raw_block_to_exprs(Span::call_site(), &body)
-    else {
-        return ctx.expand_errors();
-    };
-
-    ctx.close_expr_after_trailing_body(&mut exprs, trailing_block, contents);
-
-    ctx.eval_to_token_stream(Span::call_site(), &exprs)
-}
-
-pub fn metamatch(body: TokenStream) -> TokenStream {
-    let body = body.into_vec();
-    let mut ctx = Context::new(ScopeKind::Metamatch);
-
-    let Ok(exprs) = ctx.parse_raw_block_to_exprs(Span::call_site(), &body)
-    else {
-        return ctx.expand_errors();
-    };
-
-    ctx.eval_to_token_stream(Span::call_site(), &exprs)
-}
-
-fn comma_token(span: Span) -> TokenTree {
-    let mut punct = Punct::new(',', Spacing::Alone);
-    punct.set_span(span);
-    TokenTree::Punct(punct)
-}
-
-fn append_compile_error(tgt: &mut Vec<TokenTree>, message: &str, span: Span) {
-    tgt.extend_from_slice(&[
-        TokenTree::Ident(Ident::new("compile_error", span)),
-        TokenTree::Punct({
-            let mut punct = Punct::new('!', Spacing::Alone);
-            punct.set_span(span);
-            punct
-        }),
-        TokenTree::Group({
-            let mut group = Group::new(Delimiter::Brace, {
-                TokenStream::from_iter(vec![TokenTree::Literal({
-                    let mut string = Literal::string(message);
-                    string.set_span(span);
-                    string
-                })])
-            });
-            group.set_span(span);
-            group
-        }),
-    ]);
-}
-
-fn has_template_angle_backets(tokens: &[TokenTree]) -> bool {
-    let Some(TokenTree::Punct(p)) = tokens.first() else {
-        return false;
-    };
-    if p.as_char() != '<' {
-        return false;
-    }
-
-    let Some(TokenTree::Punct(p)) = tokens.last() else {
-        return false;
-    };
-    if p.as_char() != '>' {
-        return false;
-    }
-    true
-}
-
-fn append_token_list(
-    exprs: &mut Vec<Rc<MetaExpr>>,
-    tokens: &[TokenTree],
-    start: usize,
-    end: usize,
-) {
-    if start != end {
-        exprs.push(Rc::new(MetaExpr::Literal {
-            span: tokens[start].span(),
-            value: Rc::new(MetaValue::Tokens(tokens[start..end].to_vec())),
-        }));
-    }
-}
-
-impl Context {
-    fn new(primary_scope_kind: ScopeKind) -> Self {
-        let empty_token_list = Rc::new(MetaValue::Tokens(Vec::new()));
-        let mut ctx = Self {
-            empty_token_list_expr: Rc::new(MetaExpr::Literal {
-                span: Span::call_site(),
-                value: empty_token_list.clone(),
-            }),
-            empty_token_list,
-            scopes: vec![Scope {
-                kind: primary_scope_kind,
-                bindings: HashMap::new(),
-            }],
-            errors: Vec::new(),
-        };
-        ctx.insert_builtins();
-        ctx
-    }
-}
-
-// evaluation
-impl Context {
-    fn insert_builtins(&mut self) {
-        self.insert_builtin_str_fn("lowercase", |s| s.to_lowercase());
-        self.insert_builtin_str_fn("uppercase", |s| s.to_uppercase());
-        self.insert_builtin_str_fn("capitalize", |s| {
-            if let Some(first) = s.chars().next() {
-                format!("{}{}", first.to_uppercase(), &s[first.len_utf8()..])
-            } else {
-                String::new()
-            }
-        });
-        self.insert_builtin_list_fn("enumerate", |l| {
-            l.iter()
-                .enumerate()
-                .map(|(i, v)| {
-                    Rc::new(MetaValue::Tuple(vec![
-                        Rc::new(MetaValue::Int {
-                            value: i as i64,
-                            span: None,
-                        }),
-                        v.clone(),
-                    ]))
-                })
-                .collect::<Vec<_>>()
-        });
-        self.insert_builtin_fn("len", 1, |ctx, callsite, args| {
-            let v = match &*args[0] {
-                MetaValue::Token(_) => 1,
-                MetaValue::Tokens(token_trees) => token_trees.len(),
-                MetaValue::List(list) => list.len(),
-                MetaValue::Tuple(tup) => tup.len(),
-                MetaValue::String { value: s, span: _ } => s.len(),
-                MetaValue::Bool { .. }
-                | MetaValue::Int { .. }
-                | MetaValue::Fn(_)
-                | MetaValue::BuiltinFn(_) => {
-                    ctx.error(
-                        callsite,
-                        format!(
-                            "value of type {} has no len()",
-                            args[0].type_id()
-                        ),
-                    );
-                    return Err(());
-                }
-            };
-            Ok(Rc::new(MetaValue::Int {
-                value: v as i64,
-                span: None,
-            }))
-        });
-        // TODO: camel_case, pascal_case, ...
-    }
-    fn match_and_bind_pattern(
-        &mut self,
-        pat: &Pattern,
-        val: Rc<MetaValue>,
-    ) -> Result<()> {
-        match pat {
-            Pattern::Ident(bind) => {
-                self.insert_binding(
-                    bind.span,
-                    bind.name.clone(),
-                    bind.super_bound,
-                    val,
-                );
-                Ok(())
-            }
-            Pattern::Tuple {
-                span,
-                elems: pat_bindings,
-            } => {
-                let MetaValue::Tuple(val_elems) = &*val else {
-                    // TODO: more context
-                    self.error(
-                        *span,
-                        format!(
-                            "tuple pattern does not match {}",
-                            val.type_id()
-                        ),
-                    );
-                    return Err(());
-                };
-                if pat_bindings.len() != val_elems.len() {
-                    self.error( *span,
-                                 format!(
-                                    "tuple pattern missmatch: expected length {}, got {}",
-                                    pat_bindings.len(),
-                                    val_elems.len()
-                                ),
-                            );
-                    return Err(());
-                }
-                for i in 0..val_elems.len() {
-                    self.match_and_bind_pattern(
-                        &pat_bindings[i],
-                        val_elems[i].clone(),
-                    )?;
-                }
-                Ok(())
-            }
-            Pattern::List {
-                span,
-                elems: pat_bindings,
-            } => {
-                let MetaValue::List(val_elems) = &*val else {
-                    // TODO: more context
-                    self.error(
-                        *span,
-                        format!(
-                            "list pattern does not match {}",
-                            val.type_id()
-                        ),
-                    );
-                    return Err(());
-                };
-                if pat_bindings.len() != val_elems.len() {
-                    self.error(  *span,
-                                 format!(
-                                    "list pattern missmatch: expected length {}, got {}",
-                                    pat_bindings.len(),
-                                    val_elems.len()
-                                ),
-                            );
-                    return Err(());
-                }
-                for i in 0..val_elems.len() {
-                    self.match_and_bind_pattern(
-                        &pat_bindings[i],
-                        val_elems[i].clone(),
-                    )?;
-                }
-                Ok(())
-            }
-        }
-    }
-
-    fn insert_builtin_fn(
-        &mut self,
-        name: &'static str,
-        param_count: usize,
-        f: impl 'static
-            + Fn(&mut Context, Span, &[Rc<MetaValue>]) -> Result<Rc<MetaValue>>,
-    ) {
-        let builtin_fn_v = Rc::new(MetaValue::BuiltinFn(Rc::new(BuiltinFn {
-            param_count,
-            builtin: Box::new(f),
-        })));
-        self.insert_binding(
-            Span::call_site(),
-            Rc::from(name),
-            false,
-            builtin_fn_v,
-        );
-    }
-
-    fn insert_builtin_str_fn(
-        &mut self,
-        name: &'static str,
-        f: impl 'static + Fn(&str) -> String,
-    ) {
-        let str_fn = move |ctx: &mut Context,
-                           span: Span,
-                           args: &[Rc<MetaValue>]|
-              -> Result<Rc<MetaValue>> {
-            match &*args[0] {
-                MetaValue::String { value: s, span: _ } => {
-                    Ok(Rc::new(MetaValue::String {
-                        value: Rc::from(f(s)),
-                        span: None,
-                    }))
-                }
-                MetaValue::Token(t) => Ok(Rc::new(MetaValue::Token(
-                    TokenTree::Ident(Ident::new(&f(&t.to_string()), t.span())),
-                ))),
-                _ => {
-                    ctx.error(
-                        span,
-                        format!(
-                            "builtin function `{name}` expects a string, got a {}",
-                            args[0].type_id()
-                        ),
-                    );
-                    Err(())
-                }
-            }
-        };
-        self.insert_builtin_fn(name, 1, str_fn);
-    }
-    fn insert_builtin_list_fn(
-        &mut self,
-        name: &'static str,
-        f: impl 'static + Fn(&[Rc<MetaValue>]) -> Vec<Rc<MetaValue>>,
-    ) {
-        let list_fn = move |ctx: &mut Context,
-                            span: Span,
-                            args: &[Rc<MetaValue>]|
-              -> Result<Rc<MetaValue>> {
-            let MetaValue::List(list) = &*args[0] else {
-                ctx.error(
-                    span,
-                    format!(
-                        "builtin function `{name}` expects a list, got a {}",
-                        args[0].type_id()
-                    ),
-                );
-                return Err(());
-            };
-            Ok(Rc::new(MetaValue::List(f(list))))
-        };
-        self.insert_builtin_fn(name, 1, list_fn);
-    }
-    fn append_value_to_stream(
-        &mut self,
-        tgt: &mut Vec<TokenTree>,
-        eval_span: Span,
-        value: &MetaValue,
-    ) -> Result<()> {
-        match value {
-            MetaValue::Token(t) => {
-                tgt.push(t.clone());
-            }
-            MetaValue::Tokens(list) => {
-                tgt.extend(list.iter().cloned());
-            }
-            MetaValue::Int { value, span } => {
-                let mut lit = Literal::i64_unsuffixed(*value);
-                lit.set_span(span.unwrap_or(eval_span));
-                tgt.push(TokenTree::Literal(lit));
-            }
-            MetaValue::Bool { value, span } => {
-                let ident = Ident::new(
-                    if *value { "true" } else { "false" },
-                    span.unwrap_or(eval_span),
-                );
-                tgt.push(TokenTree::Ident(ident));
-            }
-            MetaValue::String { value, span } => {
-                let mut lit = Literal::string(value);
-                lit.set_span(span.unwrap_or(eval_span));
-                tgt.push(TokenTree::Literal(lit));
-            }
-            MetaValue::Fn(_) | MetaValue::BuiltinFn(_) => {
-                self.error(eval_span, "function cannot be tokenized");
-                return Err(());
-            }
-            MetaValue::List(vals) => {
-                let mut list = Vec::new();
-                for (i, e) in vals.iter().enumerate() {
-                    if i > 0 {
-                        list.push(comma_token(eval_span));
-                    }
-                    self.append_value_to_stream(&mut list, eval_span, e)?;
-                }
-                tgt.push(TokenTree::Group(Group::new(
-                    Delimiter::Bracket,
-                    TokenStream::from_iter(list),
-                )));
-            }
-            MetaValue::Tuple(vals) => {
-                let mut list = Vec::new();
-                for (i, e) in vals.iter().enumerate() {
-                    if i > 0 {
-                        list.push(comma_token(eval_span));
-                    }
-                    self.append_value_to_stream(&mut list, eval_span, e)?;
-                }
-                if vals.len() == 1 {
-                    list.push(comma_token(eval_span));
-                }
-                tgt.push(TokenTree::Group(Group::new(
-                    Delimiter::Parenthesis,
-                    TokenStream::from_iter(list),
-                )));
-            }
-        }
-        Ok(())
-    }
-    fn lookup(&self, name: &str, super_only: bool) -> Option<Rc<MetaValue>> {
-        for scope in &self.scopes {
-            if let Some(binding) = scope.bindings.get(name) {
-                if binding.super_bound || !super_only {
-                    return Some(binding.value.clone());
-                }
-            }
-        }
-        None
-    }
-    fn eval_to_token_stream(
-        &mut self,
-        eval_span: Span,
-        exprs: &[Rc<MetaExpr>],
-    ) -> TokenStream {
-        if self.errors.is_empty() {
-            let mut res = Vec::new();
-            if self
-                .eval_stmt_list_to_stream(&mut res, eval_span, exprs)
-                .is_ok()
-                && self.errors.is_empty()
-            {
-                return TokenStream::from_iter(res);
-            }
-        }
-        self.expand_errors()
-    }
-    fn eval_stmt_list_to_stream(
-        &mut self,
-        tgt: &mut Vec<TokenTree>,
-        eval_span: Span,
-        exprs: &[Rc<MetaExpr>],
-    ) -> Result<()> {
-        for expr in exprs {
-            let Ok(v) = self.eval(expr) else {
-                continue;
-            };
-            self.append_value_to_stream(tgt, eval_span, &v)?;
-        }
-        Ok(())
-    }
-    fn eval_stmt_list_to_meta_val(
-        &mut self,
-        eval_span: Span,
-        exprs: &[Rc<MetaExpr>],
-    ) -> Result<Rc<MetaValue>> {
-        let mut res = Vec::new();
-        self.eval_stmt_list_to_stream(&mut res, eval_span, exprs)?;
-        Ok(Rc::new(MetaValue::Tokens(res)))
-    }
-    fn push_eval_scope(&mut self) {
-        self.scopes.push(Scope {
-            kind: ScopeKind::Evaluation,
-            bindings: HashMap::new(),
-        });
-    }
-    fn push_dummy_scope(&mut self, kind: ScopeKind) {
-        self.scopes.push(Scope {
-            kind,
-            bindings: HashMap::new(),
-        });
-    }
-    fn eval(&mut self, expr: &MetaExpr) -> Result<Rc<MetaValue>> {
-        match expr {
-            MetaExpr::Literal { span: _, value } => Ok(value.clone()),
-            MetaExpr::Ident { span, name } => {
-                if let Some(expr) = self.lookup(name, false) {
-                    return Ok(expr);
-                }
-                Ok(Rc::new(MetaValue::Token(TokenTree::Ident(Ident::new(
-                    name, *span,
-                )))))
-            }
-            MetaExpr::LetBinding {
-                span: _,
-                pattern,
-                expr,
-            } => {
-                let val = self.eval(expr.as_ref().unwrap())?;
-                self.match_and_bind_pattern(pattern, val)?;
-                Ok(self.empty_token_list.clone())
-            }
-            MetaExpr::FnCall { span, name, args } => {
-                self.eval_fn_call(span, name, args)
-            }
-            MetaExpr::RawOutputGroup {
-                span,
-                delimiter,
-                contents,
-            } => {
-                let mut res = Vec::new();
-                self.eval_stmt_list_to_stream(&mut res, *span, contents)?;
-                Ok(Rc::new(MetaValue::Token(TokenTree::Group(Group::new(
-                    *delimiter,
-                    TokenStream::from_iter(res),
-                )))))
-            }
-            MetaExpr::ForExpansion {
-                span,
-                pattern,
-                variants_expr,
-                body,
-            } => {
-                let input_list = self.eval(variants_expr)?;
-                let MetaValue::List(list_elems) = &*input_list else {
-                    self.error(
-                        variants_expr.span(),
-                        format!(
-                            "cannot iterate over {}",
-                            input_list.type_id()
-                        ),
-                    );
-                    return Err(());
-                };
-                let mut res = Vec::new();
-
-                for elem in list_elems {
-                    self.push_eval_scope();
-                    if self
-                        .match_and_bind_pattern(pattern, elem.clone())
-                        .is_err()
-                    {
-                        self.scopes.pop();
-                        return Err(());
-                    }
-                    if self
-                        .eval_stmt_list_to_stream(&mut res, *span, body)
-                        .is_err()
-                    {
-                        self.scopes.pop();
-                        return Err(());
-                    }
-                    self.scopes.pop();
-                }
-                Ok(Rc::new(MetaValue::Tokens(res)))
-            }
-            MetaExpr::Scope {
-                span,
-                body: contents,
-            } => {
-                self.push_eval_scope();
-                let res = self.eval_stmt_list_to_meta_val(*span, contents);
-                self.scopes.pop();
-                res
-            }
-            MetaExpr::FnDecl(f) => {
-                self.insert_binding(
-                    f.span,
-                    f.name.clone(),
-                    false,
-                    Rc::new(MetaValue::Fn(f.clone())),
-                );
-                Ok(self.empty_token_list.clone())
-            }
-            MetaExpr::List { span: _, exprs } => {
-                let mut elements = Vec::new();
-                for e in exprs {
-                    elements.push(self.eval(e)?);
-                }
-                Ok(Rc::new(MetaValue::List(elements)))
-            }
-            MetaExpr::Tuple { span: _, exprs } => {
-                let mut elements = Vec::new();
-                for e in exprs {
-                    elements.push(self.eval(e)?);
-                }
-                Ok(Rc::new(MetaValue::Tuple(elements)))
-            }
-            MetaExpr::IfExpr {
-                span,
-                condition,
-                body,
-                else_expr,
-            } => {
-                let condition_val = self.eval(condition)?;
-                let MetaValue::Bool {
-                    value: condition,
-                    span: _,
-                } = &*condition_val
-                else {
-                    self.error(
-                        condition.span(),
-                        format!(
-                            "if expression must result in `bool`, not `{}`",
-                            condition_val.type_id()
-                        ),
-                    );
-                    return Err(());
-                };
-                if *condition {
-                    self.eval_stmt_list_to_meta_val(*span, body)
-                } else if let Some(else_expr) = else_expr {
-                    self.eval(else_expr)
-                } else {
-                    Ok(self.empty_token_list.clone())
-                }
-            }
-            MetaExpr::Range {
-                span: _,
-                inclusive,
-                lhs,
-                rhs,
-            } => {
-                fn eval_expr(ctx: &mut Context, x: &MetaExpr) -> Result<i64> {
-                    let mv = ctx.eval(x)?;
-                    let MetaValue::Int { value, .. } = &*mv else {
-                        ctx.error(
-                                    x.span(),
-                                    format!(
-                                        "range expression bound must be `int`, not `{}`",
-                                        mv.type_id()
-                                    ),
-                                );
-                        return Err(());
-                    };
-                    Ok(*value)
-                }
-
-                // TODO: for now these are simply eager similar to python2
-                // we eventually want to change that probably, and create
-                // a python3 debacle only saved by the fact that we dont have
-                // users
-                let mut res = Vec::new();
-                let lhs_v = if let Some(lhs) = lhs {
-                    eval_expr(self, lhs)?
-                } else {
-                    0
-                };
-                let rhs_v = if let Some(rhs) = rhs {
-                    let rhs_v = eval_expr(self, rhs)?;
-                    if *inclusive {
-                        rhs_v + 1
-                    } else {
-                        rhs_v
-                    }
-                } else {
-                    todo!()
-                };
-                for i in lhs_v..rhs_v {
-                    res.push(Rc::new(MetaValue::Int {
-                        value: i,
-                        span: None,
-                    }));
-                }
-                Ok(Rc::new(MetaValue::List(res)))
-            }
-            MetaExpr::ExpandPattern(ep) => {
-                let input_list = self.eval(&ep.for_expr)?;
-                let MetaValue::List(list_elems) = &*input_list else {
-                    self.error(
-                        ep.for_expr.span(),
-                        format!(
-                            "cannot iterate over {}",
-                            input_list.type_id()
-                        ),
-                    );
-                    return Err(());
-                };
-                let mut res = Vec::new();
-                for (i, elem) in list_elems.iter().enumerate() {
-                    self.push_eval_scope();
-                    if i != 0 {
-                        res.push(TokenTree::Punct(Punct::new(
-                            '|',
-                            Spacing::Alone,
-                        )));
-                    }
-                    if self
-                        .match_and_bind_pattern(&ep.for_pattern, elem.clone())
-                        .is_err()
-                    {
-                        self.scopes.pop();
-                        return Err(());
-                    }
-                    if self
-                        .eval_stmt_list_to_stream(
-                            &mut res,
-                            ep.span,
-                            &ep.match_arm_patterns,
-                        )
-                        .is_err()
-                    {
-                        self.scopes.pop();
-                        return Err(());
-                    }
-
-                    self.scopes.pop();
-                }
-                self.eval_stmt_list_to_stream(
-                    &mut res,
-                    ep.span,
-                    &ep.match_arm_guard,
-                )?;
-                self.eval_stmt_list_to_stream(
-                    &mut res,
-                    ep.span,
-                    &ep.match_arm_body,
-                )?;
-                Ok(Rc::new(MetaValue::Tokens(res)))
-            }
-        }
-    }
-
-    fn eval_fn_call(
-        &mut self,
-        span: &Span,
-        name: &Rc<str>,
-        args: &Vec<Rc<MetaExpr>>,
-    ) -> std::result::Result<Rc<MetaValue>, ()> {
-        let Some(binding) = self.lookup(name, false) else {
-            self.error(*span, format!("undefined function `{name}`"));
-            return Err(());
-        };
-        match &*binding {
-            MetaValue::Fn(function) => {
-                if function.params.len() != args.len() {
-                    self.error(
-                        *span,
-                        format!(
-                            "function `{name}` with {} parameters called with {} arguments",
-                            function.params.len(),
-                            args.len()
-                        ),
-                    );
-                    return Err(());
-                }
-                self.push_eval_scope();
-                for (i, arg) in args.iter().enumerate() {
-                    let Ok(val) = self.eval(arg) else {
-                        self.scopes.pop();
-                        return Err(());
-                    };
-                    let param = &function.params[i];
-                    self.insert_binding(
-                        param.span,
-                        param.name.clone(),
-                        param.super_bound,
-                        val,
-                    );
-                }
-                let res =
-                    self.eval_stmt_list_to_meta_val(*span, &function.body);
-                self.scopes.pop();
-                res
-            }
-            MetaValue::BuiltinFn(builtin_fn) => {
-                if builtin_fn.param_count != args.len() {
-                    self.error(
-                        *span,
-                        format!(
-                            "function `{name}` with {} parameters called with {} arguments",
-                            builtin_fn.param_count,
-                            args.len()
-                        ),
-                    );
-                    return Err(());
-                }
-                let mut param_bindings = Vec::new();
-                for arg in args {
-                    let Ok(val) = self.eval(arg) else {
-                        return Err(());
-                    };
-                    param_bindings.push(val);
-                }
-                (builtin_fn.builtin)(self, *span, &param_bindings)
-            }
-            other => {
-                self.error(
-                    *span,
-                    format!(
-                        "value of type {} is not callable",
-                        other.type_id()
-                    ),
-                );
-                Err(())
-            }
-        }
-    }
-
-    fn insert_binding(
-        &mut self,
-        span: Span,
-        name: Rc<str>,
-        super_bound: bool,
-        value: Rc<MetaValue>,
-    ) {
-        let binding = Binding {
-            span,
-            super_bound,
-            value,
-        };
-        self.scopes
-            .last_mut()
-            .unwrap()
-            .bindings
-            .insert(name.clone(), binding);
-    }
-    fn expand_errors(&self) -> TokenStream {
-        let mut errors = Vec::new();
-        for err in &self.errors {
-            append_compile_error(&mut errors, &err.message, err.span);
-        }
-        TokenStream::from_iter(errors)
-    }
-}
-
-// parsing utils
-fn parse_ident(token: &TokenTree) -> Option<(Span, Rc<str>)> {
-    if let TokenTree::Ident(ident) = token {
-        Some((ident.span(), Rc::from(ident.to_string())))
-    } else {
-        None
-    }
-}
-
-fn delimiter_chars(d: Delimiter) -> (char, char) {
-    match d {
-        Delimiter::Parenthesis => ('(', ')'),
-        Delimiter::Brace => ('{', '}'),
-        Delimiter::Bracket => ('[', ']'),
-        Delimiter::None => (' ', ' '),
-    }
-}
-
-fn parse_literal(token: &TokenTree) -> Rc<MetaValue> {
-    if let TokenTree::Literal(lit) = token {
-        let s = lit.to_string();
-        if s.starts_with('"') {
-            return Rc::new(MetaValue::String {
-                value: Rc::from(s[1..s.len() - 1].to_string()),
-                span: Some(token.span()),
-            });
-        }
-        if let Ok(n) = s.parse::<i64>() {
-            return Rc::new(MetaValue::Int {
-                value: n,
-                span: Some(token.span()),
-            });
-        }
-    }
-    return Rc::new(MetaValue::Token(token.clone()));
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RangeToken {
+    Exclusive,
+    Inclusive,
 }
 
 struct MatchArmEnds {
@@ -1236,12 +123,6 @@ fn find_match_arm_bounds(tokens: &[TokenTree]) -> Option<MatchArmEnds> {
     Some(ends)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RangeToken {
-    Exclusive,
-    Inclusive,
-}
-
 fn try_parse_range_token(
     tokens: &[TokenTree],
 ) -> Option<(RangeToken, Span, &[TokenTree])> {
@@ -1269,7 +150,97 @@ fn try_parse_range_token(
     None
 }
 
+fn has_template_angle_backets(tokens: &[TokenTree]) -> bool {
+    let Some(TokenTree::Punct(p)) = tokens.first() else {
+        return false;
+    };
+    if p.as_char() != '<' {
+        return false;
+    }
+
+    let Some(TokenTree::Punct(p)) = tokens.last() else {
+        return false;
+    };
+    if p.as_char() != '>' {
+        return false;
+    }
+    true
+}
+
+fn append_token_list(
+    exprs: &mut Vec<Rc<MetaExpr>>,
+    tokens: &[TokenTree],
+    start: usize,
+    end: usize,
+) {
+    if start != end {
+        exprs.push(Rc::new(MetaExpr::Literal {
+            span: tokens[start].span(),
+            value: Rc::new(MetaValue::Tokens(tokens[start..end].to_vec())),
+        }));
+    }
+}
+
+fn parse_literal(token: &TokenTree) -> Rc<MetaValue> {
+    if let TokenTree::Literal(lit) = token {
+        let s = lit.to_string();
+        if s.starts_with('"') {
+            return Rc::new(MetaValue::String {
+                value: Rc::from(s[1..s.len() - 1].to_string()),
+                span: Some(token.span()),
+            });
+        }
+        if let Ok(n) = s.parse::<i64>() {
+            return Rc::new(MetaValue::Int {
+                value: n,
+                span: Some(token.span()),
+            });
+        }
+    }
+    Rc::new(MetaValue::Token(token.clone()))
+}
+
+fn parse_ident(token: &TokenTree) -> Option<(Span, Rc<str>)> {
+    if let TokenTree::Ident(ident) = token {
+        Some((ident.span(), Rc::from(ident.to_string())))
+    } else {
+        None
+    }
+}
+
+fn delimiter_chars(d: Delimiter) -> (char, char) {
+    match d {
+        Delimiter::Parenthesis => ('(', ')'),
+        Delimiter::Brace => ('{', '}'),
+        Delimiter::Bracket => ('[', ']'),
+        Delimiter::None => (' ', ' '),
+    }
+}
+
 impl Context {
+    pub fn new(primary_scope_kind: ScopeKind) -> Self {
+        let empty_token_list = Rc::new(MetaValue::Tokens(Vec::new()));
+        let mut ctx = Self {
+            empty_token_list_expr: Rc::new(MetaExpr::Literal {
+                span: Span::call_site(),
+                value: empty_token_list.clone(),
+            }),
+            empty_token_list,
+            scopes: vec![Scope {
+                kind: primary_scope_kind,
+                bindings: HashMap::new(),
+            }],
+            errors: Vec::new(),
+        };
+        ctx.insert_builtins();
+        ctx
+    }
+    pub fn push_dummy_scope(&mut self, kind: ScopeKind) {
+        self.scopes.push(Scope {
+            kind,
+            bindings: HashMap::new(),
+        });
+    }
     fn parse_expr_deny_trailing<'a>(
         &mut self,
         parent_span: Span,
@@ -1601,7 +572,7 @@ impl Context {
         }
     }
 
-    fn error(&mut self, span: Span, message: impl Into<String>) {
+    pub fn error(&mut self, span: Span, message: impl Into<String>) {
         self.errors.push(MetaError {
             span,
             message: message.into(),
@@ -2358,7 +1329,7 @@ impl Context {
         Ok((exprs, final_comma))
     }
 
-    fn parse_body_deny_trailing(
+    pub fn parse_body_deny_trailing(
         &mut self,
         parent_span: Span,
         tokens: &[TokenTree],
@@ -2368,7 +1339,7 @@ impl Context {
 
     // syntax errors are contained withing the body
     // we return all the exprs that we were able to parse
-    fn parse_body<'a>(
+    pub fn parse_body<'a>(
         &mut self,
         parent_span: Span,
         tokens: &'a [TokenTree],
@@ -2425,7 +1396,7 @@ impl Context {
         (exprs, &[], None)
     }
 
-    fn close_expr_after_trailing_body(
+    pub fn close_expr_after_trailing_body(
         &mut self,
         exprs: &mut [Rc<MetaExpr>],
         kind: TrailingBlockKind,
@@ -2490,7 +1461,7 @@ impl Context {
         }
     }
 
-    fn parse_raw_block_to_exprs(
+    pub fn parse_raw_block_to_exprs(
         &mut self,
         parent_span: Span,
         tokens: &[TokenTree],
