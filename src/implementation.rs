@@ -573,20 +573,27 @@ impl Context {
                            span: Span,
                            args: &[Rc<MetaValue>]|
               -> Result<Rc<MetaValue>> {
-            let MetaValue::String { value: s, span: _ } = &*args[0] else {
-                ctx.error(
-                    span,
-                    format!(
-                        "builtin function `{name}` expects a string, got a {}",
-                        args[0].type_id()
-                    ),
-                );
-                return Err(());
-            };
-            Ok(Rc::new(MetaValue::String {
-                value: Rc::from(f(s)),
-                span: None,
-            }))
+            match &*args[0] {
+                MetaValue::String { value: s, span: _ } => {
+                    Ok(Rc::new(MetaValue::String {
+                        value: Rc::from(f(s)),
+                        span: None,
+                    }))
+                }
+                MetaValue::Token(t) => Ok(Rc::new(MetaValue::Token(
+                    TokenTree::Ident(Ident::new(&f(&t.to_string()), t.span())),
+                ))),
+                _ => {
+                    ctx.error(
+                        span,
+                        format!(
+                            "builtin function `{name}` expects a string, got a {}",
+                            args[0].type_id()
+                        ),
+                    );
+                    Err(())
+                }
+            }
         };
         self.insert_builtin_fn(name, 1, str_fn);
     }
@@ -2608,7 +2615,7 @@ impl Context {
                             group_tokens,
                         )?;
                         exprs.push(expr);
-                        i = tokens.len() - rest.len() + 1;
+                        i = tokens.len() - rest.len();
                         raw_token_list_start = i;
                         continue;
                     }
