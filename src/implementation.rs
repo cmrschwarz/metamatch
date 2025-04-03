@@ -2,7 +2,7 @@ use proc_macro::{
     Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream,
     TokenTree,
 };
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 trait IntoIterIntoVec {
     type Item;
@@ -23,6 +23,7 @@ struct MetaError {
     message: String,
 }
 
+#[derive(Debug)]
 struct BindingParameter {
     span: Span,
     name: Rc<str>,
@@ -37,7 +38,7 @@ struct BuiltinFn {
     >,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum MetaValue {
     Token(TokenTree),
     Tokens(Vec<TokenTree>),
@@ -69,12 +70,14 @@ enum MetaValue {
     Tuple(Vec<Rc<MetaValue>>),
 }
 
+#[derive(Debug)]
 enum Pattern {
     Ident(BindingParameter),
     Tuple { span: Span, elems: Vec<Pattern> },
     List { span: Span, elems: Vec<Pattern> },
 }
 
+#[derive(Debug)]
 struct Function {
     span: Span,
     name: Rc<str>,
@@ -82,6 +85,7 @@ struct Function {
     body: Vec<Rc<MetaExpr>>,
 }
 
+#[derive(Debug)]
 enum MetaExpr {
     Literal {
         span: Span,
@@ -131,8 +135,15 @@ enum MetaExpr {
         span: Span,
         exprs: Vec<Rc<MetaExpr>>,
     },
+    Range {
+        span: Span,
+        inclusive: bool,
+        lhs: Option<Rc<MetaExpr>>,
+        rhs: Option<Rc<MetaExpr>>,
+    },
 }
 
+#[derive(Debug)]
 struct Binding {
     #[allow(unused)] // Todo: im sure we will need this at some point?
     span: Span,
@@ -141,7 +152,7 @@ struct Binding {
     value: Rc<MetaValue>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScopeKind {
     Raw,
     Quoted,
@@ -150,6 +161,7 @@ enum ScopeKind {
     Metamatch,
 }
 
+#[derive(Debug)]
 struct Scope {
     kind: ScopeKind,
     bindings: HashMap<Rc<str>, Binding>,
@@ -191,6 +203,15 @@ impl Default for MetaValue {
     }
 }
 
+impl Debug for BuiltinFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BuiltinFn")
+            .field("param_count", &self.param_count)
+            .field("builtin", &"..")
+            .finish()
+    }
+}
+
 impl MetaValue {
     fn type_id(&self) -> &'static str {
         match self {
@@ -220,6 +241,7 @@ impl MetaExpr {
             MetaExpr::Scope { span, .. } => span,
             MetaExpr::List { span, .. } => span,
             MetaExpr::Tuple { span, .. } => span,
+            MetaExpr::Range { span, .. } => span,
         }
     }
 }
@@ -772,8 +794,9 @@ impl Context {
                     return Err(());
                 };
                 let mut res = Vec::new();
-                self.push_eval_scope();
+
                 for elem in list_elems {
+                    self.push_eval_scope();
                     if self
                         .match_and_bind_pattern(pattern, elem.clone())
                         .is_err()
@@ -788,6 +811,7 @@ impl Context {
                         self.scopes.pop();
                         return Err(());
                     }
+                    self.scopes.pop();
                 }
                 Ok(Rc::new(MetaValue::Tokens(res)))
             }
@@ -851,6 +875,55 @@ impl Context {
                 } else {
                     Ok(self.empty_token_list.clone())
                 }
+            }
+            MetaExpr::Range {
+                span: _,
+                inclusive,
+                lhs,
+                rhs,
+            } => {
+                fn eval_expr(ctx: &mut Context, x: &MetaExpr) -> Result<i64> {
+                    let mv = ctx.eval(x)?;
+                    let MetaValue::Int { value, .. } = &*mv else {
+                        ctx.error(
+                            x.span(),
+                            format!(
+                                "range expression bound must be `int`, not `{}`",
+                                mv.type_id()
+                            ),
+                        );
+                        return Err(());
+                    };
+                    Ok(*value)
+                }
+
+                // TODO: for now these are simply eager similar to python2
+                // we eventually want to change that probably, and create
+                // a python3 debacle only saved by the fact that we dont have
+                // users
+                let mut res = Vec::new();
+                let lhs_v = if let Some(lhs) = lhs {
+                    eval_expr(self, lhs)?
+                } else {
+                    0
+                };
+                let rhs_v = if let Some(rhs) = rhs {
+                    let rhs_v = eval_expr(self, rhs)?;
+                    if *inclusive {
+                        rhs_v + 1
+                    } else {
+                        rhs_v
+                    }
+                } else {
+                    todo!()
+                };
+                for i in lhs_v..rhs_v {
+                    res.push(Rc::new(MetaValue::Int {
+                        value: i,
+                        span: None,
+                    }));
+                }
+                Ok(Rc::new(MetaValue::List(res)))
             }
         }
     }
@@ -1004,17 +1077,83 @@ fn parse_literal(token: &TokenTree) -> Option<(Span, Rc<MetaValue>)> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RangeToken {
+    Exclusive,
+    Inclusive,
+}
+
+fn try_parse_range_token(
+    tokens: &[TokenTree],
+) -> Option<(RangeToken, Span, &[TokenTree])> {
+    if let Some(TokenTree::Punct(first)) = tokens.first() {
+        if first.as_char() != '.' || first.spacing() != Spacing::Joint {
+            return None;
+        }
+        if let Some(TokenTree::Punct(second)) = tokens.get(1) {
+            if second.as_char() != '.' {
+                return None;
+            }
+            if let Some(TokenTree::Punct(third)) = tokens.get(2) {
+                if third.as_char() == '=' && second.spacing() == Spacing::Joint
+                {
+                    return Some((
+                        RangeToken::Inclusive,
+                        first.span(),
+                        &tokens[3..],
+                    ));
+                }
+            }
+            return Some((RangeToken::Exclusive, first.span(), &tokens[2..]));
+        }
+    }
+    None
+}
+
 impl Context {
-    fn parse_expr<'a>(
+    fn parse_expr_deny_trailing<'a>(
         &mut self,
         parent_span: Span,
         tokens: &'a [TokenTree],
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
         let (expr, rest, _trailing_block) =
-            self.parse_stmt_or_expr(parent_span, tokens, false)?;
+            self.parse_expr(parent_span, tokens, false)?;
         Ok((expr, rest))
     }
-    fn parse_template_expr<'a>(
+    fn parse_expr<'a>(
+        &mut self,
+        parent_span: Span,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        let (expr, rest, trailing_block) =
+            self.parse_expr_value(parent_span, tokens, allow_trailing_block)?;
+
+        if rest.is_empty() || trailing_block.is_some() {
+            return Ok((expr, rest, trailing_block));
+        }
+
+        if let Some((rt, rt_span, rest)) = try_parse_range_token(rest) {
+            let (rhs, rest) =
+                self.parse_expr_deny_trailing(parent_span, rest)?;
+
+            // TODO: support partial ranges
+            return Ok((
+                Rc::new(MetaExpr::Range {
+                    span: rt_span,
+                    inclusive: rt == RangeToken::Inclusive,
+                    lhs: Some(expr),
+                    rhs: Some(rhs),
+                }),
+                rest,
+                None,
+            ));
+        }
+
+        Ok((expr, rest, trailing_block))
+    }
+    fn parse_template_tag_in_expr<'a>(
         &mut self,
         group: &Group,
         group_tokens: &[TokenTree],
@@ -1098,7 +1237,7 @@ impl Context {
             }
         }
     }
-    fn parse_stmt_or_expr<'a>(
+    fn parse_expr_value<'a>(
         &mut self,
         parent_span: Span,
         tokens: &'a [TokenTree],
@@ -1132,7 +1271,7 @@ impl Context {
                         let rest = &tokens[1..];
                         let (expr, rest, trailing_block_tag) =
                             if has_template_angle_backets(&group_tokens) {
-                                self.parse_template_expr(
+                                self.parse_template_tag_in_expr(
                                     group,
                                     &group_tokens,
                                     rest,
@@ -1155,8 +1294,10 @@ impl Context {
                         Ok((expr, rest, trailing_block_tag))
                     }
                     Delimiter::None => {
-                        let (expr, rest) =
-                            self.parse_expr(group.span(), &group_tokens)?;
+                        let (expr, rest) = self.parse_expr_deny_trailing(
+                            group.span(),
+                            &group_tokens,
+                        )?;
                         if !rest.is_empty() {
                             self.error(
                                 rest[0].span(),
@@ -1388,7 +1529,7 @@ impl Context {
             self.error(eq_span, "expected expression after `=`");
             return Err(());
         }
-        let (expr, rest) = self.parse_expr(let_span, rest)?;
+        let (expr, rest) = self.parse_expr_deny_trailing(let_span, rest)?;
 
         self.insert_dummy_bindings_for_pattern(&pattern);
 
@@ -1712,7 +1853,8 @@ impl Context {
 
         let last_tok = rest.last().unwrap();
 
-        let (variants_expr, rest) = self.parse_expr(for_span, &rest[1..])?;
+        let (variants_expr, rest) =
+            self.parse_expr_deny_trailing(for_span, &rest[1..])?;
 
         self.push_dummy_scope(ScopeKind::Unquoted);
         self.insert_dummy_bindings_for_pattern(&pattern);
@@ -1769,7 +1911,8 @@ impl Context {
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
-        let (condition, rest) = self.parse_expr(if_span, tokens)?;
+        let (condition, rest) =
+            self.parse_expr_deny_trailing(if_span, tokens)?;
 
         self.push_dummy_scope(ScopeKind::Unquoted);
 
@@ -2023,7 +2166,8 @@ impl Context {
         let mut final_comma = None;
 
         while !rest.is_empty() {
-            let (expr, new_rest) = self.parse_expr(parent_span, rest)?;
+            let (expr, new_rest) =
+                self.parse_expr_deny_trailing(parent_span, rest)?;
             exprs.push(expr);
             rest = new_rest;
 
@@ -2075,8 +2219,8 @@ impl Context {
         let mut pending_trailing_semi_error = None;
 
         while !rest.is_empty() {
-            let Ok((expr, new_rest, trailing_block)) = self
-                .parse_stmt_or_expr(parent_span, rest, allow_trailing_block)
+            let Ok((expr, new_rest, trailing_block)) =
+                self.parse_expr_value(parent_span, rest, allow_trailing_block)
             else {
                 break;
             };
