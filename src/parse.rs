@@ -289,31 +289,60 @@ impl Context {
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
-        let (expr, rest, trailing_block) =
+        self.parse_expr_with_prec(parent_span, tokens, allow_trailing_block, 0)
+    }
+
+    fn parse_expr_with_prec<'a>(
+        &mut self,
+        parent_span: Span,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
+        min_prec: u8,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        let (mut lhs, mut rest, mut trailing) =
             self.parse_expr_value(parent_span, tokens, allow_trailing_block)?;
 
-        if rest.is_empty() || trailing_block.is_some() {
-            return Ok((expr, rest, trailing_block));
-        }
+        loop {
+            if rest.is_empty() || trailing.is_some() {
+                return Ok((lhs, rest, trailing));
+            }
 
-        if let Some((op_kind, op_span, rest)) = peek_binary_operator(rest) {
-            let (rhs, rest) =
-                self.parse_expr_deny_trailing(parent_span, rest)?;
+            let Some((op, op_span, next_rest)) = peek_binary_operator(rest)
+            else {
+                return Ok((lhs, rest, trailing));
+            };
 
-            // TODO: precedence
-            return Ok((
-                Rc::new(MetaExpr::OpBinary {
-                    span: op_span,
-                    kind: op_kind,
-                    lhs: expr,
-                    rhs,
-                }),
-                rest,
-                None,
-            ));
+            let prec = op.precedence();
+            if prec < min_prec {
+                return Ok((lhs, rest, trailing));
+            }
+
+            let next_min_bp = if op.is_right_associative() {
+                prec
+            } else {
+                prec + 1
+            };
+
+            let (rhs, rest_new, trailing_new) = self.parse_expr_with_prec(
+                parent_span,
+                next_rest,
+                allow_trailing_block,
+                next_min_bp,
+            )?;
+
+            lhs = Rc::new(MetaExpr::OpBinary {
+                span: op_span,
+                kind: op,
+                lhs,
+                rhs,
+            });
+
+            rest = rest_new;
+            trailing = trailing_new;
         }
-        Ok((expr, rest, trailing_block))
     }
+
     fn parse_template_tag_in_expr<'a>(
         &mut self,
         group: &Group,

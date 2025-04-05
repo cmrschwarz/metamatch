@@ -323,6 +323,29 @@ impl BinaryOpKind {
             BinaryOpKind::Assign => "=",
         }
     }
+    pub fn precedence(self) -> u8 {
+        match self {
+            BinaryOpKind::Assign => 0,
+            BinaryOpKind::Equals => 1,
+            BinaryOpKind::RangeExclusive | BinaryOpKind::RangeInclusive => 2,
+            BinaryOpKind::Add | BinaryOpKind::Sub => 3,
+            BinaryOpKind::Mul | BinaryOpKind::Div | BinaryOpKind::Rem => 4,
+        }
+    }
+
+    pub fn is_right_associative(self) -> bool {
+        match self {
+            BinaryOpKind::Assign => true,
+            BinaryOpKind::Add
+            | BinaryOpKind::Sub
+            | BinaryOpKind::Mul
+            | BinaryOpKind::Div
+            | BinaryOpKind::Rem
+            | BinaryOpKind::Equals
+            | BinaryOpKind::RangeExclusive
+            | BinaryOpKind::RangeInclusive => false,
+        }
+    }
 }
 
 impl MetaExpr {

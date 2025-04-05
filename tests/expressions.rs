@@ -6,4 +6,11 @@ fn basic() {
     assert_eq!(unquote!(1 - 1), 0);
     assert_eq!(unquote!(2 * 3), 6);
     assert_eq!(unquote!(3 / 2), 1);
+    assert_eq!(unquote!(7 % 2), 1);
+}
+
+#[test]
+fn precedence() {
+    assert_eq!(unquote!(2 * 3 + 5), 11);
+    assert_eq!(unquote!(5 + 2 * 3), 11);
 }
