@@ -14,3 +14,10 @@ fn precedence() {
     assert_eq!(unquote!(2 * 3 + 5), 11);
     assert_eq!(unquote!(5 + 2 * 3), 11);
 }
+
+#[test]
+fn parentheses_vs_tuple() {
+    assert_eq!(unquote!((1 + 2)), 3);
+    assert_eq!(unquote!((1 + 2,)), (3,));
+    assert_eq!(unquote!((1 + 2, 5)), (3, 5));
+}

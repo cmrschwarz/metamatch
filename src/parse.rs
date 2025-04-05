@@ -273,7 +273,7 @@ impl Context {
             bindings: HashMap::new(),
         });
     }
-    fn parse_expr_deny_trailing<'a>(
+    fn parse_expr_deny_trailing_block<'a>(
         &mut self,
         parent_span: Span,
         tokens: &'a [TokenTree],
@@ -443,20 +443,11 @@ impl Context {
                 let group_tokens = group.stream().into_vec();
                 match group.delimiter() {
                     Delimiter::Parenthesis => {
-                        let list = self.parse_comma_separated(
-                            None,
-                            group.delimiter(),
+                        let expr = self.parse_tuple_or_expr(
                             group.span(),
                             &group_tokens,
                         )?;
-                        Ok((
-                            Rc::new(MetaExpr::Tuple {
-                                span: group.span(),
-                                exprs: list,
-                            }),
-                            &tokens[1..],
-                            None,
-                        ))
+                        Ok((expr, &tokens[1..], None))
                     }
                     Delimiter::Bracket => {
                         let rest = &tokens[1..];
@@ -486,10 +477,11 @@ impl Context {
                         Ok((expr, rest, trailing_block_tag))
                     }
                     Delimiter::None => {
-                        let (expr, rest) = self.parse_expr_deny_trailing(
-                            group.span(),
-                            &group_tokens,
-                        )?;
+                        let (expr, rest) = self
+                            .parse_expr_deny_trailing_block(
+                                group.span(),
+                                &group_tokens,
+                            )?;
                         if !rest.is_empty() {
                             self.error(
                                 rest[0].span(),
@@ -717,7 +709,8 @@ impl Context {
             self.error(eq_span, "expected expression after `=`");
             return Err(());
         }
-        let (expr, rest) = self.parse_expr_deny_trailing(let_span, rest)?;
+        let (expr, rest) =
+            self.parse_expr_deny_trailing_block(let_span, rest)?;
 
         self.insert_dummy_bindings_for_pattern(&pattern);
 
@@ -1042,7 +1035,7 @@ impl Context {
         let last_tok = rest.last().unwrap();
 
         let (variants_expr, rest) =
-            self.parse_expr_deny_trailing(for_span, &rest[1..])?;
+            self.parse_expr_deny_trailing_block(for_span, &rest[1..])?;
 
         self.push_dummy_scope(ScopeKind::Unquoted);
         self.insert_dummy_bindings_for_pattern(&pattern);
@@ -1100,7 +1093,7 @@ impl Context {
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
         let (condition, rest) =
-            self.parse_expr_deny_trailing(if_span, tokens)?;
+            self.parse_expr_deny_trailing_block(if_span, tokens)?;
 
         self.push_dummy_scope(ScopeKind::Unquoted);
 
@@ -1328,37 +1321,21 @@ impl Context {
         }
     }
 
-    fn parse_comma_separated(
+    fn parse_tuple_or_expr(
         &mut self,
-        kind: Option<&'static str>,
-        delimiter: Delimiter,
         parent_span: Span,
         tokens: &[TokenTree],
-    ) -> Result<Vec<Rc<MetaExpr>>> {
-        let (list, _final_comma_span) = self
-            .parse_comma_separated_with_final_comma(
-                kind,
-                delimiter,
-                parent_span,
-                tokens,
-            )?;
-        Ok(list)
-    }
-
-    fn parse_comma_separated_with_final_comma(
-        &mut self,
-        kind: Option<&'static str>,
-        delimiter: Delimiter,
-        parent_span: Span,
-        tokens: &[TokenTree],
-    ) -> Result<(Vec<Rc<MetaExpr>>, Option<Span>)> {
+    ) -> Result<Rc<MetaExpr>> {
         let mut exprs = Vec::new();
         let mut rest = tokens;
-        let mut final_comma = None;
 
         while !rest.is_empty() {
             let (expr, new_rest) =
-                self.parse_expr_deny_trailing(parent_span, rest)?;
+                self.parse_expr_deny_trailing_block(parent_span, rest)?;
+
+            if new_rest.is_empty() && exprs.is_empty() {
+                return Ok(expr);
+            }
             exprs.push(expr);
             rest = new_rest;
 
@@ -1369,7 +1346,50 @@ impl Context {
                 if p.as_char() == ',' {
                     rest = &rest[1..];
                     if rest.is_empty() {
-                        final_comma = Some(p.span());
+                        break;
+                    }
+                    continue;
+                }
+            };
+            self.error(
+                first.span(),
+                format!(
+                    "syntax error{}: expected comma or `)`",
+                    if exprs.len() > 1 { " in tuple" } else { "" }
+                ),
+            );
+            return Err(());
+        }
+
+        Ok(Rc::new(MetaExpr::Tuple {
+            span: parent_span,
+            exprs,
+        }))
+    }
+
+    fn parse_comma_separated(
+        &mut self,
+        kind: Option<&'static str>,
+        delimiter: Delimiter,
+        parent_span: Span,
+        tokens: &[TokenTree],
+    ) -> Result<Vec<Rc<MetaExpr>>> {
+        let mut exprs = Vec::new();
+        let mut rest = tokens;
+
+        while !rest.is_empty() {
+            let (expr, new_rest) =
+                self.parse_expr_deny_trailing_block(parent_span, rest)?;
+            exprs.push(expr);
+            rest = new_rest;
+
+            let Some(first) = rest.first() else {
+                break;
+            };
+            if let TokenTree::Punct(p) = first {
+                if p.as_char() == ',' {
+                    rest = &rest[1..];
+                    if rest.is_empty() {
                         break;
                     }
                     continue;
@@ -1386,7 +1406,7 @@ impl Context {
             return Err(());
         }
 
-        Ok((exprs, final_comma))
+        Ok(exprs)
     }
 
     pub fn parse_body_deny_trailing(
