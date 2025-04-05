@@ -71,3 +71,22 @@ fn list_assignment() {
 
     assert_eq!(list, [0, 1, 2, 42]);
 }
+
+#[test]
+fn ufcs() {
+    let list_len = unquote! {
+        let list = [1, 2, 3];
+        list.len()
+    };
+    assert_eq!(list_len, 3);
+
+    let list_len = unquote! {
+        [1, 2, 3].len()
+    };
+    assert_eq!(list_len, 3);
+
+    let zipped_lists = unquote! {
+        [1, 2, 3].zip([4, 5, 6])
+    };
+    assert_eq!(zipped_lists, [(1, 4), (2, 5), (3, 6)]);
+}

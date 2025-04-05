@@ -20,7 +20,7 @@ pub struct BindingParameter {
 }
 
 pub struct BuiltinFn {
-    pub param_count: usize,
+    pub param_count: Option<usize>,
     #[allow(clippy::type_complexity)]
     pub builtin: Box<
         dyn Fn(

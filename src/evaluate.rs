@@ -1,4 +1,8 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::{Ref, RefCell},
+    collections::HashMap,
+    rc::Rc,
+};
 
 use proc_macro::{
     Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream,
@@ -43,7 +47,7 @@ impl Context {
                 })
                 .collect::<Vec<_>>()
         });
-        self.insert_builtin_fn("len", 1, |ctx, callsite, args| {
+        self.insert_builtin_fn("len", Some(1), |ctx, callsite, args| {
             let v = match &*args[0] {
                 MetaValue::Token(_) => 1,
                 MetaValue::Tokens(token_trees) => token_trees.len(),
@@ -69,6 +73,98 @@ impl Context {
                 value: v as i64,
                 span: None,
             }))
+        });
+        self.insert_builtin_fn("zip", None, |ctx, callsite, args| {
+            enum ListCow<'a> {
+                Borrowed(&'a [Rc<MetaValue>]),
+                BorrowedRef(Ref<'a, Vec<Rc<MetaValue>>>),
+                Owned(Vec<Rc<MetaValue>>),
+            }
+            impl ListCow<'_> {
+                fn len(&self)  -> usize{
+                    match self {
+                        ListCow::Borrowed(l) => l.len(),
+                        ListCow::BorrowedRef(l) => l.len(),
+                        ListCow::Owned(l) => l.len(),
+                    }
+                }
+                fn index(&self, i: usize) -> Rc<MetaValue> {
+                    match self {
+                        ListCow::Borrowed(l) => l[i].clone(),
+                        ListCow::BorrowedRef(l) => l[i].clone(),
+                        ListCow::Owned(l) => l[i].clone(),
+                    }
+                }
+            }
+            let mut source_lists: Vec<ListCow> = Vec::new();
+            for (i, arg) in args.iter().enumerate() {
+                match &**arg {
+                    MetaValue::Tokens(token_trees) => {
+                        let mut src_list = Vec::new();
+                        for t in token_trees {
+                            src_list.push(Rc::new(MetaValue::Token(t.clone())));
+                        }
+                        source_lists.push(ListCow::Owned(src_list));
+                    }
+                    MetaValue::String { value, span: _ } => {
+                        let mut src_list = Vec::new();
+                        for c in value.chars() {
+                            src_list.push(Rc::new(MetaValue::Token(
+                                TokenTree::Literal(Literal::character(c)))
+                            ));
+                        }
+                        source_lists.push(ListCow::Owned(src_list));
+                    }
+                    MetaValue::List(list) => {
+                        source_lists.push(ListCow::BorrowedRef(list.borrow()));
+                    }
+                    MetaValue::Tuple(meta_values) => {
+                        source_lists.push(ListCow::Borrowed(meta_values));
+                    }
+                    MetaValue::Token(_)
+                    | MetaValue::Int { .. }
+                    | MetaValue::Float { .. }
+                    | MetaValue::Bool { .. }
+                    | MetaValue::Fn(_)
+                    | MetaValue::BuiltinFn(_) => {
+                        ctx.error(
+                            callsite,
+                            format!(
+                                "`zip()` arguments must be iterable, `{}` is not (argument {})",
+                               arg.kind(),
+                               i + 1
+                            ),
+                        );
+                        return Err(());
+                    }
+                }
+            }
+            let first_len = source_lists.first().map(|l|l.len()).unwrap_or_default();
+            for (i, sl) in source_lists.iter().enumerate().skip(1) {
+                let len = sl.len() ;
+                if len != first_len {
+                    ctx.error(
+                        callsite,
+                        format!(
+                            "`zip()` argument {} has length {}, the previous arguments have length {}",
+                           first_len,
+                           i + 1,
+                           len
+                        ),
+                    );
+                    return Err(());
+                }
+            }
+            let mut res = Vec::new();
+            for i in 0..first_len {
+                let mut tup = Vec::new();
+                for src in &source_lists {
+                    tup.push(src.index(i));
+                }
+                res.push(Rc::new(MetaValue::Tuple(tup)));
+            }
+
+            Ok(Rc::new(MetaValue::List(RefCell::new(res))))
         });
         // TODO: camel_case, pascal_case, ...
     }
@@ -160,7 +256,7 @@ impl Context {
     fn insert_builtin_fn(
         &mut self,
         name: &'static str,
-        param_count: usize,
+        param_count: Option<usize>,
         f: impl 'static
             + Fn(&mut Context, Span, &[Rc<MetaValue>]) -> Result<Rc<MetaValue>>,
     ) {
@@ -200,7 +296,7 @@ impl Context {
                     ctx.error(
                         span,
                         format!(
-                            "builtin function `{name}` expects a string, got a {}",
+                            "function `{name}` expects a string, got a {}",
                             args[0].kind()
                         ),
                     );
@@ -208,7 +304,7 @@ impl Context {
                 }
             }
         };
-        self.insert_builtin_fn(name, 1, str_fn);
+        self.insert_builtin_fn(name, Some(1), str_fn);
     }
     fn insert_builtin_list_fn(
         &mut self,
@@ -223,7 +319,7 @@ impl Context {
                 ctx.error(
                     span,
                     format!(
-                        "builtin function `{name}` expects a list, got a {}",
+                        "function `{name}` expects a list, got a {}",
                         args[0].kind()
                     ),
                 );
@@ -231,7 +327,7 @@ impl Context {
             };
             Ok(Rc::new(MetaValue::List(RefCell::new(f(&list.borrow())))))
         };
-        self.insert_builtin_fn(name, 1, list_fn);
+        self.insert_builtin_fn(name, Some(1), list_fn);
     }
     fn append_value_to_stream(
         &mut self,
@@ -999,8 +1095,9 @@ impl Context {
                     self.error(
                         *span,
                         format!(
-                            "function `{name}` with {} parameters called with {} arguments",
+                            "function `{name}` expects {} parameter{}, called with {}",
                             function.params.len(),
+                            if function.params.len() > 1 {"s"} else {""},
                             args.len()
                         ),
                     );
@@ -1027,17 +1124,21 @@ impl Context {
                 res
             }
             MetaValue::BuiltinFn(builtin_fn) => {
-                if builtin_fn.param_count != args.len() {
-                    self.error(
-                        *span,
-                        format!(
-                            "function `{name}` with {} parameters called with {} arguments",
-                            builtin_fn.param_count,
-                            args.len()
-                        ),
-                    );
-                    return Err(());
+                if let Some(param_count) = builtin_fn.param_count {
+                    if param_count != args.len() {
+                        self.error(
+                            *span,
+                            format!(
+                                "function `{name}` expects {} parameter{}, called with {}",
+                                param_count,
+                                if param_count > 1 {"s"} else {""},
+                                args.len()
+                            ),
+                        );
+                        return Err(());
+                    }
                 }
+
                 let mut param_bindings = Vec::new();
                 for arg in args {
                     let Ok(val) = self.eval(arg) else {

@@ -335,6 +335,7 @@ impl Context {
                 return Ok((lhs, rest, trailing));
             }
 
+            // List Access
             if let Some(TokenTree::Group(g)) = rest.first() {
                 if g.delimiter() == Delimiter::Bracket {
                     let inner = g.stream().into_vec();
@@ -351,6 +352,35 @@ impl Context {
                         index,
                     });
                     continue;
+                }
+            }
+
+            // UFCS
+            if let Some(TokenTree::Punct(p)) = rest.first() {
+                if p.as_char() == '.' && p.spacing() == Spacing::Alone {
+                    if let Some((
+                        TokenTree::Ident(func_name),
+                        TokenTree::Group(param_group),
+                    )) = rest.get(1..=2).map(|s| (&s[0], &s[1]))
+                    {
+                        if param_group.delimiter() == Delimiter::Parenthesis {
+                            let params = param_group.stream().into_vec();
+                            let mut fn_args = self.parse_comma_separated(
+                                Some("function call arguments"),
+                                Delimiter::Parenthesis,
+                                param_group.span(),
+                                &params,
+                            )?;
+                            fn_args.insert(0, lhs);
+                            lhs = Rc::new(MetaExpr::FnCall {
+                                span: func_name.span(),
+                                name: Rc::from(func_name.to_string()),
+                                args: fn_args,
+                            });
+                            rest = &rest[3..];
+                            continue;
+                        }
+                    }
                 }
             }
 
