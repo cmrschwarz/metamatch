@@ -95,7 +95,10 @@ impl Context {
                     // TODO: more context
                     self.error(
                         *span,
-                        format!("tuple pattern does not match {}", val.kind()),
+                        format!(
+                            "tuple pattern does not match `{}`",
+                            val.kind()
+                        ),
                     );
                     return Err(());
                 };
@@ -359,22 +362,6 @@ impl Context {
         });
     }
 
-    fn assert_val_is_int(
-        &mut self,
-        kind: &'static str,
-        expr: &MetaExpr,
-        val: &MetaValue,
-    ) -> Result<i64> {
-        let MetaValue::Int { value, .. } = val else {
-            self.error(
-                expr.span(),
-                format!("{kind} must be `int`, not `{}`", val.kind()),
-            );
-            return Err(());
-        };
-        Ok(*value)
-    }
-
     fn eval(&mut self, expr: &MetaExpr) -> Result<Rc<MetaValue>> {
         match expr {
             MetaExpr::Literal { span: _, value } => Ok(value.clone()),
@@ -517,7 +504,7 @@ impl Context {
                 span,
                 lhs,
                 rhs,
-            } => self.eval_op_binary(*kind, *span, &lhs, &rhs),
+            } => self.eval_op_binary(*kind, *span, lhs, rhs),
             MetaExpr::ExpandPattern(ep) => {
                 let input_list = self.eval(&ep.for_expr)?;
                 let MetaValue::List(list_elems) = &*input_list else {
@@ -574,12 +561,12 @@ impl Context {
 
     fn eval_op_unary(
         &mut self,
-        kind: &UnaryOpKind,
+        op_kind: &UnaryOpKind,
         span: &Span,
         operand: &Rc<MetaExpr>,
     ) -> Result<Rc<MetaValue>> {
-        let operand = self.eval(&operand)?;
-        match kind {
+        let operand = self.eval(operand)?;
+        match op_kind {
             UnaryOpKind::Minus => match &*operand {
                 MetaValue::Int { value, span: _ } => {
                     Ok(Rc::new(MetaValue::Int {
@@ -604,8 +591,10 @@ impl Context {
                     self.error(
                         *span,
                         format!(
-                            "unary minus is not applicable to `{}`",
-                            operand.kind(),
+                            "{} `{}` is not applicable to `{}`",
+                            op_kind.to_str(),
+                            op_kind.symbol(),
+                            operand.kind()
                         ),
                     );
                     Err(())
@@ -645,6 +634,127 @@ impl Context {
         }
     }
 
+    fn eval_binary_op_int(
+        &mut self,
+        span: Span,
+        op_kind: BinaryOpKind,
+        lhs: i64,
+        rhs: i64,
+    ) -> Result<Rc<MetaValue>> {
+        let res_bool = |value| -> Result<Rc<MetaValue>> {
+            Ok(Rc::new(MetaValue::Bool { value, span: None }))
+        };
+        let res_int = |value| -> Result<Rc<MetaValue>> {
+            Ok(Rc::new(MetaValue::Int { value, span: None }))
+        };
+
+        match op_kind {
+            BinaryOpKind::Equal => res_bool(lhs == rhs),
+            BinaryOpKind::NotEqual => res_bool(lhs != rhs),
+            BinaryOpKind::LessThan => res_bool(lhs < rhs),
+            BinaryOpKind::LessThanOrEqual => res_bool(lhs <= rhs),
+            BinaryOpKind::GreaterThan => res_bool(lhs > rhs),
+            BinaryOpKind::GreaterThanOrEqual => res_bool(lhs >= rhs),
+
+            BinaryOpKind::Add => res_int(lhs + rhs),
+            BinaryOpKind::Sub => res_int(lhs - rhs),
+            BinaryOpKind::Mul => res_int(lhs * rhs),
+            BinaryOpKind::Div => res_int(lhs / rhs),
+            BinaryOpKind::Rem => res_int(lhs % rhs),
+
+            BinaryOpKind::ShiftLeft => res_int(lhs << rhs),
+            BinaryOpKind::ShiftRight => res_int(lhs >> rhs),
+
+            BinaryOpKind::BinaryAnd => res_int(lhs & rhs),
+            BinaryOpKind::BinaryOr => res_int(lhs | rhs),
+            BinaryOpKind::BinaryXor => res_int(lhs ^ rhs),
+
+            BinaryOpKind::RangeExclusive | BinaryOpKind::RangeInclusive => {
+                let mut rhs = rhs;
+                if op_kind == BinaryOpKind::RangeInclusive {
+                    rhs += 1;
+                }
+
+                // if its good enough for python 2 it's good enough for us?
+                // TODO: maybe not
+                let mut res = Vec::new();
+                for i in lhs..rhs {
+                    res.push(Rc::new(MetaValue::Int {
+                        value: i,
+                        span: None,
+                    }));
+                }
+                Ok(Rc::new(MetaValue::List(res)))
+            }
+
+            BinaryOpKind::LogicalAnd | BinaryOpKind::LogicalOr => {
+                self.error(
+                    span,
+                    format!(
+                        "{} `{}` is not supported on integers",
+                        op_kind.to_str(),
+                        op_kind.symbol(),
+                    ),
+                );
+                Err(())
+            }
+
+            BinaryOpKind::DotAccess | BinaryOpKind::Assign => unreachable!(),
+        }
+    }
+
+    fn eval_binary_op_float(
+        &mut self,
+        span: Span,
+        op_kind: BinaryOpKind,
+        lhs: f64,
+        rhs: f64,
+    ) -> Result<Rc<MetaValue>> {
+        let res_bool = |value| -> Result<Rc<MetaValue>> {
+            Ok(Rc::new(MetaValue::Bool { value, span: None }))
+        };
+        let res_float = |value| -> Result<Rc<MetaValue>> {
+            Ok(Rc::new(MetaValue::Float { value, span: None }))
+        };
+
+        match op_kind {
+            BinaryOpKind::Equal => res_bool(lhs == rhs),
+            BinaryOpKind::NotEqual => res_bool(lhs != rhs),
+            BinaryOpKind::LessThan => res_bool(lhs < rhs),
+            BinaryOpKind::LessThanOrEqual => res_bool(lhs <= rhs),
+            BinaryOpKind::GreaterThan => res_bool(lhs > rhs),
+            BinaryOpKind::GreaterThanOrEqual => res_bool(lhs >= rhs),
+
+            BinaryOpKind::Add => res_float(lhs + rhs),
+            BinaryOpKind::Sub => res_float(lhs - rhs),
+            BinaryOpKind::Mul => res_float(lhs * rhs),
+            BinaryOpKind::Div => res_float(lhs / rhs),
+            BinaryOpKind::Rem => res_float(lhs % rhs),
+
+            BinaryOpKind::RangeExclusive
+            | BinaryOpKind::RangeInclusive
+            | BinaryOpKind::ShiftLeft
+            | BinaryOpKind::ShiftRight
+            | BinaryOpKind::BinaryAnd
+            | BinaryOpKind::BinaryOr
+            | BinaryOpKind::BinaryXor
+            | BinaryOpKind::LogicalAnd
+            | BinaryOpKind::LogicalOr => {
+                self.error(
+                    span,
+                    format!(
+                        "{} `{}` is not supported on floats",
+                        op_kind.to_str(),
+                        op_kind.symbol(),
+                    ),
+                );
+                Err(())
+            }
+
+            BinaryOpKind::DotAccess | BinaryOpKind::Assign => unreachable!(),
+        }
+    }
+
     fn eval_op_binary(
         &mut self,
         op_kind: BinaryOpKind,
@@ -654,16 +764,18 @@ impl Context {
     ) -> Result<Rc<MetaValue>> {
         let lhs_val = self.eval(lhs)?;
         let rhs_val = self.eval(rhs)?;
-
-        let lhs_kind = lhs_val.kind();
-        let rhs_kind = rhs_val.kind();
-
-        match op_kind {
-            BinaryOpKind::Add
-            | BinaryOpKind::Sub
-            | BinaryOpKind::Mul
-            | BinaryOpKind::Div
-            | BinaryOpKind::Rem => {
+        match (&*lhs_val, &*rhs_val) {
+            (
+                MetaValue::Int { value: lhs, .. },
+                MetaValue::Int { value: rhs, .. },
+            ) => self.eval_binary_op_int(span, op_kind, *lhs, *rhs),
+            (
+                MetaValue::Float { value: lhs, .. },
+                MetaValue::Float { value: rhs, .. },
+            ) => self.eval_binary_op_float(span, op_kind, *lhs, *rhs),
+            _ => {
+                let lhs_kind = lhs_val.kind();
+                let rhs_kind = rhs_val.kind();
                 if lhs_kind != rhs_kind {
                     self.error(
                         span,
@@ -675,88 +787,20 @@ impl Context {
                             rhs_kind
                         ),
                     );
-                    return Err(());
+                } else {
+                    self.error(
+                        span,
+                        format!(
+                            "invalid operand types for `{}`: `{}` {} `{}`",
+                            op_kind.to_str(),
+                            lhs_kind,
+                            op_kind.symbol(),
+                            rhs_kind
+                        ),
+                    );
                 }
-                let res = match (&*lhs_val, &*rhs_val) {
-                    (
-                        MetaValue::Int { value: lhs, .. },
-                        MetaValue::Int { value: rhs, .. },
-                    ) => {
-                        let res = match op_kind {
-                            BinaryOpKind::Add => lhs + rhs,
-                            BinaryOpKind::Sub => lhs - rhs,
-                            BinaryOpKind::Mul => lhs * rhs,
-                            BinaryOpKind::Div => lhs / rhs,
-                            BinaryOpKind::Rem => lhs % rhs,
-                            _ => unreachable!(),
-                        };
-                        MetaValue::Int {
-                            value: res,
-                            span: None,
-                        }
-                    }
-                    (
-                        MetaValue::Float { value: lhs, .. },
-                        MetaValue::Float { value: rhs, .. },
-                    ) => {
-                        let res = match op_kind {
-                            BinaryOpKind::Add => lhs + rhs,
-                            BinaryOpKind::Sub => lhs - rhs,
-                            BinaryOpKind::Mul => lhs * rhs,
-                            BinaryOpKind::Div => lhs / rhs,
-                            BinaryOpKind::Rem => lhs % rhs,
-                            _ => unreachable!(),
-                        };
-                        MetaValue::Float {
-                            value: res,
-                            span: None,
-                        }
-                    }
-                    _ => {
-                        self.error(
-                            span,
-                            format!(
-                                "invalid operand types for `{}`: `{}` {} `{}`",
-                                op_kind.to_str(),
-                                lhs_kind,
-                                op_kind.symbol(),
-                                rhs_kind
-                            ),
-                        );
-                        return Err(());
-                    }
-                };
-                Ok(Rc::new(res))
+                Err(())
             }
-            BinaryOpKind::Equals => todo!(),
-            BinaryOpKind::RangeExclusive | BinaryOpKind::RangeInclusive => {
-                let lhs_i = self.assert_val_is_int(
-                    "range expression bound",
-                    lhs,
-                    &lhs_val,
-                )?;
-                let mut rhs_i = self.assert_val_is_int(
-                    "range expression bound",
-                    rhs,
-                    &rhs_val,
-                )?;
-
-                if op_kind == BinaryOpKind::RangeInclusive {
-                    rhs_i += 1;
-                }
-
-                // if its good enough for python 2 it's good enough for us?
-                // TODO: maybe not
-                let mut res = Vec::new();
-                for i in lhs_i..rhs_i {
-                    res.push(Rc::new(MetaValue::Int {
-                        value: i,
-                        span: None,
-                    }));
-                }
-                Ok(Rc::new(MetaValue::List(res)))
-            }
-            BinaryOpKind::Assign => todo!(),
         }
     }
 

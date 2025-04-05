@@ -117,63 +117,56 @@ fn find_match_arm_bounds(tokens: &[TokenTree]) -> Option<MatchArmEnds> {
     Some(ends)
 }
 
-fn try_parse_range_token(
-    tokens: &[TokenTree],
-) -> Option<(BinaryOpKind, Span, &[TokenTree])> {
-    if let Some(TokenTree::Punct(first)) = tokens.first() {
-        if first.as_char() != '.' || first.spacing() != Spacing::Joint {
-            return None;
-        }
-        if let Some(TokenTree::Punct(second)) = tokens.get(1) {
-            if second.as_char() != '.' {
-                return None;
-            }
-            if let Some(TokenTree::Punct(third)) = tokens.get(2) {
-                if third.as_char() == '=' && second.spacing() == Spacing::Joint
-                {
-                    return Some((
-                        BinaryOpKind::RangeInclusive,
-                        first.span(),
-                        &tokens[3..],
-                    ));
-                }
-            }
-            return Some((
-                BinaryOpKind::RangeExclusive,
-                first.span(),
-                &tokens[2..],
-            ));
-        }
-    }
-    None
-}
-
 fn peek_binary_operator(
     tokens: &[TokenTree],
 ) -> Option<(BinaryOpKind, Span, &[TokenTree])> {
-    if let Some(TokenTree::Punct(p)) = tokens.first() {
-        let alone = p.spacing() == Spacing::Alone;
-        let rest = &tokens[1..];
-        let span = p.span();
-        let kind = match p.as_char() {
-            '+' if alone => Some(BinaryOpKind::Add),
-            '-' if alone => Some(BinaryOpKind::Sub),
-            '*' if alone => Some(BinaryOpKind::Mul),
-            '/' if alone => Some(BinaryOpKind::Div),
-            '%' if alone => Some(BinaryOpKind::Rem),
-            '=' if alone => Some(BinaryOpKind::Assign),
-            _ => None,
-        };
-        if let Some(kind) = kind {
-            return Some((kind, span, rest));
+    let mut chars = [b'_'; 3];
+
+    let mut len = 0;
+
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..3 {
+        if let Some(TokenTree::Punct(p)) = tokens.get(i) {
+            let c = p.as_char();
+            if !c.is_ascii() {
+                len = i;
+                break;
+            }
+            chars[i] = c as u8;
+            if p.spacing() == Spacing::Alone {
+                len = i + 1;
+                break;
+            }
         }
     }
 
-    if let Some(res) = try_parse_range_token(tokens) {
-        return Some(res);
-    }
+    let kind = match std::str::from_utf8(&chars[0..len]).ok()? {
+        "+" => BinaryOpKind::Add,
+        "-" => BinaryOpKind::Sub,
+        "*" => BinaryOpKind::Mul,
+        "/" => BinaryOpKind::Div,
+        "%" => BinaryOpKind::Rem,
+        "=" => BinaryOpKind::Assign,
+        "==" => BinaryOpKind::Equal,
+        "!=" => BinaryOpKind::NotEqual,
+        ".." => BinaryOpKind::RangeExclusive,
+        "..=" => BinaryOpKind::RangeInclusive,
+        "." => BinaryOpKind::DotAccess,
+        "&" => BinaryOpKind::BinaryAnd,
+        "|" => BinaryOpKind::BinaryOr,
+        "^" => BinaryOpKind::BinaryXor,
+        "&&" => BinaryOpKind::LogicalAnd,
+        "||" => BinaryOpKind::LogicalOr,
+        "<" => BinaryOpKind::LessThan,
+        "<=" => BinaryOpKind::LessThanOrEqual,
+        ">" => BinaryOpKind::GreaterThan,
+        ">=" => BinaryOpKind::GreaterThanOrEqual,
+        "<<" => BinaryOpKind::ShiftLeft,
+        ">>" => BinaryOpKind::ShiftRight,
+        _ => return None,
+    };
 
-    None
+    Some((kind, tokens[0].span(), &tokens[len..]))
 }
 
 fn as_unary_operator(p: &proc_macro::Punct) -> Option<UnaryOpKind> {
@@ -311,12 +304,8 @@ impl Context {
         min_prec: u8,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
-        let (mut lhs, mut rest, mut trailing) = self.parse_expr_value(
-            parent_span,
-            tokens,
-            min_prec,
-            allow_trailing_block,
-        )?;
+        let (mut lhs, mut rest, mut trailing) =
+            self.parse_expr_value(parent_span, tokens, allow_trailing_block)?;
 
         loop {
             if rest.is_empty() || trailing.is_some() {
@@ -446,7 +435,6 @@ impl Context {
         &mut self,
         parent_span: Span,
         tokens: &'a [TokenTree],
-        min_prec: u8,
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {

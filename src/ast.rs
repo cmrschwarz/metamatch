@@ -166,10 +166,23 @@ pub enum BinaryOpKind {
     Mul,
     Div,
     Rem,
-    Equals,
+    Assign,
+    Equal,
+    NotEqual,
     RangeExclusive,
     RangeInclusive,
-    Assign,
+    DotAccess,
+    BinaryAnd,
+    BinaryOr,
+    BinaryXor,
+    LogicalAnd,
+    LogicalOr,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    ShiftLeft,
+    ShiftRight,
 }
 
 #[derive(Debug)]
@@ -286,17 +299,24 @@ impl Display for Kind {
 }
 
 impl UnaryOpKind {
-    fn to_str(self) -> &'static str {
+    pub fn to_str(self) -> &'static str {
         match self {
             UnaryOpKind::Minus => "unary minus",
             UnaryOpKind::Not => "unary not",
         }
     }
 
+    pub fn symbol(self) -> &'static str {
+        match self {
+            UnaryOpKind::Minus => "-",
+            UnaryOpKind::Not => "!",
+        }
+    }
+
     pub fn precedence(self) -> u8 {
         match self {
-            UnaryOpKind::Minus => 15,
-            UnaryOpKind::Not => 15,
+            UnaryOpKind::Minus => 12,
+            UnaryOpKind::Not => 12,
         }
     }
 }
@@ -309,10 +329,23 @@ impl BinaryOpKind {
             BinaryOpKind::Mul => "multiply",
             BinaryOpKind::Div => "divide",
             BinaryOpKind::Rem => "remainder",
-            BinaryOpKind::Equals => "equals",
+            BinaryOpKind::Equal => "equals",
             BinaryOpKind::RangeExclusive => "exclusive range",
             BinaryOpKind::RangeInclusive => "inclusive range",
             BinaryOpKind::Assign => "assign",
+            BinaryOpKind::NotEqual => "not equal",
+            BinaryOpKind::DotAccess => "dot access",
+            BinaryOpKind::BinaryAnd => "binary and",
+            BinaryOpKind::BinaryOr => "binary or",
+            BinaryOpKind::BinaryXor => "binary xor",
+            BinaryOpKind::LogicalAnd => "logical and",
+            BinaryOpKind::LogicalOr => "logical or",
+            BinaryOpKind::LessThan => "less than",
+            BinaryOpKind::LessThanOrEqual => "less than or equal",
+            BinaryOpKind::GreaterThan => "greater than",
+            BinaryOpKind::GreaterThanOrEqual => "greater than or equal",
+            BinaryOpKind::ShiftLeft => "shift left",
+            BinaryOpKind::ShiftRight => "shift right",
         }
     }
     pub fn symbol(self) -> &'static str {
@@ -322,19 +355,47 @@ impl BinaryOpKind {
             BinaryOpKind::Mul => "*",
             BinaryOpKind::Div => "/",
             BinaryOpKind::Rem => "%",
-            BinaryOpKind::Equals => "==",
+            BinaryOpKind::Equal => "==",
             BinaryOpKind::RangeExclusive => "..",
             BinaryOpKind::RangeInclusive => "..=",
             BinaryOpKind::Assign => "=",
+            BinaryOpKind::NotEqual => "!=",
+            BinaryOpKind::DotAccess => ".",
+            BinaryOpKind::BinaryAnd => "&",
+            BinaryOpKind::BinaryOr => "|",
+            BinaryOpKind::BinaryXor => "^",
+            BinaryOpKind::LogicalAnd => "&&",
+            BinaryOpKind::LogicalOr => "||",
+            BinaryOpKind::LessThan => "<",
+            BinaryOpKind::LessThanOrEqual => "<=",
+            BinaryOpKind::GreaterThan => ">",
+            BinaryOpKind::GreaterThanOrEqual => ">=",
+            BinaryOpKind::ShiftLeft => "<<",
+            BinaryOpKind::ShiftRight => ">>",
         }
     }
     pub fn precedence(self) -> u8 {
         match self {
-            BinaryOpKind::Assign => 0,
-            BinaryOpKind::Equals => 1,
+            BinaryOpKind::DotAccess => 13,
+            // 12 is for unary operators
+            BinaryOpKind::Mul | BinaryOpKind::Div | BinaryOpKind::Rem => 11,
+            BinaryOpKind::Add | BinaryOpKind::Sub => 10,
+            BinaryOpKind::ShiftLeft | BinaryOpKind::ShiftRight => 9,
+            BinaryOpKind::BinaryAnd => 8,
+            BinaryOpKind::BinaryXor => 7,
+            BinaryOpKind::BinaryOr => 6,
+            BinaryOpKind::Equal
+            | BinaryOpKind::NotEqual
+            | BinaryOpKind::LessThan
+            | BinaryOpKind::GreaterThan
+            | BinaryOpKind::LessThanOrEqual
+            | BinaryOpKind::GreaterThanOrEqual => 5,
+
+            BinaryOpKind::LogicalAnd => 4,
+            BinaryOpKind::LogicalOr => 3,
             BinaryOpKind::RangeExclusive | BinaryOpKind::RangeInclusive => 2,
-            BinaryOpKind::Add | BinaryOpKind::Sub => 3,
-            BinaryOpKind::Mul | BinaryOpKind::Div | BinaryOpKind::Rem => 4,
+
+            BinaryOpKind::Assign => 1,
         }
     }
 
@@ -346,9 +407,22 @@ impl BinaryOpKind {
             | BinaryOpKind::Mul
             | BinaryOpKind::Div
             | BinaryOpKind::Rem
-            | BinaryOpKind::Equals
+            | BinaryOpKind::Equal
             | BinaryOpKind::RangeExclusive
-            | BinaryOpKind::RangeInclusive => false,
+            | BinaryOpKind::RangeInclusive
+            | BinaryOpKind::NotEqual
+            | BinaryOpKind::DotAccess
+            | BinaryOpKind::BinaryAnd
+            | BinaryOpKind::BinaryOr
+            | BinaryOpKind::BinaryXor
+            | BinaryOpKind::LogicalAnd
+            | BinaryOpKind::LogicalOr
+            | BinaryOpKind::LessThan
+            | BinaryOpKind::LessThanOrEqual
+            | BinaryOpKind::GreaterThan
+            | BinaryOpKind::GreaterThanOrEqual
+            | BinaryOpKind::ShiftLeft
+            | BinaryOpKind::ShiftRight => false,
         }
     }
 }
