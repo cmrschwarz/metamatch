@@ -54,9 +54,10 @@ impl<'a> Iterable<'a> {
             MetaValue::String { value, span: _ } => {
                 let mut src_list = Vec::new();
                 for c in value.chars() {
-                    src_list.push(Rc::new(MetaValue::Token(
-                        TokenTree::Literal(Literal::character(c)),
-                    )));
+                    src_list.push(Rc::new(MetaValue::Char {
+                        value: c,
+                        span: None,
+                    }));
                 }
                 Iterable::Other(src_list)
             }
@@ -64,6 +65,7 @@ impl<'a> Iterable<'a> {
             MetaValue::Tuple(meta_values) => Iterable::Tuple(meta_values),
             MetaValue::Token(_)
             | MetaValue::Int { .. }
+            | MetaValue::Char { .. }
             | MetaValue::Float { .. }
             | MetaValue::Bool { .. }
             | MetaValue::Fn(_)
@@ -104,6 +106,7 @@ impl<'a> Callable<'a> {
             MetaValue::Token(_)
             | MetaValue::Tokens(_)
             | MetaValue::Int { .. }
+            | MetaValue::Char { .. }
             | MetaValue::Float { .. }
             | MetaValue::Bool { .. }
             | MetaValue::String { .. }
@@ -253,6 +256,7 @@ fn builtin_fn_len(
         MetaValue::Bool { .. }
         | MetaValue::Token(_)
         | MetaValue::Int { .. }
+        | MetaValue::Char { .. }
         | MetaValue::Float { .. }
         | MetaValue::Fn(_)
         | MetaValue::Lambda(_)
@@ -519,6 +523,11 @@ impl Context {
             }
             MetaValue::Float { value, span } => {
                 let mut lit = Literal::f64_unsuffixed(*value);
+                lit.set_span(span.unwrap_or(eval_span));
+                tgt.push(TokenTree::Literal(lit));
+            }
+            MetaValue::Char { value, span } => {
+                let mut lit = Literal::character(*value);
                 lit.set_span(span.unwrap_or(eval_span));
                 tgt.push(TokenTree::Literal(lit));
             }
@@ -913,6 +922,7 @@ impl Context {
                 MetaValue::Token(..)
                 | MetaValue::Tokens(..)
                 | MetaValue::Bool { .. }
+                | MetaValue::Char { .. }
                 | MetaValue::String { .. }
                 | MetaValue::Fn(..)
                 | MetaValue::Lambda(..)
@@ -948,6 +958,7 @@ impl Context {
                 | MetaValue::Tokens(..)
                 | MetaValue::Float { .. }
                 | MetaValue::String { .. }
+                | MetaValue::Char { .. }
                 | MetaValue::Fn(..)
                 | MetaValue::Lambda(..)
                 | MetaValue::BuiltinFn(..)

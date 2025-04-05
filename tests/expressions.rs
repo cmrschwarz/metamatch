@@ -124,4 +124,18 @@ fn map() {
         (A, B, C).map(lowercase)
     };
     assert_eq!(result, [1, 2, 3]);
+
+    let result = unquote! {
+        "ASdf".map(|x| x)
+    };
+    assert_eq!(result, ['A', 'S', 'd', 'f']);
+}
+
+#[test]
+fn char_type() {
+    let result = unquote! {
+        let x = 'x';
+        x
+    };
+    assert_eq!(result, 'x');
 }

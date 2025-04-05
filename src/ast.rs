@@ -58,6 +58,10 @@ pub enum MetaValue {
         value: bool,
         span: Option<Span>, // same reasoning as `Int`
     },
+    Char {
+        value: char,
+        span: Option<Span>, // same reasoning as `Int`
+    },
     String {
         value: Rc<str>,
         span: Option<Span>, // same reasoning as `Int`
@@ -285,6 +289,7 @@ pub enum Kind {
     Float,
     Bool,
     String,
+    Char,
 
     Token,
     Tokens,
@@ -303,6 +308,7 @@ impl MetaValue {
             MetaValue::Int { .. } => Kind::Int,
             MetaValue::Float { .. } => Kind::Float,
             MetaValue::String { .. } => Kind::String,
+            MetaValue::Char { .. } => Kind::Char,
             MetaValue::Bool { .. } => Kind::Bool,
             MetaValue::Fn(_) => Kind::Fn,
             MetaValue::Lambda(_) => Kind::Fn,
@@ -320,6 +326,7 @@ impl Kind {
             Kind::Float => "float",
             Kind::Bool => "bool",
             Kind::String => "string",
+            Kind::Char => "char",
             Kind::Token => "token",
             Kind::Tokens => "tokens",
             Kind::Fn => "fn",

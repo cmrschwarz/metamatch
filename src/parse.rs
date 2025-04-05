@@ -229,6 +229,15 @@ fn parse_literal(token: &TokenTree) -> Rc<MetaValue> {
                 span: Some(token.span()),
             });
         }
+        if s.starts_with('\'') {
+            let mut chars = s.chars();
+            if let (Some(c), None) = (chars.next(), chars.next()) {
+                return Rc::new(MetaValue::Char {
+                    value: c,
+                    span: Some(token.span()),
+                });
+            }
+        }
         if let Ok(n) = s.parse::<i64>() {
             return Rc::new(MetaValue::Int {
                 value: n,
