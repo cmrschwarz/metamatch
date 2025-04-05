@@ -287,10 +287,10 @@ impl Context {
         });
     }
 
-    fn parse_expr_deny_rest<'a>(
+    fn parse_expr_deny_rest(
         &mut self,
         parent_span: Span,
-        tokens: &'a [TokenTree],
+        tokens: &[TokenTree],
     ) -> Result<Rc<MetaExpr>> {
         let (expr, rest) =
             self.parse_expr_deny_trailing_block(parent_span, tokens)?;
@@ -337,8 +337,11 @@ impl Context {
 
             if let Some(TokenTree::Group(g)) = rest.first() {
                 if g.delimiter() == Delimiter::Bracket {
-                    rest = &rest[1..];
                     let inner = g.stream().into_vec();
+                    if has_template_angle_backets(&inner) {
+                        return Ok((lhs, rest, trailing));
+                    }
+                    rest = &rest[1..];
                     let index = self
                         .parse_expr_deny_rest(g.span(), &inner)
                         .unwrap_or(self.empty_token_list_expr.clone());
