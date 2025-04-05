@@ -58,6 +58,7 @@ impl Context {
                 | MetaValue::Int { .. }
                 | MetaValue::Float { .. }
                 | MetaValue::Fn(_)
+                | MetaValue::Lambda(_)
                 | MetaValue::BuiltinFn(_) => {
                     ctx.error(
                         callsite,
@@ -126,6 +127,7 @@ impl Context {
                     | MetaValue::Float { .. }
                     | MetaValue::Bool { .. }
                     | MetaValue::Fn(_)
+                    | MetaValue::Lambda(_)
                     | MetaValue::BuiltinFn(_) => {
                         ctx.error(
                             callsite,
@@ -364,7 +366,9 @@ impl Context {
                 lit.set_span(span.unwrap_or(eval_span));
                 tgt.push(TokenTree::Literal(lit));
             }
-            MetaValue::Fn(_) | MetaValue::BuiltinFn(_) => {
+            MetaValue::Fn(_)
+            | MetaValue::Lambda(_)
+            | MetaValue::BuiltinFn(_) => {
                 self.error(eval_span, "function cannot be tokenized");
                 return Err(());
             }
@@ -551,6 +555,7 @@ impl Context {
                 );
                 Ok(self.empty_token_list.clone())
             }
+            MetaExpr::Lambda(f) => Ok(Rc::new(MetaValue::Lambda(f.clone()))),
             MetaExpr::List { span: _, exprs } => {
                 let mut elements = Vec::new();
                 for e in exprs {
@@ -742,6 +747,7 @@ impl Context {
                 | MetaValue::Bool { .. }
                 | MetaValue::String { .. }
                 | MetaValue::Fn(..)
+                | MetaValue::Lambda(..)
                 | MetaValue::BuiltinFn(..)
                 | MetaValue::List(..)
                 | MetaValue::Tuple(..) => {
@@ -775,6 +781,7 @@ impl Context {
                 | MetaValue::Float { .. }
                 | MetaValue::String { .. }
                 | MetaValue::Fn(..)
+                | MetaValue::Lambda(..)
                 | MetaValue::BuiltinFn(..)
                 | MetaValue::List(..)
                 | MetaValue::Tuple(..) => {
@@ -978,6 +985,7 @@ impl Context {
             | MetaExpr::LetBinding { .. }
             | MetaExpr::FnCall { .. }
             | MetaExpr::FnDecl(..)
+            | MetaExpr::Lambda(..)
             | MetaExpr::RawOutputGroup { .. }
             | MetaExpr::IfExpr { .. }
             | MetaExpr::ForExpansion { .. }
@@ -1109,17 +1117,35 @@ impl Context {
                         self.scopes.pop();
                         return Err(());
                     };
-                    let param = &function.params[i];
-                    self.insert_binding(
-                        param.span,
-                        param.name.clone(),
-                        param.mutable,
-                        param.super_bound,
-                        val,
-                    );
+                    self.match_and_bind_pattern(&function.params[i], val)?;
                 }
                 let res =
                     self.eval_stmt_list_to_meta_val(*span, &function.body);
+                self.scopes.pop();
+                res
+            }
+            MetaValue::Lambda(lambda) => {
+                if lambda.params.len() != args.len() {
+                    self.error(
+                        *span,
+                        format!(
+                            "lambda expects {} parameter{}, called with {}",
+                            lambda.params.len(),
+                            if lambda.params.len() > 1 { "s" } else { "" },
+                            args.len()
+                        ),
+                    );
+                    return Err(());
+                }
+                self.push_eval_scope();
+                for (i, arg) in args.iter().enumerate() {
+                    let Ok(val) = self.eval(arg) else {
+                        self.scopes.pop();
+                        return Err(());
+                    };
+                    self.match_and_bind_pattern(&lambda.params[i], val)?;
+                }
+                let res = self.eval(&lambda.body);
                 self.scopes.pop();
                 res
             }

@@ -90,3 +90,23 @@ fn ufcs() {
     };
     assert_eq!(zipped_lists, [(1, 4), (2, 5), (3, 6)]);
 }
+
+#[test]
+fn lambda_expressions() {
+    let result = unquote! {
+        let add = |x, y| x + y;
+        add(2, 3)
+    };
+    assert_eq!(result, 5);
+
+    let result = unquote! {
+        let add_tup = |(x, y)| x + y;
+        add_tup((1, 2))
+    };
+    assert_eq!(result, 3);
+
+    let result = unquote! {
+        (|x| x + 1)(5)
+    };
+    assert_eq!(result, 6);
+}

@@ -62,6 +62,7 @@ pub enum MetaValue {
         span: Option<Span>, // same reasoning as `Int`
     },
     Fn(Rc<Function>),
+    Lambda(Rc<Lambda>),
     BuiltinFn(Rc<BuiltinFn>),
     List(RefCell<Vec<Rc<MetaValue>>>),
     Tuple(Vec<Rc<MetaValue>>),
@@ -78,8 +79,15 @@ pub enum Pattern {
 pub struct Function {
     pub span: Span,
     pub name: Rc<str>,
-    pub params: Vec<BindingParameter>,
+    pub params: Vec<Pattern>,
     pub body: Vec<Rc<MetaExpr>>,
+}
+
+#[derive(Debug)]
+pub struct Lambda {
+    pub span: Span,
+    pub params: Vec<Pattern>,
+    pub body: Rc<MetaExpr>,
 }
 
 #[derive(Debug)]
@@ -113,6 +121,7 @@ pub enum MetaExpr {
         args: Vec<Rc<MetaExpr>>,
     },
     FnDecl(Rc<Function>),
+    Lambda(Rc<Lambda>),
     RawOutputGroup {
         span: Span,
         delimiter: Delimiter,
@@ -295,6 +304,7 @@ impl MetaValue {
             MetaValue::String { .. } => Kind::String,
             MetaValue::Bool { .. } => Kind::Bool,
             MetaValue::Fn(_) => Kind::Fn,
+            MetaValue::Lambda(_) => Kind::Fn,
             MetaValue::BuiltinFn(_) => Kind::Fn,
             MetaValue::List(_) => Kind::List,
             MetaValue::Tuple(_) => Kind::Tuple,
@@ -532,6 +542,7 @@ impl MetaExpr {
             MetaExpr::FnCall { span, .. } => span,
             MetaExpr::ExpandPattern(ep) => &ep.span,
             MetaExpr::FnDecl(function) => &function.span,
+            MetaExpr::Lambda(lambda) => &lambda.span,
             MetaExpr::RawOutputGroup { span, .. } => span,
             MetaExpr::IfExpr { span, .. } => span,
             MetaExpr::ForExpansion { span, .. } => span,
@@ -549,7 +560,8 @@ impl MetaExpr {
             MetaExpr::Ident { .. } => "identifier",
             MetaExpr::LetBinding { .. } => "let binding",
             MetaExpr::FnCall { .. } => "function call",
-            MetaExpr::FnDecl { .. } => "functon declaration",
+            MetaExpr::FnDecl { .. } => "function declaration",
+            MetaExpr::Lambda { .. } => "lambda",
             MetaExpr::RawOutputGroup { .. } => "token tree",
             MetaExpr::IfExpr { .. } => "if expression",
             MetaExpr::ForExpansion { .. } => "for loop",

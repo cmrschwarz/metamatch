@@ -4,8 +4,8 @@ use std::{collections::HashMap, fmt::Debug, rc::Rc};
 use super::{
     ast::{
         BinaryOpKind, Binding, BindingParameter, Context, ExpandPattern,
-        Function, MetaError, MetaExpr, MetaValue, Pattern, Scope, ScopeKind,
-        TrailingBlockKind, UnaryOpKind,
+        Function, Lambda, MetaError, MetaExpr, MetaValue, Pattern, Scope,
+        ScopeKind, TrailingBlockKind, UnaryOpKind,
     },
     macro_impls::IntoIterIntoVec,
 };
@@ -694,6 +694,11 @@ impl Context {
             )),
 
             TokenTree::Punct(p) => {
+                if p.as_char() == '|' {
+                    let (expr, rest) =
+                        self.parse_lambda(p.span(), &tokens[1..])?;
+                    return Ok((expr, rest, None));
+                }
                 if let Some(op_kind) = as_unary_operator(p) {
                     let (operand, rest, _tb) = self.parse_expr_with_prec(
                         p.span(),
@@ -1023,37 +1028,17 @@ impl Context {
         let mut params = Vec::new();
         let mut params_rest = &param_tokens[..];
 
-        let rest = &tokens[3..];
-
         self.push_dummy_scope(ScopeKind::Unquoted);
 
         while !params_rest.is_empty() {
-            // TODO: support mutable and super here
+            let Ok((pat, rest)) = self.parse_pattern(fn_span, params_rest)
+            else {
+                break;
+            };
 
-            let (param_span, param_name) = parse_ident(&params_rest[0])
-                .ok_or_else(|| {
-                    self.error(
-                        params_rest[0].span(),
-                        "expected parameter name".to_owned(),
-                    );
-                })?;
+            params.push(pat);
+            params_rest = rest;
 
-            let super_bound = param_name
-                .chars()
-                .next()
-                .map(|c| c.is_uppercase())
-                .unwrap_or_default();
-
-            self.insert_dummy_binding(param_name.clone(), super_bound);
-
-            params.push(BindingParameter {
-                span: param_span,
-                name: param_name,
-                super_bound,
-                mutable: false,
-            });
-
-            params_rest = &params_rest[1..];
             if !params_rest.is_empty() {
                 if let TokenTree::Punct(p) = &params_rest[0] {
                     if p.as_char() == ',' {
@@ -1064,12 +1049,15 @@ impl Context {
                 if !params_rest.is_empty() {
                     self.error(
                         params_rest[0].span(),
-                        "expected comma between parameters".to_owned(),
+                        "expected `,` between parameters",
                     );
+                    self.scopes.pop();
                     return Err(());
                 }
             }
         }
+
+        let rest = &tokens[3..];
 
         let (body, rest, trailing_block) = if rest.is_empty() {
             if !allow_trailing_block {
@@ -1077,12 +1065,15 @@ impl Context {
                     tokens[2].span(),
                     "expected function body after parameters",
                 );
+                self.scopes.pop();
+
                 return Err(());
             }
             (Vec::new(), rest, Some(TrailingBlockKind::Fn))
         } else {
             let TokenTree::Group(body_group) = &rest[0] else {
                 self.error(tokens[0].span(), "expected function body");
+                self.scopes.pop();
                 return Err(());
             };
 
@@ -1091,6 +1082,7 @@ impl Context {
                     body_group.span(),
                     "expected braces around function body",
                 );
+                self.scopes.pop();
                 return Err(());
             }
 
@@ -1111,6 +1103,80 @@ impl Context {
             }))),
             rest,
             trailing_block,
+        ))
+    }
+
+    fn parse_lambda<'a>(
+        &mut self,
+        fn_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
+        if tokens.is_empty() {
+            self.error(fn_span, "expected pattern or `|`");
+        }
+
+        let mut params = Vec::new();
+        let mut rest = tokens;
+
+        self.push_dummy_scope(ScopeKind::Unquoted);
+
+        while !rest.is_empty() {
+            let Ok((pat, rest_new)) = self.parse_pattern(fn_span, rest) else {
+                break;
+            };
+
+            params.push(pat);
+            rest = rest_new;
+
+            if !rest.is_empty() {
+                if let TokenTree::Punct(p) = &rest[0] {
+                    if p.as_char() == '|' {
+                        break;
+                    }
+                    if p.as_char() == ',' && p.spacing() == Spacing::Alone {
+                        rest = &rest[1..];
+                        continue;
+                    }
+                }
+                self.error(rest[0].span(), "expected `,` between parameters");
+                self.scopes.pop();
+                return Err(());
+            }
+        }
+
+        let mut has_closing_pipe = false;
+        if let Some(TokenTree::Punct(p)) = rest.first() {
+            if p.as_char() == '|' {
+                has_closing_pipe = true;
+            }
+        }
+        if !has_closing_pipe {
+            self.error(
+                rest.first()
+                    .map(|t| t.span())
+                    .unwrap_or(tokens[tokens.len() - rest.len() - 1].span()),
+                "expected `|` to close parameter list".to_owned(),
+            );
+            self.scopes.pop();
+            return Err(());
+        }
+
+        let Ok((body, rest)) =
+            self.parse_expr_deny_trailing_block(fn_span, &rest[1..])
+        else {
+            self.scopes.pop();
+            return Err(());
+        };
+
+        self.scopes.pop();
+
+        Ok((
+            Rc::new(MetaExpr::Lambda(Rc::new(Lambda {
+                span: fn_span,
+                params,
+                body,
+            }))),
+            rest,
         ))
     }
 
@@ -1486,7 +1552,7 @@ impl Context {
             self.error(
                 first.span(),
                 format!(
-                    "syntax error{}: expected comma or `)`",
+                    "syntax error{}: expected `,` or `)`",
                     if exprs.len() > 1 { " in tuple" } else { "" }
                 ),
             );
@@ -1530,7 +1596,7 @@ impl Context {
             self.error(
                 first.span(),
                 format!(
-                    "syntax error{}: expected comma or `{}`",
+                    "syntax error{}: expected `,` or `{}`",
                     kind.map(|k| format!(" in {k}")).unwrap_or_default(),
                     delimiter_chars(delimiter).1
                 ),
