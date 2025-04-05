@@ -20,6 +20,7 @@ pub struct BindingParameter {
 }
 
 pub struct BuiltinFn {
+    pub name: Rc<str>,
     pub param_count: Option<usize>,
     #[allow(clippy::type_complexity)]
     pub builtin: Box<
@@ -115,9 +116,9 @@ pub enum MetaExpr {
         pattern: Pattern,
         expr: Option<Rc<MetaExpr>>,
     },
-    FnCall {
+    Call {
         span: Span,
-        name: Rc<str>,
+        lhs: Rc<MetaExpr>,
         args: Vec<Rc<MetaExpr>>,
     },
     FnDecl(Rc<Function>),
@@ -539,7 +540,7 @@ impl MetaExpr {
             MetaExpr::Literal { span, .. } => span,
             MetaExpr::Ident { span, .. } => span,
             MetaExpr::LetBinding { span, .. } => span,
-            MetaExpr::FnCall { span, .. } => span,
+            MetaExpr::Call { span, .. } => span,
             MetaExpr::ExpandPattern(ep) => &ep.span,
             MetaExpr::FnDecl(function) => &function.span,
             MetaExpr::Lambda(lambda) => &lambda.span,
@@ -559,7 +560,7 @@ impl MetaExpr {
             MetaExpr::Literal { .. } => "literal",
             MetaExpr::Ident { .. } => "identifier",
             MetaExpr::LetBinding { .. } => "let binding",
-            MetaExpr::FnCall { .. } => "function call",
+            MetaExpr::Call { .. } => "function call",
             MetaExpr::FnDecl { .. } => "function declaration",
             MetaExpr::Lambda { .. } => "lambda",
             MetaExpr::RawOutputGroup { .. } => "token tree",

@@ -262,13 +262,15 @@ impl Context {
         f: impl 'static
             + Fn(&mut Context, Span, &[Rc<MetaValue>]) -> Result<Rc<MetaValue>>,
     ) {
+        let name: Rc<str> = Rc::from(name);
         let builtin_fn_v = Rc::new(MetaValue::BuiltinFn(Rc::new(BuiltinFn {
             param_count,
+            name: name.clone(),
             builtin: Box::new(f),
         })));
         self.insert_binding(
             Span::call_site(),
-            Rc::from(name),
+            name,
             false,
             false,
             builtin_fn_v,
@@ -485,8 +487,8 @@ impl Context {
                 self.match_and_bind_pattern(pattern, val)?;
                 Ok(self.empty_token_list.clone())
             }
-            MetaExpr::FnCall { span, name, args } => {
-                self.eval_fn_call(span, name, args)
+            MetaExpr::Call { span, lhs, args } => {
+                self.eval_fn_call(span, lhs, args)
             }
             MetaExpr::RawOutputGroup {
                 span,
@@ -983,7 +985,7 @@ impl Context {
             }
             MetaExpr::Literal { .. }
             | MetaExpr::LetBinding { .. }
-            | MetaExpr::FnCall { .. }
+            | MetaExpr::Call { .. }
             | MetaExpr::FnDecl(..)
             | MetaExpr::Lambda(..)
             | MetaExpr::RawOutputGroup { .. }
@@ -1090,20 +1092,17 @@ impl Context {
     fn eval_fn_call(
         &mut self,
         span: &Span,
-        name: &Rc<str>,
+        lhs: &MetaExpr,
         args: &Vec<Rc<MetaExpr>>,
     ) -> std::result::Result<Rc<MetaValue>, ()> {
-        let Some(binding) = self.lookup(name, false) else {
-            self.error(*span, format!("undefined function `{name}`"));
-            return Err(());
-        };
-        match &*binding {
+        match &*self.eval(lhs)? {
             MetaValue::Fn(function) => {
                 if function.params.len() != args.len() {
                     self.error(
                         *span,
                         format!(
-                            "function `{name}` expects {} parameter{}, called with {}",
+                            "function `{}` expects {} parameter{}, called with {}",
+                            function.name,
                             function.params.len(),
                             if function.params.len() > 1 {"s"} else {""},
                             args.len()
@@ -1155,7 +1154,8 @@ impl Context {
                         self.error(
                             *span,
                             format!(
-                                "function `{name}` expects {} parameter{}, called with {}",
+                                "function `{}` expects {} parameter{}, called with {}",
+                                builtin_fn.name,
                                 param_count,
                                 if param_count > 1 {"s"} else {""},
                                 args.len()

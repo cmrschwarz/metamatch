@@ -335,8 +335,8 @@ impl Context {
                 return Ok((lhs, rest, trailing));
             }
 
-            // List Access
             if let Some(TokenTree::Group(g)) = rest.first() {
+                // List Access
                 if g.delimiter() == Delimiter::Bracket {
                     let inner = g.stream().into_vec();
                     if has_template_angle_backets(&inner) {
@@ -351,6 +351,23 @@ impl Context {
                         list: lhs,
                         index,
                     });
+                    continue;
+                }
+                // Call
+                if g.delimiter() == Delimiter::Parenthesis {
+                    let params = g.stream().into_vec();
+                    let fn_args = self.parse_comma_separated(
+                        Some("function call arguments"),
+                        Delimiter::Parenthesis,
+                        g.span(),
+                        &params,
+                    )?;
+                    lhs = Rc::new(MetaExpr::Call {
+                        span: g.span(),
+                        lhs,
+                        args: fn_args,
+                    });
+                    rest = &rest[1..];
                     continue;
                 }
             }
@@ -372,9 +389,12 @@ impl Context {
                                 &params,
                             )?;
                             fn_args.insert(0, lhs);
-                            lhs = Rc::new(MetaExpr::FnCall {
+                            lhs = Rc::new(MetaExpr::Call {
                                 span: func_name.span(),
-                                name: Rc::from(func_name.to_string()),
+                                lhs: Rc::from(MetaExpr::Ident {
+                                    span: func_name.span(),
+                                    name: Rc::from(func_name.to_string()),
+                                }),
                                 args: fn_args,
                             });
                             rest = &rest[3..];
@@ -665,9 +685,12 @@ impl Context {
                                 &args,
                             )?;
                             return Ok((
-                                Rc::new(MetaExpr::FnCall {
+                                Rc::new(MetaExpr::Call {
                                     span,
-                                    name,
+                                    lhs: Rc::new(MetaExpr::Ident {
+                                        span: ident.span(),
+                                        name,
+                                    }),
                                     args: fn_args,
                                 }),
                                 &tokens[2..],
