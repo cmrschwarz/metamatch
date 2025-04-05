@@ -1,0 +1,5 @@
+error: cannot index into `string`
+ --> tests/ui/string_not_indexable.rs:5:15
+  |
+5 |         "asdf"[2]
+  |               ^^^

@@ -126,16 +126,33 @@ fn map() {
     assert_eq!(result, [1, 2, 3]);
 
     let result = unquote! {
-        "ASdf".map(|x| x)
+        "asdf".bytes().map(|x| x)
     };
-    assert_eq!(result, ['A', 'S', 'd', 'f']);
+    assert_eq!(&result, &*"asdf".bytes().collect::<Vec<_>>());
+
+    let result = unquote! {
+        "asdf".chars().map(|x| x)
+    };
+    assert_eq!(result, ['a', 's', 'd', 'f']);
 }
 
 #[test]
 fn char_type() {
     let result = unquote! {
+        let x = "asdf".chars()[0];
+        x
+    };
+    assert_eq!(result, 'a');
+
+    let result = unquote! {
         let x = 'x';
         x
     };
     assert_eq!(result, 'x');
+
+    let result = unquote! {
+        let x = "äbc".bytes()[3];
+        x
+    };
+    assert_eq!(result, "äbc".as_bytes()[3]);
 }

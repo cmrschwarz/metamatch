@@ -51,19 +51,11 @@ impl<'a> Iterable<'a> {
                 }
                 Iterable::Other(src_list)
             }
-            MetaValue::String { value, span: _ } => {
-                let mut src_list = Vec::new();
-                for c in value.chars() {
-                    src_list.push(Rc::new(MetaValue::Char {
-                        value: c,
-                        span: None,
-                    }));
-                }
-                Iterable::Other(src_list)
-            }
+
             MetaValue::List(list) => Iterable::List(list.borrow()),
             MetaValue::Tuple(meta_values) => Iterable::Tuple(meta_values),
             MetaValue::Token(_)
+            | MetaValue::String { .. }
             | MetaValue::Int { .. }
             | MetaValue::Char { .. }
             | MetaValue::Float { .. }
@@ -274,6 +266,115 @@ fn builtin_fn_len(
     }))
 }
 
+fn builtin_fn_chars(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    fn to_char_list(
+        chars: impl IntoIterator<Item = char>,
+    ) -> Vec<Rc<MetaValue>> {
+        let mut res = Vec::new();
+        for c in chars.into_iter() {
+            res.push(Rc::new(MetaValue::Char {
+                value: c,
+                span: None,
+            }));
+        }
+        res
+    }
+    let chars = match &*args[0] {
+        MetaValue::Token(t) => match t {
+            TokenTree::Group(_) => {
+                ctx.error(callsite, "cannot call `chars()` on a Token Group");
+                return Err(());
+            }
+            TokenTree::Ident(ident) => to_char_list(ident.to_string().chars()),
+            TokenTree::Punct(punct) => to_char_list([punct.as_char()]),
+            TokenTree::Literal(literal) => {
+                to_char_list(literal.to_string().chars())
+            }
+        },
+        MetaValue::String { value, span: _ } => to_char_list(value.chars()),
+        MetaValue::Tokens(..)
+        | MetaValue::List(..)
+        | MetaValue::Tuple(..)
+        | MetaValue::Bool { .. }
+        | MetaValue::Int { .. }
+        | MetaValue::Char { .. }
+        | MetaValue::Float { .. }
+        | MetaValue::Fn(_)
+        | MetaValue::Lambda(_)
+        | MetaValue::BuiltinFn(_) => {
+            ctx.error(
+                callsite,
+                format!(
+                    "function `chars()` expects a string, got a {}",
+                    args[0].kind()
+                ),
+            );
+            return Err(());
+        }
+    };
+    Ok(Rc::new(MetaValue::List(RefCell::new(chars))))
+}
+
+fn builtin_fn_bytes(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    fn to_byte_list(
+        bytes: impl IntoIterator<Item = u8>,
+    ) -> Vec<Rc<MetaValue>> {
+        let mut res = Vec::new();
+        for b in bytes.into_iter() {
+            res.push(Rc::new(MetaValue::Int {
+                value: b as i64,
+                span: None,
+            }));
+        }
+        res
+    }
+    let chars = match &*args[0] {
+        MetaValue::Token(t) => match t {
+            TokenTree::Group(_) => {
+                ctx.error(callsite, "cannot call `bytes()` on a Token Group");
+                return Err(());
+            }
+            TokenTree::Ident(ident) => to_byte_list(ident.to_string().bytes()),
+            TokenTree::Punct(punct) => to_byte_list([punct.as_char() as u8]),
+            TokenTree::Literal(literal) => {
+                to_byte_list(literal.to_string().bytes())
+            }
+        },
+        MetaValue::String { value, span: _ } => to_byte_list(value.bytes()),
+        MetaValue::Char { value, span: _ } => {
+            let mut bytes = [0; 4];
+            to_byte_list(value.encode_utf8(&mut bytes).bytes())
+        }
+        MetaValue::Tokens(..)
+        | MetaValue::List(..)
+        | MetaValue::Tuple(..)
+        | MetaValue::Bool { .. }
+        | MetaValue::Int { .. }
+        | MetaValue::Float { .. }
+        | MetaValue::Fn(_)
+        | MetaValue::Lambda(_)
+        | MetaValue::BuiltinFn(_) => {
+            ctx.error(
+                callsite,
+                format!(
+                    "function `bytes()` is not applicable to `{}`",
+                    args[0].kind()
+                ),
+            );
+            return Err(());
+        }
+    };
+    Ok(Rc::new(MetaValue::List(RefCell::new(chars))))
+}
+
 fn builtin_fn_map(
     ctx: &mut Context,
     callsite: Span,
@@ -339,6 +440,8 @@ impl Context {
         self.insert_builtin_fn("len", Some(1), builtin_fn_len);
         self.insert_builtin_fn("zip", None, builtin_fn_zip);
         self.insert_builtin_fn("map", None, builtin_fn_map);
+        self.insert_builtin_fn("chars", None, builtin_fn_chars);
+        self.insert_builtin_fn("bytes", None, builtin_fn_bytes);
     }
     fn match_and_bind_pattern(
         &mut self,
