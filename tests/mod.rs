@@ -189,13 +189,88 @@ fn unquote_array() {
 }
 
 #[test]
-fn assignment() {
-    let val = unquote! {
-        let mut x = 3;
-        x = 4;
+fn ufcs() {
+    let list_len = unquote! {
+        let list = [1, 2, 3];
+        list.len()
+    };
+    assert_eq!(list_len, 3);
+
+    let list_len = unquote! {
+        [1, 2, 3].len()
+    };
+    assert_eq!(list_len, 3);
+
+    let zipped_lists = unquote! {
+        [1, 2, 3].zip([4, 5, 6])
+    };
+    assert_eq!(zipped_lists, [(1, 4), (2, 5), (3, 6)]);
+}
+
+#[test]
+fn lambda_expressions() {
+    let result = unquote! {
+        let add = |x, y| x + y;
+        add(2, 3)
+    };
+    assert_eq!(result, 5);
+
+    let result = unquote! {
+        let add_tup = |(x, y)| x + y;
+        add_tup((1, 2))
+    };
+    assert_eq!(result, 3);
+
+    let result = unquote! {
+        (|x| x + 1)(5)
+    };
+    assert_eq!(result, 6);
+}
+
+#[test]
+fn map() {
+    let (a, b, c) = (1, 2, 3);
+
+    let result = unquote! {
+        [A, B, C].map(lowercase)
+    };
+    assert_eq!(result, [1, 2, 3]);
+
+    let result = unquote! {
+        (A, B, C).map(lowercase)
+    };
+    assert_eq!(result, [1, 2, 3]);
+
+    let result = unquote! {
+        "asdf".bytes().map(|x| x)
+    };
+    assert_eq!(&result, &*"asdf".bytes().collect::<Vec<_>>());
+
+    let result = unquote! {
+        "asdf".chars().map(|x| x)
+    };
+    assert_eq!(result, ['a', 's', 'd', 'f']);
+}
+
+#[test]
+fn char_type() {
+    let result = unquote! {
+        let x = "asdf".chars()[0];
         x
     };
-    assert_eq!(val, 4);
+    assert_eq!(result, 'a');
+
+    let result = unquote! {
+        let x = 'x';
+        x
+    };
+    assert_eq!(result, 'x');
+
+    let result = unquote! {
+        let x = "äbc".bytes()[3];
+        x
+    };
+    assert_eq!(result, "äbc".as_bytes()[3]);
 }
 
 #[test]
