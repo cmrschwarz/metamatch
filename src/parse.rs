@@ -286,6 +286,20 @@ impl Context {
             bindings: HashMap::new(),
         });
     }
+
+    fn parse_expr_deny_rest<'a>(
+        &mut self,
+        parent_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<Rc<MetaExpr>> {
+        let (expr, rest) =
+            self.parse_expr_deny_trailing_block(parent_span, tokens)?;
+        if let Some(stray) = rest.first() {
+            self.error(stray.span(), "stray token after expression");
+        }
+        Ok(expr)
+    }
+
     fn parse_expr_deny_trailing_block<'a>(
         &mut self,
         parent_span: Span,
@@ -319,6 +333,22 @@ impl Context {
         loop {
             if rest.is_empty() || trailing.is_some() {
                 return Ok((lhs, rest, trailing));
+            }
+
+            if let Some(TokenTree::Group(g)) = rest.first() {
+                if g.delimiter() == Delimiter::Bracket {
+                    rest = &rest[1..];
+                    let inner = g.stream().into_vec();
+                    let index = self
+                        .parse_expr_deny_rest(g.span(), &inner)
+                        .unwrap_or(self.empty_token_list_expr.clone());
+                    lhs = Rc::new(MetaExpr::ListAccess {
+                        span: g.span(),
+                        list: lhs,
+                        index,
+                    });
+                    continue;
+                }
             }
 
             let Some((op, op_span, next_rest)) = peek_binary_operator(rest)

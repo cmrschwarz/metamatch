@@ -45,3 +45,29 @@ fn unary_ops() {
     assert_eq!(unquote!(-(1 + 2)), -3);
     assert_eq!(unquote!(1 + 2 - -5), 8);
 }
+
+#[test]
+fn list_access() {
+    let list = unquote! {
+        let list = [1,2,3];
+        let x0 = list[0];
+        let x1 = list[1];
+        let x2 = list[2];
+        [x0,x1,x2]
+    };
+
+    assert_eq!(list, [1, 2, 3]);
+}
+
+#[test]
+fn list_assignment() {
+    let list = unquote! {
+        let list = [0, 1, 2, 3];
+
+        list[3] = 42;
+
+        list
+    };
+
+    assert_eq!(list, [0, 1, 2, 42]);
+}
