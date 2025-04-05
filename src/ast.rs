@@ -1,5 +1,6 @@
 use proc_macro::{Delimiter, Span, TokenTree};
 use std::{
+    cell::RefCell,
     collections::HashMap,
     fmt::{Debug, Display},
     rc::Rc,
@@ -14,6 +15,7 @@ pub struct MetaError {
 pub struct BindingParameter {
     pub span: Span,
     pub name: Rc<str>,
+    pub mutable: bool,
     pub super_bound: bool,
 }
 
@@ -61,7 +63,7 @@ pub enum MetaValue {
     },
     Fn(Rc<Function>),
     BuiltinFn(Rc<BuiltinFn>),
-    List(Vec<Rc<MetaValue>>),
+    List(RefCell<Vec<Rc<MetaValue>>>),
     Tuple(Vec<Rc<MetaValue>>),
 }
 
@@ -153,6 +155,12 @@ pub enum MetaExpr {
         lhs: Rc<MetaExpr>,
         rhs: Rc<MetaExpr>,
     },
+    // foo[..]
+    ListAccess {
+        span: Span,
+        list: Rc<MetaExpr>,
+        index: Rc<MetaExpr>,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnaryOpKind {
@@ -166,23 +174,40 @@ pub enum BinaryOpKind {
     Mul,
     Div,
     Rem,
-    Assign,
-    Equal,
-    NotEqual,
-    RangeExclusive,
-    RangeInclusive,
-    DotAccess,
+
     BinaryAnd,
     BinaryOr,
     BinaryXor,
+    ShiftLeft,
+    ShiftRight,
+
     LogicalAnd,
     LogicalOr,
+
+    Equal,
+    NotEqual,
     LessThan,
     LessThanOrEqual,
     GreaterThan,
     GreaterThanOrEqual,
-    ShiftLeft,
-    ShiftRight,
+
+    Assign,
+
+    AddAssign,
+    SubAssign,
+    MulAssign,
+    DivAssign,
+    RemAssign,
+
+    BinaryAndAssign,
+    BinaryOrAssign,
+    BinaryXorAssign,
+
+    ShiftLeftAssign,
+    ShiftRightAssign,
+
+    RangeExclusive,
+    RangeInclusive,
 }
 
 #[derive(Debug)]
@@ -191,6 +216,7 @@ pub struct Binding {
     pub span: Span,
     // super bound bindings are available in quoted contexts
     pub super_bound: bool,
+    pub mutable: bool,
     pub value: Rc<MetaValue>,
 }
 
@@ -334,7 +360,6 @@ impl BinaryOpKind {
             BinaryOpKind::RangeInclusive => "inclusive range",
             BinaryOpKind::Assign => "assign",
             BinaryOpKind::NotEqual => "not equal",
-            BinaryOpKind::DotAccess => "dot access",
             BinaryOpKind::BinaryAnd => "binary and",
             BinaryOpKind::BinaryOr => "binary or",
             BinaryOpKind::BinaryXor => "binary xor",
@@ -346,6 +371,16 @@ impl BinaryOpKind {
             BinaryOpKind::GreaterThanOrEqual => "greater than or equal",
             BinaryOpKind::ShiftLeft => "shift left",
             BinaryOpKind::ShiftRight => "shift right",
+            BinaryOpKind::AddAssign => "add assign",
+            BinaryOpKind::SubAssign => "sub assign",
+            BinaryOpKind::MulAssign => "mul assign",
+            BinaryOpKind::DivAssign => "div assign",
+            BinaryOpKind::RemAssign => "rem assign",
+            BinaryOpKind::BinaryAndAssign => "binary and assign",
+            BinaryOpKind::BinaryOrAssign => "binary or assign",
+            BinaryOpKind::BinaryXorAssign => "binary xor assign",
+            BinaryOpKind::ShiftLeftAssign => "shift left assign",
+            BinaryOpKind::ShiftRightAssign => "shift right assign",
         }
     }
     pub fn symbol(self) -> &'static str {
@@ -360,7 +395,6 @@ impl BinaryOpKind {
             BinaryOpKind::RangeInclusive => "..=",
             BinaryOpKind::Assign => "=",
             BinaryOpKind::NotEqual => "!=",
-            BinaryOpKind::DotAccess => ".",
             BinaryOpKind::BinaryAnd => "&",
             BinaryOpKind::BinaryOr => "|",
             BinaryOpKind::BinaryXor => "^",
@@ -372,12 +406,20 @@ impl BinaryOpKind {
             BinaryOpKind::GreaterThanOrEqual => ">=",
             BinaryOpKind::ShiftLeft => "<<",
             BinaryOpKind::ShiftRight => ">>",
+            BinaryOpKind::AddAssign => "+=",
+            BinaryOpKind::SubAssign => "-=",
+            BinaryOpKind::MulAssign => "*=",
+            BinaryOpKind::DivAssign => "/=",
+            BinaryOpKind::RemAssign => "%=",
+            BinaryOpKind::BinaryAndAssign => "&=",
+            BinaryOpKind::BinaryOrAssign => "|=",
+            BinaryOpKind::BinaryXorAssign => "^=",
+            BinaryOpKind::ShiftLeftAssign => "<<=",
+            BinaryOpKind::ShiftRightAssign => ">>=",
         }
     }
     pub fn precedence(self) -> u8 {
         match self {
-            BinaryOpKind::DotAccess => 13,
-            // 12 is for unary operators
             BinaryOpKind::Mul | BinaryOpKind::Div | BinaryOpKind::Rem => 11,
             BinaryOpKind::Add | BinaryOpKind::Sub => 10,
             BinaryOpKind::ShiftLeft | BinaryOpKind::ShiftRight => 9,
@@ -390,18 +432,25 @@ impl BinaryOpKind {
             | BinaryOpKind::GreaterThan
             | BinaryOpKind::LessThanOrEqual
             | BinaryOpKind::GreaterThanOrEqual => 5,
-
             BinaryOpKind::LogicalAnd => 4,
             BinaryOpKind::LogicalOr => 3,
             BinaryOpKind::RangeExclusive | BinaryOpKind::RangeInclusive => 2,
-
-            BinaryOpKind::Assign => 1,
+            BinaryOpKind::Assign
+            | BinaryOpKind::AddAssign
+            | BinaryOpKind::SubAssign
+            | BinaryOpKind::MulAssign
+            | BinaryOpKind::DivAssign
+            | BinaryOpKind::RemAssign
+            | BinaryOpKind::BinaryAndAssign
+            | BinaryOpKind::BinaryOrAssign
+            | BinaryOpKind::BinaryXorAssign
+            | BinaryOpKind::ShiftLeftAssign
+            | BinaryOpKind::ShiftRightAssign => 1,
         }
     }
 
     pub fn is_right_associative(self) -> bool {
         match self {
-            BinaryOpKind::Assign => true,
             BinaryOpKind::Add
             | BinaryOpKind::Sub
             | BinaryOpKind::Mul
@@ -411,7 +460,6 @@ impl BinaryOpKind {
             | BinaryOpKind::RangeExclusive
             | BinaryOpKind::RangeInclusive
             | BinaryOpKind::NotEqual
-            | BinaryOpKind::DotAccess
             | BinaryOpKind::BinaryAnd
             | BinaryOpKind::BinaryOr
             | BinaryOpKind::BinaryXor
@@ -423,6 +471,54 @@ impl BinaryOpKind {
             | BinaryOpKind::GreaterThanOrEqual
             | BinaryOpKind::ShiftLeft
             | BinaryOpKind::ShiftRight => false,
+
+            BinaryOpKind::Assign
+            | BinaryOpKind::AddAssign
+            | BinaryOpKind::SubAssign
+            | BinaryOpKind::MulAssign
+            | BinaryOpKind::DivAssign
+            | BinaryOpKind::RemAssign
+            | BinaryOpKind::BinaryAndAssign
+            | BinaryOpKind::BinaryOrAssign
+            | BinaryOpKind::BinaryXorAssign
+            | BinaryOpKind::ShiftLeftAssign
+            | BinaryOpKind::ShiftRightAssign => true,
+        }
+    }
+
+    pub fn non_assigning_version(self) -> Option<BinaryOpKind> {
+        match self {
+            BinaryOpKind::Add
+            | BinaryOpKind::Sub
+            | BinaryOpKind::Mul
+            | BinaryOpKind::Div
+            | BinaryOpKind::Rem
+            | BinaryOpKind::Equal
+            | BinaryOpKind::NotEqual
+            | BinaryOpKind::RangeExclusive
+            | BinaryOpKind::RangeInclusive
+            | BinaryOpKind::BinaryAnd
+            | BinaryOpKind::BinaryOr
+            | BinaryOpKind::BinaryXor
+            | BinaryOpKind::LogicalAnd
+            | BinaryOpKind::LogicalOr
+            | BinaryOpKind::LessThan
+            | BinaryOpKind::LessThanOrEqual
+            | BinaryOpKind::GreaterThan
+            | BinaryOpKind::GreaterThanOrEqual
+            | BinaryOpKind::ShiftLeft
+            | BinaryOpKind::ShiftRight => None,
+            BinaryOpKind::Assign => None,
+            BinaryOpKind::AddAssign => Some(BinaryOpKind::Add),
+            BinaryOpKind::SubAssign => Some(BinaryOpKind::Sub),
+            BinaryOpKind::MulAssign => Some(BinaryOpKind::Mul),
+            BinaryOpKind::DivAssign => Some(BinaryOpKind::Div),
+            BinaryOpKind::RemAssign => Some(BinaryOpKind::Rem),
+            BinaryOpKind::BinaryAndAssign => Some(BinaryOpKind::BinaryAnd),
+            BinaryOpKind::BinaryOrAssign => Some(BinaryOpKind::BinaryOr),
+            BinaryOpKind::BinaryXorAssign => Some(BinaryOpKind::BinaryXor),
+            BinaryOpKind::ShiftLeftAssign => Some(BinaryOpKind::ShiftLeft),
+            BinaryOpKind::ShiftRightAssign => Some(BinaryOpKind::ShiftRight),
         }
     }
 }
@@ -444,6 +540,26 @@ impl MetaExpr {
             MetaExpr::Tuple { span, .. } => span,
             MetaExpr::OpUnary { span, .. } => span,
             MetaExpr::OpBinary { span, .. } => span,
+            MetaExpr::ListAccess { span, .. } => span,
+        }
+    }
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            MetaExpr::Literal { .. } => "literal",
+            MetaExpr::Ident { .. } => "identifier",
+            MetaExpr::LetBinding { .. } => "let binding",
+            MetaExpr::FnCall { .. } => "function call",
+            MetaExpr::FnDecl { .. } => "functon declaration",
+            MetaExpr::RawOutputGroup { .. } => "token tree",
+            MetaExpr::IfExpr { .. } => "if expression",
+            MetaExpr::ForExpansion { .. } => "for loop",
+            MetaExpr::ExpandPattern { .. } => "expand pattern",
+            MetaExpr::Scope { .. } => "scope",
+            MetaExpr::List { .. } => "list",
+            MetaExpr::Tuple { .. } => "tuple",
+            MetaExpr::OpUnary { .. } => "unary operator",
+            MetaExpr::OpBinary { .. } => "binary operator",
+            MetaExpr::ListAccess { .. } => "property access",
         }
     }
 }

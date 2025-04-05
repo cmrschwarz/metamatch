@@ -1,4 +1,4 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use proc_macro::{
     Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream,
@@ -47,7 +47,7 @@ impl Context {
             let v = match &*args[0] {
                 MetaValue::Token(_) => 1,
                 MetaValue::Tokens(token_trees) => token_trees.len(),
-                MetaValue::List(list) => list.len(),
+                MetaValue::List(list) => list.borrow().len(),
                 MetaValue::Tuple(tup) => tup.len(),
                 MetaValue::String { value: s, span: _ } => s.len(),
                 MetaValue::Bool { .. }
@@ -82,6 +82,7 @@ impl Context {
                 self.insert_binding(
                     bind.span,
                     bind.name.clone(),
+                    bind.mutable,
                     bind.super_bound,
                     val,
                 );
@@ -125,7 +126,7 @@ impl Context {
                 span,
                 elems: pat_bindings,
             } => {
-                let MetaValue::List(val_elems) = &*val else {
+                let MetaValue::List(list) = &*val else {
                     // TODO: more context
                     self.error(
                         *span,
@@ -133,21 +134,22 @@ impl Context {
                     );
                     return Err(());
                 };
-                if pat_bindings.len() != val_elems.len() {
+                let list = list.borrow();
+                if pat_bindings.len() != list.len() {
                     self.error(
                         *span,
                         format!(
                             "list pattern missmatch: expected length {}, got {}",
                             pat_bindings.len(),
-                            val_elems.len()
+                            list.len()
                         ),
                     );
                     return Err(());
                 }
-                for i in 0..val_elems.len() {
+                for i in 0..list.len() {
                     self.match_and_bind_pattern(
                         &pat_bindings[i],
-                        val_elems[i].clone(),
+                        list[i].clone(),
                     )?;
                 }
                 Ok(())
@@ -169,6 +171,7 @@ impl Context {
         self.insert_binding(
             Span::call_site(),
             Rc::from(name),
+            false,
             false,
             builtin_fn_v,
         );
@@ -226,7 +229,7 @@ impl Context {
                 );
                 return Err(());
             };
-            Ok(Rc::new(MetaValue::List(f(list))))
+            Ok(Rc::new(MetaValue::List(RefCell::new(f(&list.borrow())))))
         };
         self.insert_builtin_fn(name, 1, list_fn);
     }
@@ -271,7 +274,7 @@ impl Context {
             }
             MetaValue::List(vals) => {
                 let mut list = Vec::new();
-                for (i, e) in vals.iter().enumerate() {
+                for (i, e) in vals.borrow().iter().enumerate() {
                     if i > 0 {
                         list.push(comma_token(eval_span));
                     }
@@ -413,7 +416,7 @@ impl Context {
                 };
                 let mut res = Vec::new();
 
-                for elem in list_elems {
+                for elem in &*list_elems.borrow() {
                     self.push_eval_scope();
                     if self
                         .match_and_bind_pattern(pattern, elem.clone())
@@ -447,6 +450,7 @@ impl Context {
                     f.span,
                     f.name.clone(),
                     false,
+                    false,
                     Rc::new(MetaValue::Fn(f.clone())),
                 );
                 Ok(self.empty_token_list.clone())
@@ -456,7 +460,7 @@ impl Context {
                 for e in exprs {
                     elements.push(self.eval(e)?);
                 }
-                Ok(Rc::new(MetaValue::List(elements)))
+                Ok(Rc::new(MetaValue::List(RefCell::new(elements))))
             }
             MetaExpr::Tuple { span: _, exprs } => {
                 let mut elements = Vec::new();
@@ -515,7 +519,7 @@ impl Context {
                     return Err(());
                 };
                 let mut res = Vec::new();
-                for (i, elem) in list_elems.iter().enumerate() {
+                for (i, elem) in list_elems.borrow().iter().enumerate() {
                     self.push_eval_scope();
                     if i != 0 {
                         res.push(TokenTree::Punct(Punct::new(
@@ -556,7 +560,64 @@ impl Context {
                 )?;
                 Ok(Rc::new(MetaValue::Tokens(res)))
             }
+            MetaExpr::ListAccess {
+                span,
+                list: lhs,
+                index: rhs,
+            } => {
+                let (idx, list) = self.access_list(span, lhs, rhs)?;
+                if let MetaValue::List(list) = &*list {
+                    return Ok(list.borrow()[idx].clone());
+                };
+                unreachable!()
+            }
         }
+    }
+
+    fn access_list(
+        &mut self,
+        span: &Span,
+        list_expr: &MetaExpr,
+        index: &MetaExpr,
+    ) -> Result<(usize, Rc<MetaValue>)> {
+        let list_val = self.eval(list_expr)?;
+        let MetaValue::List(list) = &*list_val else {
+            self.error(
+                *span,
+                format!("cannot index into `{}`", list_val.kind()),
+            );
+            return Err(());
+        };
+
+        let index_val = self.eval(index)?;
+        let MetaValue::Int {
+            value: index,
+            span: _,
+        } = &*index_val
+        else {
+            self.error(
+                list_expr.span(),
+                format!("cannot index into `{}`", index_val.kind()),
+            );
+            return Err(());
+        };
+
+        let list = list.borrow();
+
+        let idx = usize::try_from(*index).unwrap_or(usize::MAX);
+
+        if idx >= list.len() {
+            self.error(
+                *span,
+                format!(
+                    "index `{index}` is out of bounds for list of length {}",
+                    list.len()
+                ),
+            );
+            return Err(());
+        };
+        drop(list);
+        Ok((idx, list_val))
     }
 
     fn eval_op_unary(
@@ -655,20 +716,16 @@ impl Context {
             BinaryOpKind::LessThanOrEqual => res_bool(lhs <= rhs),
             BinaryOpKind::GreaterThan => res_bool(lhs > rhs),
             BinaryOpKind::GreaterThanOrEqual => res_bool(lhs >= rhs),
-
             BinaryOpKind::Add => res_int(lhs + rhs),
             BinaryOpKind::Sub => res_int(lhs - rhs),
             BinaryOpKind::Mul => res_int(lhs * rhs),
             BinaryOpKind::Div => res_int(lhs / rhs),
             BinaryOpKind::Rem => res_int(lhs % rhs),
-
             BinaryOpKind::ShiftLeft => res_int(lhs << rhs),
             BinaryOpKind::ShiftRight => res_int(lhs >> rhs),
-
             BinaryOpKind::BinaryAnd => res_int(lhs & rhs),
             BinaryOpKind::BinaryOr => res_int(lhs | rhs),
             BinaryOpKind::BinaryXor => res_int(lhs ^ rhs),
-
             BinaryOpKind::RangeExclusive | BinaryOpKind::RangeInclusive => {
                 let mut rhs = rhs;
                 if op_kind == BinaryOpKind::RangeInclusive {
@@ -684,9 +741,8 @@ impl Context {
                         span: None,
                     }));
                 }
-                Ok(Rc::new(MetaValue::List(res)))
+                Ok(Rc::new(MetaValue::List(RefCell::new(res))))
             }
-
             BinaryOpKind::LogicalAnd | BinaryOpKind::LogicalOr => {
                 self.error(
                     span,
@@ -698,8 +754,17 @@ impl Context {
                 );
                 Err(())
             }
-
-            BinaryOpKind::DotAccess | BinaryOpKind::Assign => unreachable!(),
+            BinaryOpKind::Assign
+            | BinaryOpKind::AddAssign
+            | BinaryOpKind::SubAssign
+            | BinaryOpKind::MulAssign
+            | BinaryOpKind::DivAssign
+            | BinaryOpKind::RemAssign
+            | BinaryOpKind::BinaryAndAssign
+            | BinaryOpKind::BinaryOrAssign
+            | BinaryOpKind::BinaryXorAssign
+            | BinaryOpKind::ShiftLeftAssign
+            | BinaryOpKind::ShiftRightAssign => unreachable!(),
         }
     }
 
@@ -751,7 +816,103 @@ impl Context {
                 Err(())
             }
 
-            BinaryOpKind::DotAccess | BinaryOpKind::Assign => unreachable!(),
+            BinaryOpKind::Assign
+            | BinaryOpKind::AddAssign
+            | BinaryOpKind::SubAssign
+            | BinaryOpKind::MulAssign
+            | BinaryOpKind::DivAssign
+            | BinaryOpKind::RemAssign
+            | BinaryOpKind::BinaryAndAssign
+            | BinaryOpKind::BinaryOrAssign
+            | BinaryOpKind::BinaryXorAssign
+            | BinaryOpKind::ShiftLeftAssign
+            | BinaryOpKind::ShiftRightAssign => unreachable!(),
+        }
+    }
+
+    fn assign_to_expr(
+        &mut self,
+        op_base_version: Option<BinaryOpKind>,
+        span: Span,
+        lhs: &MetaExpr,
+        rhs: &MetaExpr,
+    ) -> Result<Rc<MetaValue>> {
+        match lhs {
+            MetaExpr::Ident { span: _, name } => {
+                for scope_idx in 0..self.scopes.len() {
+                    if let Some(binding) =
+                        self.scopes[scope_idx].bindings.get(name)
+                    {
+                        if !binding.mutable {
+                            self.error(
+                                span,
+                                format!("cannot assign to immutable variable `{name}`"),
+                            );
+                            return Err(());
+                        }
+                        let binding_value = binding.value.clone();
+
+                        let rhs_val = self.eval(rhs)?;
+                        let new_value = if let Some(base) = op_base_version {
+                            self.eval_binary_op_from_vals(
+                                base,
+                                span,
+                                &binding_value,
+                                &rhs_val,
+                            )?
+                        } else {
+                            rhs_val
+                        };
+
+                        self.scopes[scope_idx]
+                            .bindings
+                            .get_mut(name)
+                            .unwrap()
+                            .value = new_value;
+                        return Ok(self.empty_token_list.clone());
+                    }
+                }
+                self.error(
+                    span,
+                    format!("cannot find `{name}` in this scope"),
+                );
+                Err(())
+            }
+            MetaExpr::Literal { .. }
+            | MetaExpr::LetBinding { .. }
+            | MetaExpr::FnCall { .. }
+            | MetaExpr::FnDecl(..)
+            | MetaExpr::RawOutputGroup { .. }
+            | MetaExpr::IfExpr { .. }
+            | MetaExpr::ForExpansion { .. }
+            | MetaExpr::ExpandPattern(..)
+            | MetaExpr::Scope { .. }
+            | MetaExpr::List { .. }
+            | MetaExpr::Tuple { .. }
+            | MetaExpr::OpUnary { .. }
+            | MetaExpr::OpBinary { .. } => {
+                self.error(
+                    lhs.span(),
+                    format!("{} is not assignable", lhs.kind_str()),
+                );
+                Err(())
+            }
+            MetaExpr::ListAccess { span, list, index } => {
+                let (idx, list) = self.access_list(span, list, index)?;
+                let MetaValue::List(list) = &*list else {
+                    unreachable!();
+                };
+                let mut list = list.borrow_mut();
+                let v = &mut list[idx];
+                let rhs_val = self.eval(rhs)?;
+                if let Some(base) = op_base_version {
+                    *v = self
+                        .eval_binary_op_from_vals(base, *span, v, &rhs_val)?;
+                } else {
+                    *v = rhs_val;
+                }
+                Ok(self.empty_token_list.clone())
+            }
         }
     }
 
@@ -762,23 +923,41 @@ impl Context {
         lhs: &MetaExpr,
         rhs: &MetaExpr,
     ) -> Result<Rc<MetaValue>> {
+        if let Some(base) = op_kind.non_assigning_version() {
+            return self.assign_to_expr(Some(base), span, lhs, rhs);
+        }
+        if op_kind == BinaryOpKind::Assign {
+            return self.assign_to_expr(None, span, lhs, rhs);
+        }
+
         let lhs_val = self.eval(lhs)?;
         let rhs_val = self.eval(rhs)?;
-        match (&*lhs_val, &*rhs_val) {
+
+        self.eval_binary_op_from_vals(op_kind, span, &lhs_val, &rhs_val)
+    }
+
+    fn eval_binary_op_from_vals(
+        &mut self,
+        op_kind: BinaryOpKind,
+        op_span: Span,
+        lhs: &MetaValue,
+        rhs: &MetaValue,
+    ) -> Result<Rc<MetaValue>> {
+        match (lhs, rhs) {
             (
                 MetaValue::Int { value: lhs, .. },
                 MetaValue::Int { value: rhs, .. },
-            ) => self.eval_binary_op_int(span, op_kind, *lhs, *rhs),
+            ) => self.eval_binary_op_int(op_span, op_kind, *lhs, *rhs),
             (
                 MetaValue::Float { value: lhs, .. },
                 MetaValue::Float { value: rhs, .. },
-            ) => self.eval_binary_op_float(span, op_kind, *lhs, *rhs),
+            ) => self.eval_binary_op_float(op_span, op_kind, *lhs, *rhs),
             _ => {
-                let lhs_kind = lhs_val.kind();
-                let rhs_kind = rhs_val.kind();
+                let lhs_kind = lhs.kind();
+                let rhs_kind = rhs.kind();
                 if lhs_kind != rhs_kind {
                     self.error(
-                        span,
+                        op_span,
                         format!(
                             "operands for `{}` differ in type: `{}` {} `{}`",
                             op_kind.to_str(),
@@ -789,7 +968,7 @@ impl Context {
                     );
                 } else {
                     self.error(
-                        span,
+                        op_span,
                         format!(
                             "invalid operand types for `{}`: `{}` {} `{}`",
                             op_kind.to_str(),
@@ -837,6 +1016,7 @@ impl Context {
                     self.insert_binding(
                         param.span,
                         param.name.clone(),
+                        param.mutable,
                         param.super_bound,
                         val,
                     );
@@ -881,11 +1061,13 @@ impl Context {
         &mut self,
         span: Span,
         name: Rc<str>,
+        mutable: bool,
         super_bound: bool,
         value: Rc<MetaValue>,
     ) {
         let binding = Binding {
             span,
+            mutable,
             super_bound,
             value,
         };

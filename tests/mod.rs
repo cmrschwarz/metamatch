@@ -189,6 +189,16 @@ fn unquote_array() {
 }
 
 #[test]
+fn assignment() {
+    let val = unquote! {
+        let mut x = 3;
+        x = 4;
+        x
+    };
+    assert_eq!(val, 4);
+}
+
+#[test]
 fn macro_errors() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/**/*.rs");

@@ -151,7 +151,6 @@ fn peek_binary_operator(
         "!=" => BinaryOpKind::NotEqual,
         ".." => BinaryOpKind::RangeExclusive,
         "..=" => BinaryOpKind::RangeInclusive,
-        "." => BinaryOpKind::DotAccess,
         "&" => BinaryOpKind::BinaryAnd,
         "|" => BinaryOpKind::BinaryOr,
         "^" => BinaryOpKind::BinaryXor,
@@ -163,6 +162,16 @@ fn peek_binary_operator(
         ">=" => BinaryOpKind::GreaterThanOrEqual,
         "<<" => BinaryOpKind::ShiftLeft,
         ">>" => BinaryOpKind::ShiftRight,
+        "+=" => BinaryOpKind::AddAssign,
+        "-=" => BinaryOpKind::SubAssign,
+        "*=" => BinaryOpKind::MulAssign,
+        "/=" => BinaryOpKind::DivAssign,
+        "%=" => BinaryOpKind::RemAssign,
+        "<<=" => BinaryOpKind::ShiftLeftAssign,
+        ">>=" => BinaryOpKind::ShiftRightAssign,
+        "&=" => BinaryOpKind::BinaryAndAssign,
+        "|=" => BinaryOpKind::BinaryOrAssign,
+        "^=" => BinaryOpKind::BinaryXorAssign,
         _ => return None,
     };
 
@@ -666,6 +675,7 @@ impl Context {
                 span: Span::call_site(),
                 super_bound,
                 value: self.empty_token_list.clone(),
+                mutable: false,
             },
         );
     }
@@ -952,11 +962,11 @@ impl Context {
 
         let rest = &tokens[3..];
 
-        let trailing_block = rest.is_empty() && allow_trailing_block;
-
         self.push_dummy_scope(ScopeKind::Unquoted);
 
         while !params_rest.is_empty() {
+            // TODO: support mutable and super here
+
             let (param_span, param_name) = parse_ident(&params_rest[0])
                 .ok_or_else(|| {
                     self.error(
@@ -964,12 +974,20 @@ impl Context {
                         "expected parameter name".to_owned(),
                     );
                 })?;
-            self.insert_dummy_binding(param_name.clone(), trailing_block);
+
+            let super_bound = param_name
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or_default();
+
+            self.insert_dummy_binding(param_name.clone(), super_bound);
 
             params.push(BindingParameter {
                 span: param_span,
                 name: param_name,
-                super_bound: trailing_block,
+                super_bound,
+                mutable: false,
             });
 
             params_rest = &params_rest[1..];
@@ -1309,29 +1327,53 @@ impl Context {
             return Err(());
         }
         match &tokens[0] {
-            // TODO: allow super ident
             TokenTree::Ident(ident) => {
-                let name = ident.to_string();
+                let mut name = ident.to_string();
+                let mut rest = &tokens[1..];
+                let mut span = ident.span();
+                let mut mutable = false;
+                let mut super_bound =
+                    name.chars().next().unwrap().is_uppercase();
                 if &*name == "super" {
                     if let Some(TokenTree::Ident(ident)) = tokens.get(1) {
-                        return Ok((
-                            Pattern::Ident(BindingParameter {
-                                span: ident.span(),
-                                name: Rc::from(ident.to_string()),
-                                super_bound: true,
-                            }),
-                            &tokens[2..],
-                        ));
+                        name = ident.to_string();
+                        span = ident.span();
+                        rest = &rest[1..];
+                        super_bound = true;
+                    } else {
+                        self.error(
+                            span,
+                            "`super` is a keyword and not a valid identifier",
+                        );
+                        return Err(());
                     }
                 }
-                let super_bound = name.chars().next().unwrap().is_uppercase();
+                if &*name == "mut" {
+                    if let Some(TokenTree::Ident(ident)) = tokens.get(1) {
+                        name = ident.to_string();
+                        span = ident.span();
+                        rest = &rest[1..];
+                        mutable = true;
+                    } else {
+                        self.error(
+                            span,
+                            "`mut` is a keyword and not a valid identifier",
+                        );
+                        return Err(());
+                    }
+                }
+                if &*name == "super" {
+                    self.error(span, "`super` must come before `mut`");
+                    return Err(());
+                }
                 Ok((
                     Pattern::Ident(BindingParameter {
                         span: ident.span(),
                         name: Rc::from(name),
                         super_bound,
+                        mutable,
                     }),
-                    &tokens[1..],
+                    rest,
                 ))
             }
             TokenTree::Group(group) => Ok((
