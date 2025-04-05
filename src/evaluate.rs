@@ -10,8 +10,8 @@ use proc_macro::{
 };
 
 use super::ast::{
-    BinaryOpKind, Binding, BuiltinFn, Context, MetaExpr, MetaValue, Pattern,
-    Scope, ScopeKind, UnaryOpKind,
+    BinaryOpKind, Binding, BuiltinFn, Context, Function, Lambda, MetaExpr,
+    MetaValue, Pattern, Scope, ScopeKind, UnaryOpKind,
 };
 
 type Result<T> = std::result::Result<T, ()>;
@@ -22,10 +22,295 @@ fn comma_token(span: Span) -> TokenTree {
     TokenTree::Punct(punct)
 }
 
+enum Iterable<'a> {
+    Tuple(&'a [Rc<MetaValue>]),
+    List(Ref<'a, Vec<Rc<MetaValue>>>),
+    Other(Vec<Rc<MetaValue>>),
+}
+impl<'a> Iterable<'a> {
+    fn len(&self) -> usize {
+        match self {
+            Iterable::Tuple(l) => l.len(),
+            Iterable::List(l) => l.len(),
+            Iterable::Other(l) => l.len(),
+        }
+    }
+    fn index(&self, i: usize) -> Rc<MetaValue> {
+        match self {
+            Iterable::Tuple(l) => l[i].clone(),
+            Iterable::List(l) => l[i].clone(),
+            Iterable::Other(l) => l[i].clone(),
+        }
+    }
+    fn from_value(v: &'a MetaValue) -> Option<Self> {
+        let res = match v {
+            MetaValue::Tokens(token_trees) => {
+                let mut src_list = Vec::new();
+                for t in token_trees {
+                    src_list.push(Rc::new(MetaValue::Token(t.clone())));
+                }
+                Iterable::Other(src_list)
+            }
+            MetaValue::String { value, span: _ } => {
+                let mut src_list = Vec::new();
+                for c in value.chars() {
+                    src_list.push(Rc::new(MetaValue::Token(
+                        TokenTree::Literal(Literal::character(c)),
+                    )));
+                }
+                Iterable::Other(src_list)
+            }
+            MetaValue::List(list) => Iterable::List(list.borrow()),
+            MetaValue::Tuple(meta_values) => Iterable::Tuple(meta_values),
+            MetaValue::Token(_)
+            | MetaValue::Int { .. }
+            | MetaValue::Float { .. }
+            | MetaValue::Bool { .. }
+            | MetaValue::Fn(_)
+            | MetaValue::Lambda(_)
+            | MetaValue::BuiltinFn(_) => {
+                return None;
+            }
+        };
+        Some(res)
+    }
+}
+impl<'a, 'b> IntoIterator for &'b Iterable<'a> {
+    type Item = &'b Rc<MetaValue>;
+
+    type IntoIter = std::slice::Iter<'b, Rc<MetaValue>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Iterable::Tuple(l) => l.iter(),
+            Iterable::List(l) => l.as_slice().iter(),
+            Iterable::Other(l) => l.as_slice().iter(),
+        }
+    }
+}
+
+enum Callable<'a> {
+    BuiltinFn(&'a BuiltinFn),
+    Fn(&'a Function),
+    Lambda(&'a Lambda),
+}
+
+impl<'a> Callable<'a> {
+    fn from_value(v: &'a MetaValue) -> Option<Self> {
+        let res = match v {
+            MetaValue::BuiltinFn(f) => Callable::BuiltinFn(f),
+            MetaValue::Fn(f) => Callable::Fn(f),
+            MetaValue::Lambda(l) => Callable::Lambda(l),
+            MetaValue::Token(_)
+            | MetaValue::Tokens(_)
+            | MetaValue::Int { .. }
+            | MetaValue::Float { .. }
+            | MetaValue::Bool { .. }
+            | MetaValue::String { .. }
+            | MetaValue::List(_)
+            | MetaValue::Tuple(_) => return None,
+        };
+        Some(res)
+    }
+
+    fn call(
+        &self,
+        ctx: &mut Context,
+        span: Span,
+        args: &[Rc<MetaValue>],
+    ) -> Result<Rc<MetaValue>> {
+        match self {
+            Callable::Fn(function) => {
+                if function.params.len() != args.len() {
+                    ctx.error(
+                        span,
+                        format!(
+                        "function `{}` expects {} parameter{}, called with {}",
+                        function.name,
+                        function.params.len(),
+                        if function.params.len() > 1 {"s"} else {""},
+                        args.len()
+                    ),
+                    );
+                    return Err(());
+                }
+                ctx.push_eval_scope();
+                for (i, arg) in args.iter().enumerate() {
+                    ctx.match_and_bind_pattern(
+                        &function.params[i],
+                        arg.clone(),
+                    )?;
+                }
+                let res = ctx.eval_stmt_list_to_meta_val(span, &function.body);
+                ctx.scopes.pop();
+                res
+            }
+            Callable::Lambda(lambda) => {
+                if lambda.params.len() != args.len() {
+                    ctx.error(
+                        span,
+                        format!(
+                            "lambda expects {} parameter{}, called with {}",
+                            lambda.params.len(),
+                            if lambda.params.len() > 1 { "s" } else { "" },
+                            args.len()
+                        ),
+                    );
+                    return Err(());
+                }
+                ctx.push_eval_scope();
+                for (i, arg) in args.iter().enumerate() {
+                    ctx.match_and_bind_pattern(
+                        &lambda.params[i],
+                        arg.clone(),
+                    )?;
+                }
+                let res = ctx.eval(&lambda.body);
+                ctx.scopes.pop();
+                res
+            }
+            Callable::BuiltinFn(builtin_fn) => {
+                if let Some(param_count) = builtin_fn.param_count {
+                    if param_count != args.len() {
+                        ctx.error(
+                        span,
+                        format!(
+                            "function `{}` expects {} parameter{}, called with {}",
+                            builtin_fn.name,
+                            param_count,
+                            if param_count > 1 {"s"} else {""},
+                            args.len()
+                        ),
+                    );
+                        return Err(());
+                    }
+                }
+                (builtin_fn.builtin)(ctx, span, args)
+            }
+        }
+    }
+}
+
+fn builtin_fn_zip(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    let mut source_lists: Vec<Iterable> = Vec::new();
+    for (i, arg) in args.iter().enumerate() {
+        let Some(iterable) = Iterable::from_value(arg) else {
+            ctx.error(
+                callsite,
+                format!(
+                    "`zip()` arguments must be iterable, `{}` is not (argument {})",
+                    arg.kind(),
+                    i + 1
+                ),
+            );
+            return Err(());
+        };
+        source_lists.push(iterable);
+    }
+
+    let first_len = source_lists.first().map(|l| l.len()).unwrap_or_default();
+    for (i, sl) in source_lists.iter().enumerate().skip(1) {
+        let len = sl.len();
+        if len != first_len {
+            ctx.error(
+                    callsite,
+                    format!(
+                        "`zip()` argument {} has length {}, the previous arguments have length {}",
+                       first_len,
+                       i + 1,
+                       len
+                    ),
+                );
+            return Err(());
+        }
+    }
+    let mut res = Vec::new();
+    for i in 0..first_len {
+        let mut tup = Vec::new();
+        for src in &source_lists {
+            tup.push(src.index(i));
+        }
+        res.push(Rc::new(MetaValue::Tuple(tup)));
+    }
+
+    Ok(Rc::new(MetaValue::List(RefCell::new(res))))
+}
+
+fn builtin_fn_len(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    let v = match &*args[0] {
+        MetaValue::Tokens(token_trees) => token_trees.len(),
+        MetaValue::List(list) => list.borrow().len(),
+        MetaValue::Tuple(tup) => tup.len(),
+        MetaValue::String { value: s, span: _ } => s.len(),
+        MetaValue::Bool { .. }
+        | MetaValue::Token(_)
+        | MetaValue::Int { .. }
+        | MetaValue::Float { .. }
+        | MetaValue::Fn(_)
+        | MetaValue::Lambda(_)
+        | MetaValue::BuiltinFn(_) => {
+            ctx.error(
+                callsite,
+                format!("value of type `{}` has no len()", args[0].kind()),
+            );
+            return Err(());
+        }
+    };
+    Ok(Rc::new(MetaValue::Int {
+        value: v as i64,
+        span: None,
+    }))
+}
+
+fn builtin_fn_map(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    let Some(iterable) = Iterable::from_value(&args[0]) else {
+        ctx.error(
+            callsite,
+            format!(
+                "first argument to `map()` must be iterable, `{}` is not",
+                args[0].kind()
+            ),
+        );
+        return Err(());
+    };
+
+    let Some(callable) = Callable::from_value(&args[1]) else {
+        ctx.error(
+            callsite,
+            format!(
+                "second argument to `map()` must be callable, `{}` is not",
+                args[0].kind()
+            ),
+        );
+        return Err(());
+    };
+
+    let mut res = Vec::new();
+
+    for elem in &iterable {
+        res.push(callable.call(ctx, callsite, &[elem.clone()])?);
+    }
+
+    Ok(Rc::new(MetaValue::List(RefCell::new(res))))
+}
+
 impl Context {
     pub fn insert_builtins(&mut self) {
         self.insert_builtin_str_fn("lowercase", |s| s.to_lowercase());
         self.insert_builtin_str_fn("uppercase", |s| s.to_uppercase());
+        // TODO: camel_case, pascal_case, ...
         self.insert_builtin_str_fn("capitalize", |s| {
             if let Some(first) = s.chars().next() {
                 format!("{}{}", first.to_uppercase(), &s[first.len_utf8()..])
@@ -47,128 +332,9 @@ impl Context {
                 })
                 .collect::<Vec<_>>()
         });
-        self.insert_builtin_fn("len", Some(1), |ctx, callsite, args| {
-            let v = match &*args[0] {
-                MetaValue::Token(_) => 1,
-                MetaValue::Tokens(token_trees) => token_trees.len(),
-                MetaValue::List(list) => list.borrow().len(),
-                MetaValue::Tuple(tup) => tup.len(),
-                MetaValue::String { value: s, span: _ } => s.len(),
-                MetaValue::Bool { .. }
-                | MetaValue::Int { .. }
-                | MetaValue::Float { .. }
-                | MetaValue::Fn(_)
-                | MetaValue::Lambda(_)
-                | MetaValue::BuiltinFn(_) => {
-                    ctx.error(
-                        callsite,
-                        format!(
-                            "value of type `{}` has no len()",
-                            args[0].kind()
-                        ),
-                    );
-                    return Err(());
-                }
-            };
-            Ok(Rc::new(MetaValue::Int {
-                value: v as i64,
-                span: None,
-            }))
-        });
-        self.insert_builtin_fn("zip", None, |ctx, callsite, args| {
-            enum ListCow<'a> {
-                Borrowed(&'a [Rc<MetaValue>]),
-                BorrowedRef(Ref<'a, Vec<Rc<MetaValue>>>),
-                Owned(Vec<Rc<MetaValue>>),
-            }
-            impl ListCow<'_> {
-                fn len(&self)  -> usize{
-                    match self {
-                        ListCow::Borrowed(l) => l.len(),
-                        ListCow::BorrowedRef(l) => l.len(),
-                        ListCow::Owned(l) => l.len(),
-                    }
-                }
-                fn index(&self, i: usize) -> Rc<MetaValue> {
-                    match self {
-                        ListCow::Borrowed(l) => l[i].clone(),
-                        ListCow::BorrowedRef(l) => l[i].clone(),
-                        ListCow::Owned(l) => l[i].clone(),
-                    }
-                }
-            }
-            let mut source_lists: Vec<ListCow> = Vec::new();
-            for (i, arg) in args.iter().enumerate() {
-                match &**arg {
-                    MetaValue::Tokens(token_trees) => {
-                        let mut src_list = Vec::new();
-                        for t in token_trees {
-                            src_list.push(Rc::new(MetaValue::Token(t.clone())));
-                        }
-                        source_lists.push(ListCow::Owned(src_list));
-                    }
-                    MetaValue::String { value, span: _ } => {
-                        let mut src_list = Vec::new();
-                        for c in value.chars() {
-                            src_list.push(Rc::new(MetaValue::Token(
-                                TokenTree::Literal(Literal::character(c)))
-                            ));
-                        }
-                        source_lists.push(ListCow::Owned(src_list));
-                    }
-                    MetaValue::List(list) => {
-                        source_lists.push(ListCow::BorrowedRef(list.borrow()));
-                    }
-                    MetaValue::Tuple(meta_values) => {
-                        source_lists.push(ListCow::Borrowed(meta_values));
-                    }
-                    MetaValue::Token(_)
-                    | MetaValue::Int { .. }
-                    | MetaValue::Float { .. }
-                    | MetaValue::Bool { .. }
-                    | MetaValue::Fn(_)
-                    | MetaValue::Lambda(_)
-                    | MetaValue::BuiltinFn(_) => {
-                        ctx.error(
-                            callsite,
-                            format!(
-                                "`zip()` arguments must be iterable, `{}` is not (argument {})",
-                               arg.kind(),
-                               i + 1
-                            ),
-                        );
-                        return Err(());
-                    }
-                }
-            }
-            let first_len = source_lists.first().map(|l|l.len()).unwrap_or_default();
-            for (i, sl) in source_lists.iter().enumerate().skip(1) {
-                let len = sl.len() ;
-                if len != first_len {
-                    ctx.error(
-                        callsite,
-                        format!(
-                            "`zip()` argument {} has length {}, the previous arguments have length {}",
-                           first_len,
-                           i + 1,
-                           len
-                        ),
-                    );
-                    return Err(());
-                }
-            }
-            let mut res = Vec::new();
-            for i in 0..first_len {
-                let mut tup = Vec::new();
-                for src in &source_lists {
-                    tup.push(src.index(i));
-                }
-                res.push(Rc::new(MetaValue::Tuple(tup)));
-            }
-
-            Ok(Rc::new(MetaValue::List(RefCell::new(res))))
-        });
-        // TODO: camel_case, pascal_case, ...
+        self.insert_builtin_fn("len", Some(1), builtin_fn_len);
+        self.insert_builtin_fn("zip", None, builtin_fn_zip);
+        self.insert_builtin_fn("map", None, builtin_fn_map);
     }
     fn match_and_bind_pattern(
         &mut self,
@@ -488,7 +654,7 @@ impl Context {
                 Ok(self.empty_token_list.clone())
             }
             MetaExpr::Call { span, lhs, args } => {
-                self.eval_fn_call(span, lhs, args)
+                self.eval_fn_call(*span, lhs, args)
             }
             MetaExpr::RawOutputGroup {
                 span,
@@ -1091,9 +1257,9 @@ impl Context {
 
     fn eval_fn_call(
         &mut self,
-        span: &Span,
+        span: Span,
         lhs: &MetaExpr,
-        args: &Vec<Rc<MetaExpr>>,
+        arg_exprs: &Vec<Rc<MetaExpr>>,
     ) -> std::result::Result<Rc<MetaValue>, ()> {
         let lhs = if let MetaExpr::Ident { span, name } = lhs {
             // We could just evaluate but we want a better error message
@@ -1107,96 +1273,24 @@ impl Context {
         } else {
             self.eval(lhs)?
         };
-        match &*lhs {
-            MetaValue::Fn(function) => {
-                if function.params.len() != args.len() {
-                    self.error(
-                        *span,
-                        format!(
-                            "function `{}` expects {} parameter{}, called with {}",
-                            function.name,
-                            function.params.len(),
-                            if function.params.len() > 1 {"s"} else {""},
-                            args.len()
-                        ),
-                    );
-                    return Err(());
-                }
-                self.push_eval_scope();
-                for (i, arg) in args.iter().enumerate() {
-                    let Ok(val) = self.eval(arg) else {
-                        self.scopes.pop();
-                        return Err(());
-                    };
-                    self.match_and_bind_pattern(&function.params[i], val)?;
-                }
-                let res =
-                    self.eval_stmt_list_to_meta_val(*span, &function.body);
-                self.scopes.pop();
-                res
-            }
-            MetaValue::Lambda(lambda) => {
-                if lambda.params.len() != args.len() {
-                    self.error(
-                        *span,
-                        format!(
-                            "lambda expects {} parameter{}, called with {}",
-                            lambda.params.len(),
-                            if lambda.params.len() > 1 { "s" } else { "" },
-                            args.len()
-                        ),
-                    );
-                    return Err(());
-                }
-                self.push_eval_scope();
-                for (i, arg) in args.iter().enumerate() {
-                    let Ok(val) = self.eval(arg) else {
-                        self.scopes.pop();
-                        return Err(());
-                    };
-                    self.match_and_bind_pattern(&lambda.params[i], val)?;
-                }
-                let res = self.eval(&lambda.body);
-                self.scopes.pop();
-                res
-            }
-            MetaValue::BuiltinFn(builtin_fn) => {
-                if let Some(param_count) = builtin_fn.param_count {
-                    if param_count != args.len() {
-                        self.error(
-                            *span,
-                            format!(
-                                "function `{}` expects {} parameter{}, called with {}",
-                                builtin_fn.name,
-                                param_count,
-                                if param_count > 1 {"s"} else {""},
-                                args.len()
-                            ),
-                        );
-                        return Err(());
-                    }
-                }
 
-                let mut param_bindings = Vec::new();
-                for arg in args {
-                    let Ok(val) = self.eval(arg) else {
-                        return Err(());
-                    };
-                    param_bindings.push(val);
-                }
-                (builtin_fn.builtin)(self, *span, &param_bindings)
-            }
-            other => {
-                self.error(
-                    *span,
-                    format!(
-                        "value of type `{}` is not callable",
-                        other.kind()
-                    ),
-                );
-                Err(())
-            }
+        let Some(callable) = Callable::from_value(&lhs) else {
+            self.error(
+                span,
+                format!("value of type `{}` is not callable", lhs.kind()),
+            );
+            return Err(());
+        };
+
+        let mut args = Vec::new();
+        for arg in arg_exprs {
+            let Ok(val) = self.eval(arg) else {
+                return Err(());
+            };
+            args.push(val);
         }
+
+        callable.call(self, span, &args)
     }
 
     fn insert_binding(

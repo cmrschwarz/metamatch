@@ -110,3 +110,18 @@ fn lambda_expressions() {
     };
     assert_eq!(result, 6);
 }
+
+#[test]
+fn map() {
+    let (a, b, c) = (1, 2, 3);
+
+    let result = unquote! {
+        [A, B, C].map(lowercase)
+    };
+    assert_eq!(result, [1, 2, 3]);
+
+    let result = unquote! {
+        (A, B, C).map(lowercase)
+    };
+    assert_eq!(result, [1, 2, 3]);
+}
