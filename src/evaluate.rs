@@ -63,7 +63,7 @@ impl Context {
                     ctx.error(
                         callsite,
                         format!(
-                            "value of type {} has no len()",
+                            "value of type `{}` has no len()",
                             args[0].kind()
                         ),
                     );
@@ -1095,7 +1095,19 @@ impl Context {
         lhs: &MetaExpr,
         args: &Vec<Rc<MetaExpr>>,
     ) -> std::result::Result<Rc<MetaValue>, ()> {
-        match &*self.eval(lhs)? {
+        let lhs = if let MetaExpr::Ident { span, name } = lhs {
+            // We could just evaluate but we want a better error message
+            // than "`token` is not callable".
+            if let Some(val) = self.lookup(name, false) {
+                val
+            } else {
+                self.error(*span, format!("undefined function `{name}`"));
+                return Err(());
+            }
+        } else {
+            self.eval(lhs)?
+        };
+        match &*lhs {
             MetaValue::Fn(function) => {
                 if function.params.len() != args.len() {
                     self.error(
@@ -1177,7 +1189,10 @@ impl Context {
             other => {
                 self.error(
                     *span,
-                    format!("value of type {} is not callable", other.kind()),
+                    format!(
+                        "value of type `{}` is not callable",
+                        other.kind()
+                    ),
                 );
                 Err(())
             }
