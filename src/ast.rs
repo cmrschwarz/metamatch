@@ -156,7 +156,6 @@ pub enum MetaExpr {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnaryOpKind {
-    Plus,
     Minus,
     Not,
 }
@@ -289,9 +288,15 @@ impl Display for Kind {
 impl UnaryOpKind {
     fn to_str(self) -> &'static str {
         match self {
-            UnaryOpKind::Plus => "unary plus",
             UnaryOpKind::Minus => "unary minus",
             UnaryOpKind::Not => "unary not",
+        }
+    }
+
+    pub fn precedence(self) -> u8 {
+        match self {
+            UnaryOpKind::Minus => 15,
+            UnaryOpKind::Not => 15,
         }
     }
 }

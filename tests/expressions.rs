@@ -21,3 +21,11 @@ fn parentheses_vs_tuple() {
     assert_eq!(unquote!((1 + 2,)), (3,));
     assert_eq!(unquote!((1 + 2, 5)), (3, 5));
 }
+
+#[test]
+fn unary_ops() {
+    assert_eq!(unquote!(!1), !1);
+    assert_eq!(unquote!(1 + -2), -1);
+    assert_eq!(unquote!(-(1 + 2)), -3);
+    assert_eq!(unquote!(1 + 2 - -5), 8);
+}

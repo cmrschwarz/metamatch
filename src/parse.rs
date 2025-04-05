@@ -5,7 +5,7 @@ use super::{
     ast::{
         BinaryOpKind, Binding, BindingParameter, Context, ExpandPattern,
         Function, MetaError, MetaExpr, MetaValue, Pattern, Scope, ScopeKind,
-        TrailingBlockKind,
+        TrailingBlockKind, UnaryOpKind,
     },
     macro_impls::IntoIterIntoVec,
 };
@@ -176,6 +176,17 @@ fn peek_binary_operator(
     None
 }
 
+fn as_unary_operator(p: &proc_macro::Punct) -> Option<UnaryOpKind> {
+    if p.spacing() != Spacing::Alone {
+        return None;
+    }
+    match p.as_char() {
+        '-' => Some(UnaryOpKind::Minus),
+        '!' => Some(UnaryOpKind::Not),
+        _ => None,
+    }
+}
+
 fn has_template_angle_backets(tokens: &[TokenTree]) -> bool {
     let Some(TokenTree::Punct(p)) = tokens.first() else {
         return false;
@@ -300,8 +311,12 @@ impl Context {
         min_prec: u8,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
-        let (mut lhs, mut rest, mut trailing) =
-            self.parse_expr_value(parent_span, tokens, allow_trailing_block)?;
+        let (mut lhs, mut rest, mut trailing) = self.parse_expr_value(
+            parent_span,
+            tokens,
+            min_prec,
+            allow_trailing_block,
+        )?;
 
         loop {
             if rest.is_empty() || trailing.is_some() {
@@ -431,6 +446,7 @@ impl Context {
         &mut self,
         parent_span: Span,
         tokens: &'a [TokenTree],
+        min_prec: u8,
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
@@ -617,9 +633,32 @@ impl Context {
                 None,
             )),
 
-            token => {
-                self.error(token.span(), "unexpected token");
-                Err(())
+            TokenTree::Punct(p) => {
+                if let Some(op_kind) = as_unary_operator(p) {
+                    let (operand, rest, _tb) = self.parse_expr_with_prec(
+                        p.span(),
+                        &tokens[1..],
+                        false,
+                        op_kind.precedence(),
+                    )?;
+                    return Ok((
+                        Rc::new(MetaExpr::OpUnary {
+                            kind: op_kind,
+                            operand,
+                            span: p.span(),
+                        }),
+                        rest,
+                        None,
+                    ));
+                }
+                Ok((
+                    Rc::new(MetaExpr::Literal {
+                        span: p.span(),
+                        value: Rc::new(MetaValue::Token(tokens[0].clone())),
+                    }),
+                    &tokens[1..],
+                    None,
+                ))
             }
         }
     }

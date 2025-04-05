@@ -580,27 +580,6 @@ impl Context {
     ) -> Result<Rc<MetaValue>> {
         let operand = self.eval(&operand)?;
         match kind {
-            UnaryOpKind::Plus => match &*operand {
-                MetaValue::Int { .. } => Ok(operand.clone()),
-                MetaValue::Float { .. } => Ok(operand.clone()),
-                MetaValue::Token(..)
-                | MetaValue::Tokens(..)
-                | MetaValue::Bool { .. }
-                | MetaValue::String { .. }
-                | MetaValue::Fn(..)
-                | MetaValue::BuiltinFn(..)
-                | MetaValue::List(..)
-                | MetaValue::Tuple(..) => {
-                    self.error(
-                        *span,
-                        format!(
-                            "unary plus is not applicable to `{}`",
-                            operand.kind(),
-                        ),
-                    );
-                    Err(())
-                }
-            },
             UnaryOpKind::Minus => match &*operand {
                 MetaValue::Int { value, span: _ } => {
                     Ok(Rc::new(MetaValue::Int {
