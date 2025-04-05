@@ -3,8 +3,8 @@ use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 use super::{
     ast::{
-        Binding, BindingParameter, Context, ExpandPattern, Function,
-        MetaError, MetaExpr, MetaValue, Pattern, Scope, ScopeKind,
+        BinaryOpKind, Binding, BindingParameter, Context, ExpandPattern,
+        Function, MetaError, MetaExpr, MetaValue, Pattern, Scope, ScopeKind,
         TrailingBlockKind,
     },
     macro_impls::IntoIterIntoVec,
@@ -27,12 +27,6 @@ pub enum RawBodyParseResult {
 pub enum ExpandKind {
     ExpandFull,
     ExpandPattern,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RangeToken {
-    Exclusive,
-    Inclusive,
 }
 
 struct MatchArmEnds {
@@ -125,7 +119,7 @@ fn find_match_arm_bounds(tokens: &[TokenTree]) -> Option<MatchArmEnds> {
 
 fn try_parse_range_token(
     tokens: &[TokenTree],
-) -> Option<(RangeToken, Span, &[TokenTree])> {
+) -> Option<(BinaryOpKind, Span, &[TokenTree])> {
     if let Some(TokenTree::Punct(first)) = tokens.first() {
         if first.as_char() != '.' || first.spacing() != Spacing::Joint {
             return None;
@@ -138,15 +132,47 @@ fn try_parse_range_token(
                 if third.as_char() == '=' && second.spacing() == Spacing::Joint
                 {
                     return Some((
-                        RangeToken::Inclusive,
+                        BinaryOpKind::RangeInclusive,
                         first.span(),
                         &tokens[3..],
                     ));
                 }
             }
-            return Some((RangeToken::Exclusive, first.span(), &tokens[2..]));
+            return Some((
+                BinaryOpKind::RangeExclusive,
+                first.span(),
+                &tokens[2..],
+            ));
         }
     }
+    None
+}
+
+fn peek_binary_operator(
+    tokens: &[TokenTree],
+) -> Option<(BinaryOpKind, Span, &[TokenTree])> {
+    if let Some(TokenTree::Punct(p)) = tokens.first() {
+        let alone = p.spacing() == Spacing::Alone;
+        let rest = &tokens[1..];
+        let span = p.span();
+        let kind = match p.as_char() {
+            '+' if alone => Some(BinaryOpKind::Add),
+            '-' if alone => Some(BinaryOpKind::Sub),
+            '*' if alone => Some(BinaryOpKind::Mul),
+            '/' if alone => Some(BinaryOpKind::Div),
+            '%' if alone => Some(BinaryOpKind::Rem),
+            '=' if alone => Some(BinaryOpKind::Assign),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            return Some((kind, span, rest));
+        }
+    }
+
+    if let Some(res) = try_parse_range_token(tokens) {
+        return Some(res);
+    }
+
     None
 }
 
@@ -192,6 +218,12 @@ fn parse_literal(token: &TokenTree) -> Rc<MetaValue> {
         }
         if let Ok(n) = s.parse::<i64>() {
             return Rc::new(MetaValue::Int {
+                value: n,
+                span: Some(token.span()),
+            });
+        }
+        if let Ok(n) = s.parse::<f64>() {
+            return Rc::new(MetaValue::Float {
                 value: n,
                 span: Some(token.span()),
             });
@@ -264,23 +296,22 @@ impl Context {
             return Ok((expr, rest, trailing_block));
         }
 
-        if let Some((rt, rt_span, rest)) = try_parse_range_token(rest) {
+        if let Some((op_kind, op_span, rest)) = peek_binary_operator(rest) {
             let (rhs, rest) =
                 self.parse_expr_deny_trailing(parent_span, rest)?;
 
-            // TODO: support partial ranges
+            // TODO: precedence
             return Ok((
-                Rc::new(MetaExpr::Range {
-                    span: rt_span,
-                    inclusive: rt == RangeToken::Inclusive,
-                    lhs: Some(expr),
-                    rhs: Some(rhs),
+                Rc::new(MetaExpr::OpBinary {
+                    span: op_span,
+                    kind: op_kind,
+                    lhs: expr,
+                    rhs,
                 }),
                 rest,
                 None,
             ));
         }
-
         Ok((expr, rest, trailing_block))
     }
     fn parse_template_tag_in_expr<'a>(
@@ -1355,7 +1386,7 @@ impl Context {
 
         while !rest.is_empty() {
             let Ok((expr, new_rest, trailing_block)) =
-                self.parse_expr_value(parent_span, rest, allow_trailing_block)
+                self.parse_expr(parent_span, rest, allow_trailing_block)
             else {
                 break;
             };

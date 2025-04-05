@@ -1,5 +1,9 @@
 use proc_macro::{Delimiter, Span, TokenTree};
-use std::{collections::HashMap, fmt::Debug, rc::Rc};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+    rc::Rc,
+};
 
 pub struct MetaError {
     pub span: Span,
@@ -41,6 +45,10 @@ pub enum MetaValue {
         // with an integer. In order to mimic the token semantics more closely
         // and prevent users from having to use `raw!` everwhere this
         // seems like a worthwile tradeoff.
+        span: Option<Span>,
+    },
+    Float {
+        value: f64,
         span: Option<Span>,
     },
     Bool {
@@ -134,12 +142,35 @@ pub enum MetaExpr {
         span: Span,
         exprs: Vec<Rc<MetaExpr>>,
     },
-    Range {
+    OpUnary {
+        kind: UnaryOpKind,
         span: Span,
-        inclusive: bool,
-        lhs: Option<Rc<MetaExpr>>,
-        rhs: Option<Rc<MetaExpr>>,
+        operand: Rc<MetaExpr>,
     },
+    OpBinary {
+        kind: BinaryOpKind,
+        span: Span,
+        lhs: Rc<MetaExpr>,
+        rhs: Rc<MetaExpr>,
+    },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaryOpKind {
+    Plus,
+    Minus,
+    Not,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinaryOpKind {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Equals,
+    RangeExclusive,
+    RangeInclusive,
+    Assign,
 }
 
 #[derive(Debug)]
@@ -200,17 +231,96 @@ impl Debug for BuiltinFn {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Int,
+    Float,
+    Bool,
+    String,
+
+    Token,
+    Tokens,
+
+    Fn,
+
+    List,
+    Tuple,
+}
+
 impl MetaValue {
-    pub fn type_id(&self) -> &'static str {
+    pub fn kind(&self) -> Kind {
         match self {
-            MetaValue::Token(_) => "token",
-            MetaValue::Tokens(_) => "tokens",
-            MetaValue::Int { .. } => "int",
-            MetaValue::String { .. } => "string",
-            MetaValue::Bool { .. } => "bool",
-            MetaValue::Fn(_) | MetaValue::BuiltinFn(_) => "fn",
-            MetaValue::List(_) => "list",
-            MetaValue::Tuple(_) => "tuple",
+            MetaValue::Token(_) => Kind::Token,
+            MetaValue::Tokens(_) => Kind::Tokens,
+            MetaValue::Int { .. } => Kind::Int,
+            MetaValue::Float { .. } => Kind::Float,
+            MetaValue::String { .. } => Kind::String,
+            MetaValue::Bool { .. } => Kind::Bool,
+            MetaValue::Fn(_) => Kind::Fn,
+            MetaValue::BuiltinFn(_) => Kind::Fn,
+            MetaValue::List(_) => Kind::List,
+            MetaValue::Tuple(_) => Kind::Tuple,
+        }
+    }
+}
+
+impl Kind {
+    fn to_str(self) -> &'static str {
+        match self {
+            Kind::Int => "int",
+            Kind::Float => "float",
+            Kind::Bool => "bool",
+            Kind::String => "string",
+            Kind::Token => "token",
+            Kind::Tokens => "tokens",
+            Kind::Fn => "fn",
+            Kind::List => "list",
+            Kind::Tuple => "tuple",
+        }
+    }
+}
+
+impl Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.to_str())
+    }
+}
+
+impl UnaryOpKind {
+    fn to_str(self) -> &'static str {
+        match self {
+            UnaryOpKind::Plus => "unary plus",
+            UnaryOpKind::Minus => "unary minus",
+            UnaryOpKind::Not => "unary not",
+        }
+    }
+}
+
+impl BinaryOpKind {
+    pub fn to_str(self) -> &'static str {
+        match self {
+            BinaryOpKind::Add => "plus",
+            BinaryOpKind::Sub => "minus",
+            BinaryOpKind::Mul => "multiply",
+            BinaryOpKind::Div => "divide",
+            BinaryOpKind::Rem => "remainder",
+            BinaryOpKind::Equals => "equals",
+            BinaryOpKind::RangeExclusive => "exclusive range",
+            BinaryOpKind::RangeInclusive => "inclusive range",
+            BinaryOpKind::Assign => "assign",
+        }
+    }
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinaryOpKind::Add => "+",
+            BinaryOpKind::Sub => "-",
+            BinaryOpKind::Mul => "*",
+            BinaryOpKind::Div => "/",
+            BinaryOpKind::Rem => "%",
+            BinaryOpKind::Equals => "==",
+            BinaryOpKind::RangeExclusive => "..",
+            BinaryOpKind::RangeInclusive => "..=",
+            BinaryOpKind::Assign => "=",
         }
     }
 }
@@ -230,7 +340,8 @@ impl MetaExpr {
             MetaExpr::Scope { span, .. } => span,
             MetaExpr::List { span, .. } => span,
             MetaExpr::Tuple { span, .. } => span,
-            MetaExpr::Range { span, .. } => span,
+            MetaExpr::OpUnary { span, .. } => span,
+            MetaExpr::OpBinary { span, .. } => span,
         }
     }
 }

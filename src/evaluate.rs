@@ -6,8 +6,8 @@ use proc_macro::{
 };
 
 use super::ast::{
-    Binding, BuiltinFn, Context, MetaExpr, MetaValue, Pattern, Scope,
-    ScopeKind,
+    BinaryOpKind, Binding, BuiltinFn, Context, MetaExpr, MetaValue, Pattern,
+    Scope, ScopeKind, UnaryOpKind,
 };
 
 type Result<T> = std::result::Result<T, ()>;
@@ -52,13 +52,14 @@ impl Context {
                 MetaValue::String { value: s, span: _ } => s.len(),
                 MetaValue::Bool { .. }
                 | MetaValue::Int { .. }
+                | MetaValue::Float { .. }
                 | MetaValue::Fn(_)
                 | MetaValue::BuiltinFn(_) => {
                     ctx.error(
                         callsite,
                         format!(
                             "value of type {} has no len()",
-                            args[0].type_id()
+                            args[0].kind()
                         ),
                     );
                     return Err(());
@@ -94,10 +95,7 @@ impl Context {
                     // TODO: more context
                     self.error(
                         *span,
-                        format!(
-                            "tuple pattern does not match {}",
-                            val.type_id()
-                        ),
+                        format!("tuple pattern does not match {}", val.kind()),
                     );
                     return Err(());
                 };
@@ -128,10 +126,7 @@ impl Context {
                     // TODO: more context
                     self.error(
                         *span,
-                        format!(
-                            "list pattern does not match {}",
-                            val.type_id()
-                        ),
+                        format!("list pattern does not match {}", val.kind()),
                     );
                     return Err(());
                 };
@@ -200,7 +195,7 @@ impl Context {
                         span,
                         format!(
                             "builtin function `{name}` expects a string, got a {}",
-                            args[0].type_id()
+                            args[0].kind()
                         ),
                     );
                     Err(())
@@ -223,7 +218,7 @@ impl Context {
                     span,
                     format!(
                         "builtin function `{name}` expects a list, got a {}",
-                        args[0].type_id()
+                        args[0].kind()
                     ),
                 );
                 return Err(());
@@ -247,6 +242,11 @@ impl Context {
             }
             MetaValue::Int { value, span } => {
                 let mut lit = Literal::i64_unsuffixed(*value);
+                lit.set_span(span.unwrap_or(eval_span));
+                tgt.push(TokenTree::Literal(lit));
+            }
+            MetaValue::Float { value, span } => {
+                let mut lit = Literal::f64_unsuffixed(*value);
                 lit.set_span(span.unwrap_or(eval_span));
                 tgt.push(TokenTree::Literal(lit));
             }
@@ -358,6 +358,23 @@ impl Context {
             bindings: HashMap::new(),
         });
     }
+
+    fn assert_val_is_int(
+        &mut self,
+        kind: &'static str,
+        expr: &MetaExpr,
+        val: &MetaValue,
+    ) -> Result<i64> {
+        let MetaValue::Int { value, .. } = val else {
+            self.error(
+                expr.span(),
+                format!("{kind} must be `int`, not `{}`", val.kind()),
+            );
+            return Err(());
+        };
+        Ok(*value)
+    }
+
     fn eval(&mut self, expr: &MetaExpr) -> Result<Rc<MetaValue>> {
         match expr {
             MetaExpr::Literal { span: _, value } => Ok(value.clone()),
@@ -403,10 +420,7 @@ impl Context {
                 let MetaValue::List(list_elems) = &*input_list else {
                     self.error(
                         variants_expr.span(),
-                        format!(
-                            "cannot iterate over {}",
-                            input_list.type_id()
-                        ),
+                        format!("cannot iterate over {}", input_list.kind()),
                     );
                     return Err(());
                 };
@@ -480,7 +494,7 @@ impl Context {
                         condition.span(),
                         format!(
                             "if expression must result in `bool`, not `{}`",
-                            condition_val.type_id()
+                            condition_val.kind()
                         ),
                     );
                     return Err(());
@@ -493,64 +507,23 @@ impl Context {
                     Ok(self.empty_token_list.clone())
                 }
             }
-            MetaExpr::Range {
-                span: _,
-                inclusive,
+            MetaExpr::OpUnary {
+                kind,
+                span,
+                operand,
+            } => self.eval_op_unary(kind, span, operand),
+            MetaExpr::OpBinary {
+                kind,
+                span,
                 lhs,
                 rhs,
-            } => {
-                fn eval_expr(ctx: &mut Context, x: &MetaExpr) -> Result<i64> {
-                    let mv = ctx.eval(x)?;
-                    let MetaValue::Int { value, .. } = &*mv else {
-                        ctx.error(
-                            x.span(),
-                            format!(
-                                "range expression bound must be `int`, not `{}`",
-                                mv.type_id()
-                            ),
-                        );
-                        return Err(());
-                    };
-                    Ok(*value)
-                }
-
-                // TODO: for now these are simply eager similar to python2
-                // we eventually want to change that probably, and create
-                // a python3 debacle only saved by the fact that we dont have
-                // users
-                let mut res = Vec::new();
-                let lhs_v = if let Some(lhs) = lhs {
-                    eval_expr(self, lhs)?
-                } else {
-                    0
-                };
-                let rhs_v = if let Some(rhs) = rhs {
-                    let rhs_v = eval_expr(self, rhs)?;
-                    if *inclusive {
-                        rhs_v + 1
-                    } else {
-                        rhs_v
-                    }
-                } else {
-                    todo!()
-                };
-                for i in lhs_v..rhs_v {
-                    res.push(Rc::new(MetaValue::Int {
-                        value: i,
-                        span: None,
-                    }));
-                }
-                Ok(Rc::new(MetaValue::List(res)))
-            }
+            } => self.eval_op_binary(*kind, *span, &lhs, &rhs),
             MetaExpr::ExpandPattern(ep) => {
                 let input_list = self.eval(&ep.for_expr)?;
                 let MetaValue::List(list_elems) = &*input_list else {
                     self.error(
                         ep.for_expr.span(),
-                        format!(
-                            "cannot iterate over {}",
-                            input_list.type_id()
-                        ),
+                        format!("cannot iterate over {}", input_list.kind()),
                     );
                     return Err(());
                 };
@@ -596,6 +569,215 @@ impl Context {
                 )?;
                 Ok(Rc::new(MetaValue::Tokens(res)))
             }
+        }
+    }
+
+    fn eval_op_unary(
+        &mut self,
+        kind: &UnaryOpKind,
+        span: &Span,
+        operand: &Rc<MetaExpr>,
+    ) -> Result<Rc<MetaValue>> {
+        let operand = self.eval(&operand)?;
+        match kind {
+            UnaryOpKind::Plus => match &*operand {
+                MetaValue::Int { .. } => Ok(operand.clone()),
+                MetaValue::Float { .. } => Ok(operand.clone()),
+                MetaValue::Token(..)
+                | MetaValue::Tokens(..)
+                | MetaValue::Bool { .. }
+                | MetaValue::String { .. }
+                | MetaValue::Fn(..)
+                | MetaValue::BuiltinFn(..)
+                | MetaValue::List(..)
+                | MetaValue::Tuple(..) => {
+                    self.error(
+                        *span,
+                        format!(
+                            "unary plus is not applicable to `{}`",
+                            operand.kind(),
+                        ),
+                    );
+                    Err(())
+                }
+            },
+            UnaryOpKind::Minus => match &*operand {
+                MetaValue::Int { value, span: _ } => {
+                    Ok(Rc::new(MetaValue::Int {
+                        value: -*value,
+                        span: None,
+                    }))
+                }
+                MetaValue::Float { value, span: _ } => {
+                    Ok(Rc::new(MetaValue::Float {
+                        value: -value,
+                        span: None,
+                    }))
+                }
+                MetaValue::Token(..)
+                | MetaValue::Tokens(..)
+                | MetaValue::Bool { .. }
+                | MetaValue::String { .. }
+                | MetaValue::Fn(..)
+                | MetaValue::BuiltinFn(..)
+                | MetaValue::List(..)
+                | MetaValue::Tuple(..) => {
+                    self.error(
+                        *span,
+                        format!(
+                            "unary minus is not applicable to `{}`",
+                            operand.kind(),
+                        ),
+                    );
+                    Err(())
+                }
+            },
+            UnaryOpKind::Not => match &*operand {
+                MetaValue::Int { value, span: _ } => {
+                    Ok(Rc::new(MetaValue::Int {
+                        value: !value,
+                        span: None,
+                    }))
+                }
+                MetaValue::Bool { value, span: _ } => {
+                    Ok(Rc::new(MetaValue::Bool {
+                        value: !value,
+                        span: None,
+                    }))
+                }
+                MetaValue::Token(..)
+                | MetaValue::Tokens(..)
+                | MetaValue::Float { .. }
+                | MetaValue::String { .. }
+                | MetaValue::Fn(..)
+                | MetaValue::BuiltinFn(..)
+                | MetaValue::List(..)
+                | MetaValue::Tuple(..) => {
+                    self.error(
+                        *span,
+                        format!(
+                            "unary not is not applicable to `{}`",
+                            operand.kind(),
+                        ),
+                    );
+                    Err(())
+                }
+            },
+        }
+    }
+
+    fn eval_op_binary(
+        &mut self,
+        op_kind: BinaryOpKind,
+        span: Span,
+        lhs: &MetaExpr,
+        rhs: &MetaExpr,
+    ) -> Result<Rc<MetaValue>> {
+        let lhs_val = self.eval(lhs)?;
+        let rhs_val = self.eval(rhs)?;
+
+        let lhs_kind = lhs_val.kind();
+        let rhs_kind = rhs_val.kind();
+
+        match op_kind {
+            BinaryOpKind::Add
+            | BinaryOpKind::Sub
+            | BinaryOpKind::Mul
+            | BinaryOpKind::Div
+            | BinaryOpKind::Rem => {
+                if lhs_kind != rhs_kind {
+                    self.error(
+                        span,
+                        format!(
+                            "operands for `{}` differ in type: `{}` {} `{}`",
+                            op_kind.to_str(),
+                            lhs_kind,
+                            op_kind.symbol(),
+                            rhs_kind
+                        ),
+                    );
+                    return Err(());
+                }
+                let res = match (&*lhs_val, &*rhs_val) {
+                    (
+                        MetaValue::Int { value: lhs, .. },
+                        MetaValue::Int { value: rhs, .. },
+                    ) => {
+                        let res = match op_kind {
+                            BinaryOpKind::Add => lhs + rhs,
+                            BinaryOpKind::Sub => lhs - rhs,
+                            BinaryOpKind::Mul => lhs * rhs,
+                            BinaryOpKind::Div => lhs / rhs,
+                            BinaryOpKind::Rem => lhs % rhs,
+                            _ => unreachable!(),
+                        };
+                        MetaValue::Int {
+                            value: res,
+                            span: None,
+                        }
+                    }
+                    (
+                        MetaValue::Float { value: lhs, .. },
+                        MetaValue::Float { value: rhs, .. },
+                    ) => {
+                        let res = match op_kind {
+                            BinaryOpKind::Add => lhs + rhs,
+                            BinaryOpKind::Sub => lhs - rhs,
+                            BinaryOpKind::Mul => lhs * rhs,
+                            BinaryOpKind::Div => lhs / rhs,
+                            BinaryOpKind::Rem => lhs % rhs,
+                            _ => unreachable!(),
+                        };
+                        MetaValue::Float {
+                            value: res,
+                            span: None,
+                        }
+                    }
+                    _ => {
+                        self.error(
+                            span,
+                            format!(
+                                "invalid operand types for `{}`: `{}` {} `{}`",
+                                op_kind.to_str(),
+                                lhs_kind,
+                                op_kind.symbol(),
+                                rhs_kind
+                            ),
+                        );
+                        return Err(());
+                    }
+                };
+                Ok(Rc::new(res))
+            }
+            BinaryOpKind::Equals => todo!(),
+            BinaryOpKind::RangeExclusive | BinaryOpKind::RangeInclusive => {
+                let lhs_i = self.assert_val_is_int(
+                    "range expression bound",
+                    lhs,
+                    &lhs_val,
+                )?;
+                let mut rhs_i = self.assert_val_is_int(
+                    "range expression bound",
+                    rhs,
+                    &rhs_val,
+                )?;
+
+                if op_kind == BinaryOpKind::RangeInclusive {
+                    rhs_i += 1;
+                }
+
+                // if its good enough for python 2 it's good enough for us?
+                // TODO: maybe not
+                let mut res = Vec::new();
+                for i in lhs_i..rhs_i {
+                    res.push(Rc::new(MetaValue::Int {
+                        value: i,
+                        span: None,
+                    }));
+                }
+                Ok(Rc::new(MetaValue::List(res)))
+            }
+            BinaryOpKind::Assign => todo!(),
         }
     }
 
@@ -665,10 +847,7 @@ impl Context {
             other => {
                 self.error(
                     *span,
-                    format!(
-                        "value of type {} is not callable",
-                        other.type_id()
-                    ),
+                    format!("value of type {} is not callable", other.kind()),
                 );
                 Err(())
             }
