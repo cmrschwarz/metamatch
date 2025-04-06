@@ -131,10 +131,10 @@ You can switch between quoted and unquoted mode from within any macro using
 the `[<quote>]` and `[<unquote>]` template tags.
 The `quote!(..)` used above is a covenience alias for `[<quote>]..[</quote>]`
 
-The syntax inside the `unquote!` is not full Rust, but a tiny subset
-thats evaluated by metamatch. It is dynamically typed and only supports a
-few constructs, so no traits etc. inside an `unquote`.
-(You can of course use whatever you want inside the quoted context).
+Inside `unquote!` you can only use a tiny subset of the full Rust syntax
+thats then evaluated by metamatch. It is dynamically typed and only supports a
+few constructs, so e.g. no structs inside an `unquote`.
+(You can of course use all of Rust inside the quoted context).
 
 All other macros also allow this syntax, despite `for` blocks
 being the main usecase in those.

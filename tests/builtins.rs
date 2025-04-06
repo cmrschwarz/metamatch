@@ -37,6 +37,11 @@ fn ident() {
 #[test]
 fn str() {
     let x: &str = unquote!(str('x'));
-
     assert_eq!(x, "x");
+
+    let y: &str = unquote!(str("y"));
+    assert_eq!(y, "y");
+
+    let z: &str = unquote!(str(z));
+    assert_eq!(z, "z");
 }
