@@ -231,7 +231,9 @@ fn parse_literal(token: &TokenTree) -> Rc<MetaValue> {
         }
         if s.starts_with('\'') {
             let mut chars = s.chars();
-            if let (Some(c), None) = (chars.next(), chars.next()) {
+            if let (Some('\''), Some(c), Some('\''), None) =
+                (chars.next(), chars.next(), chars.next(), chars.next())
+            {
                 return Rc::new(MetaValue::Char {
                     value: c,
                     span: Some(token.span()),

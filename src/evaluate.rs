@@ -411,6 +411,89 @@ fn builtin_fn_map(
     Ok(Rc::new(MetaValue::List(RefCell::new(res))))
 }
 
+fn value_to_str(v: &MetaValue) -> Option<Rc<str>> {
+    match v {
+        MetaValue::String { value, span: _ } => Some(value.clone()),
+        MetaValue::Char { value, span: _ } => {
+            let mut data = [0; 4];
+            Some(Rc::from(value.encode_utf8(&mut data)))
+        }
+        MetaValue::Token(t) => match t {
+            TokenTree::Ident(i) => Some(i.to_string().into()),
+            TokenTree::Literal(literal) => Some(literal.to_string().into()),
+            TokenTree::Group(_) => None, // TODO:?
+            TokenTree::Punct(punct) => {
+                Some(punct.as_char().encode_utf8(&mut [0; 4]).into())
+            }
+        },
+        MetaValue::List(..) => None,  // TODO: ?
+        MetaValue::Tuple(..) => None, // TODO: ?
+        MetaValue::Int { value, span: _ } => Some(Rc::from(value.to_string())),
+        MetaValue::Tokens(token_trees) => Some(Rc::from(
+            token_trees
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<String>(),
+        )),
+        MetaValue::Float { value, span: _ } => {
+            Some(Rc::from(value.to_string()))
+        }
+        MetaValue::Bool { value, span: _ } => {
+            Some(Rc::from(value.to_string()))
+        }
+
+        MetaValue::Fn(..)
+        | MetaValue::Lambda(..)
+        | MetaValue::BuiltinFn(..) => None,
+    }
+}
+
+fn builtin_fn_ident(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    let Some(name) = value_to_str(&args[0]) else {
+        ctx.error(
+            callsite,
+            format!("cannot cast `{}` to `ident`", args[0].kind()),
+        );
+        return Err(());
+    };
+    let span = args[0].span();
+    // HACK //TODO: better impl of this
+    let Ok(ident) = std::panic::catch_unwind(|| Ident::new(&name, span))
+    else {
+        ctx.error(
+            callsite,
+            format!(
+                "cannot cast literal to identifer: invalid identifier `{name}`",
+            ),
+        );
+        return Err(());
+    };
+    Ok(Rc::new(MetaValue::Token(TokenTree::Ident(ident))))
+}
+
+fn builtin_fn_str(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    let Some(s) = value_to_str(&args[0]) else {
+        ctx.error(
+            callsite,
+            format!("cannot cast `{}` to `str`", args[0].kind()),
+        );
+        return Err(());
+    };
+
+    Ok(Rc::new(MetaValue::String {
+        value: s,
+        span: args[0].get_span(),
+    }))
+}
+
 impl Context {
     pub fn insert_builtins(&mut self) {
         self.insert_builtin_str_fn("lowercase", |s| s.to_lowercase());
@@ -439,9 +522,11 @@ impl Context {
         });
         self.insert_builtin_fn("len", Some(1), builtin_fn_len);
         self.insert_builtin_fn("zip", None, builtin_fn_zip);
-        self.insert_builtin_fn("map", None, builtin_fn_map);
-        self.insert_builtin_fn("chars", None, builtin_fn_chars);
-        self.insert_builtin_fn("bytes", None, builtin_fn_bytes);
+        self.insert_builtin_fn("map", Some(2), builtin_fn_map);
+        self.insert_builtin_fn("chars", Some(1), builtin_fn_chars);
+        self.insert_builtin_fn("bytes", Some(1), builtin_fn_bytes);
+        self.insert_builtin_fn("ident", Some(1), builtin_fn_ident);
+        self.insert_builtin_fn("str", Some(1), builtin_fn_str);
     }
     fn match_and_bind_pattern(
         &mut self,
@@ -1338,6 +1423,17 @@ impl Context {
                 MetaValue::Float { value: lhs, .. },
                 MetaValue::Float { value: rhs, .. },
             ) => self.eval_binary_op_float(op_span, op_kind, *lhs, *rhs),
+            (
+                MetaValue::String { value: lhs, .. },
+                MetaValue::String { value: rhs, .. },
+            ) if op_kind == BinaryOpKind::Add => {
+                let mut res = lhs.to_string();
+                res.push_str(rhs);
+                Ok(Rc::new(MetaValue::String {
+                    value: res.into(),
+                    span: None,
+                }))
+            }
             _ => {
                 let lhs_kind = lhs.kind();
                 let rhs_kind = rhs.kind();

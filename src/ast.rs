@@ -317,6 +317,28 @@ impl MetaValue {
             MetaValue::Tuple(_) => Kind::Tuple,
         }
     }
+    pub fn get_span(&self) -> Option<Span> {
+        match self {
+            MetaValue::Token(token_tree) => Some(token_tree.span()),
+            MetaValue::Tokens(token_trees) => {
+                token_trees.first().map(|tt| tt.span())
+            }
+            MetaValue::Int { span, .. } => *span,
+            MetaValue::Float { span, .. } => *span,
+            MetaValue::Bool { span, .. } => *span,
+            MetaValue::Char { span, .. } => *span,
+            MetaValue::String { span, .. } => *span,
+            MetaValue::Fn(function) => Some(function.span),
+            MetaValue::Lambda(lambda) => Some(lambda.span),
+            MetaValue::BuiltinFn(_) => None,
+            MetaValue::List(_) => None,
+            MetaValue::Tuple(_) => None,
+        }
+    }
+
+    pub fn span(&self) -> Span {
+        self.get_span().unwrap_or_else(Span::call_site)
+    }
 }
 
 impl Kind {

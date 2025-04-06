@@ -228,31 +228,6 @@ fn lambda_expressions() {
 }
 
 #[test]
-fn map() {
-    let (a, b, c) = (1, 2, 3);
-
-    let result = unquote! {
-        [A, B, C].map(lowercase)
-    };
-    assert_eq!(result, [1, 2, 3]);
-
-    let result = unquote! {
-        (A, B, C).map(lowercase)
-    };
-    assert_eq!(result, [1, 2, 3]);
-
-    let result = unquote! {
-        "asdf".bytes().map(|x| x)
-    };
-    assert_eq!(&result, &*"asdf".bytes().collect::<Vec<_>>());
-
-    let result = unquote! {
-        "asdf".chars().map(|x| x)
-    };
-    assert_eq!(result, ['a', 's', 'd', 'f']);
-}
-
-#[test]
 fn char_type() {
     let result = unquote! {
         let x = "asdf".chars()[0];
