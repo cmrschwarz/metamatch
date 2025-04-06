@@ -466,9 +466,7 @@ fn builtin_fn_ident(
     else {
         ctx.error(
             callsite,
-            format!(
-                "cannot cast literal to identifer: invalid identifier `{name}`",
-            ),
+            format!("cast failed: invalid identifier `{name}`",),
         );
         return Err(());
     };
