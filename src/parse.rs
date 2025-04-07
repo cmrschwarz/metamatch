@@ -212,7 +212,7 @@ fn append_token_list(
     start: usize,
     end: usize,
 ) {
-    if start != end {
+    if start < end {
         exprs.push(Rc::new(MetaExpr::Literal {
             span: tokens[start].span(),
             value: Rc::new(MetaValue::Tokens(tokens[start..end].to_vec())),
@@ -274,7 +274,7 @@ fn delimiter_chars(d: Delimiter) -> (char, char) {
 }
 
 impl Context {
-    pub fn new(primary_scope_kind: ScopeKind) -> Self {
+    pub fn new() -> Self {
         let empty_token_list = Rc::new(MetaValue::Tokens(Vec::new()));
         let mut ctx = Self {
             empty_token_list_expr: Rc::new(MetaExpr::Literal {
@@ -283,7 +283,7 @@ impl Context {
             }),
             empty_token_list,
             scopes: vec![Scope {
-                kind: primary_scope_kind,
+                kind: ScopeKind::Builtin,
                 bindings: HashMap::new(),
             }],
             errors: Vec::new(),
@@ -470,10 +470,7 @@ impl Context {
                         Some(end_tag),
                     ));
                 } else {
-                    self.error(
-                        group.span(),
-                        format!("unexpected end tag `{}`", end_tag.to_str()),
-                    );
+                    self.error_unexpected_end_tag(group.span(), end_tag);
                     return Err(());
                 }
             }
@@ -517,10 +514,7 @@ impl Context {
                 contents,
             } => {
                 if kind != trail_kind {
-                    self.error(
-                        span,
-                        format!("unmatched closing tag `/{}`", kind.to_str()),
-                    );
+                    self.errror_unmatched_closing_tag(span, kind);
                     return Err(());
                 }
                 Ok((
@@ -638,7 +632,6 @@ impl Context {
                             allow_trailing_block,
                         );
                     }
-
                     "if" => {
                         return self.parse_if(
                             span,
@@ -1801,10 +1794,7 @@ impl Context {
                 offset: _,
                 contents: _,
             }) => {
-                self.error(
-                    span,
-                    format!("unmatched closing tag `/{}`", kind.to_str()),
-                );
+                self.errror_unmatched_closing_tag(span, kind);
                 Err(())
             }
             Err(()) => Err(()),
@@ -2106,7 +2096,6 @@ impl Context {
             if let Some(res) = self.handle_template_in_raw_block(
                 parent_span,
                 tokens,
-                offset,
                 &mut raw_token_list_start,
                 &mut i,
                 group,
@@ -2136,13 +2125,14 @@ impl Context {
         &mut self,
         block_parent_span: Span,
         block_tokens: &[TokenTree],
-        offset_in_block: usize,
         raw_token_list_start: &mut usize,
         block_continuation: &mut usize,
         group: &Group,
         template_inner_tokens: &[TokenTree],
         exprs: &mut Vec<Rc<MetaExpr>>,
     ) -> Result<Option<RawBodyParseResult>> {
+        let offset_in_block = *block_continuation - 1;
+
         let is_raw_block =
             self.scopes.last().as_ref().unwrap().kind == ScopeKind::Raw;
         let first_tok = template_inner_tokens.first();
@@ -2184,7 +2174,7 @@ impl Context {
             }
         }
         if is_raw_block {
-            *block_continuation += offset_in_block + 1;
+            // raw blocks only look for closing tags
             return Ok(None);
         }
         append_token_list(
@@ -2218,12 +2208,9 @@ impl Context {
             if trailing_block_kind != TrailingBlockKind::Unquote {
                 let continuation_tag_span =
                     continuation[tokens_consumed - 1].span();
-                self.error(
+                self.error_unexpected_end_tag(
                     continuation_tag_span,
-                    format!(
-                        "unexpected end tag `{}`",
-                        trailing_block_kind.to_str()
-                    ),
+                    trailing_block_kind,
                 );
                 return Err(());
             }
@@ -2239,13 +2226,7 @@ impl Context {
         }
         match self.parse_raw_block(block_parent_span, continuation)? {
             RawBodyParseResult::Plain | RawBodyParseResult::Complete(_) => {
-                self.error(
-                    group.span(),
-                    format!(
-                        "missing closing tag for `{}`",
-                        trailing_block.to_str()
-                    ),
-                );
+                self.error_no_closing_tag(group.span(), trailing_block);
                 Err(())
             }
             RawBodyParseResult::UnmatchedEnd {
@@ -2254,34 +2235,165 @@ impl Context {
                 offset,
                 contents,
             } => {
-                let mut wrong_tag = kind != trailing_block;
-                if trailing_block == TrailingBlockKind::If
-                    && kind == TrailingBlockKind::Else
-                {
-                    let TokenTree::Group(_else_tag) =
-                        &block_tokens[*block_continuation + offset]
-                    else {
-                        unreachable!()
-                    };
-                    // TODO: handle else expr
-                    wrong_tag = false;
+                let is_else_block = trailing_block == TrailingBlockKind::If
+                    && kind == TrailingBlockKind::Else;
+                if !is_else_block {
+                    if kind != trailing_block {
+                        self.error(
+                            span,
+                            format!(
+                                "expected closing tag for `{}`, found `{}`",
+                                trailing_block.to_str(),
+                                kind.to_str()
+                            ),
+                        );
+                        return Err(());
+                    }
+                    self.close_expr_after_trailing_body(exprs, kind, contents);
+                    *block_continuation += offset + 1;
+                    *raw_token_list_start = *block_continuation;
+                    return Ok(None);
                 }
-                if wrong_tag {
-                    self.error(
-                        span,
-                        format!(
-                            "expected closing tag for `{}`, found `{}`",
-                            trailing_block.to_str(),
-                            kind.to_str()
-                        ),
-                    );
-                    return Err(());
-                }
-                self.close_expr_after_trailing_body(exprs, kind, contents);
-                *block_continuation += offset + 1;
+                let else_offset = *block_continuation + offset;
+                *block_continuation = else_offset + 1;
                 *raw_token_list_start = *block_continuation;
+                let TokenTree::Group(else_tag) = &block_tokens[else_offset]
+                else {
+                    unreachable!()
+                };
+                let else_tag_tokens = else_tag.stream().into_vec();
+                debug_assert!(
+                    has_template_angle_backets(&else_tag_tokens)
+                        && else_tag_tokens[1].to_string() == "else"
+                );
+                let else_expr_toks =
+                    &else_tag_tokens[2..else_tag_tokens.len() - 1];
+
+                let else_expr_new = if else_expr_toks.is_empty() {
+                    self.scopes.pop();
+                    self.push_dummy_scope(ScopeKind::Quoted);
+                    let res = self.parse_raw_block(
+                        else_tag.span(),
+                        &block_tokens[*block_continuation..],
+                    );
+                    self.scopes.pop();
+                    let RawBodyParseResult::UnmatchedEnd {
+                        span,
+                        kind,
+                        offset,
+                        contents,
+                    } = res?
+                    else {
+                        self.error_no_closing_tag(
+                            group.span(),
+                            trailing_block,
+                        );
+                        return Err(());
+                    };
+
+                    if kind != TrailingBlockKind::If {
+                        self.error_unexpected_end_tag(span, kind);
+                        return Err(());
+                    }
+                    *block_continuation += offset + 1;
+                    *raw_token_list_start = *block_continuation;
+                    Rc::new(MetaExpr::Scope {
+                        span,
+                        body: contents,
+                    })
+                } else {
+                    let mut else_block = Vec::new();
+                    self.scopes.pop();
+                    self.push_dummy_scope(ScopeKind::Unquoted);
+                    let res = self.handle_template_in_raw_block(
+                        block_parent_span,
+                        block_tokens,
+                        raw_token_list_start,
+                        block_continuation,
+                        else_tag,
+                        else_expr_toks,
+                        &mut else_block,
+                    );
+                    self.scopes.pop();
+                    let Some(res) = res? else {
+                        self.error_no_closing_tag(
+                            group.span(),
+                            trailing_block,
+                        );
+                        return Err(());
+                    };
+                    let expr = match res {
+                        RawBodyParseResult::Plain => {
+                            append_token_list(
+                                &mut else_block,
+                                block_tokens,
+                                *raw_token_list_start,
+                                *block_continuation,
+                            );
+                            Rc::new(MetaExpr::Scope {
+                                span,
+                                body: else_block,
+                            })
+                        }
+                        RawBodyParseResult::Complete(mut meta_exprs) => {
+                            exprs.extend(meta_exprs.drain(1..));
+                            meta_exprs.into_iter().next().unwrap()
+                        }
+                        RawBodyParseResult::UnmatchedEnd {
+                            span,
+                            kind,
+                            offset: _,
+                            contents: _,
+                        } => {
+                            self.errror_unmatched_closing_tag(span, kind);
+                            return Err(());
+                        }
+                    };
+                    *block_continuation += offset + 1;
+                    *raw_token_list_start = *block_continuation;
+                    expr
+                };
+
+                let if_expr_index = exprs.len() - 1;
+
+                let if_expr = Rc::get_mut(&mut exprs[if_expr_index]).unwrap();
+                let MetaExpr::IfExpr { else_expr, .. } = if_expr else {
+                    unreachable!()
+                };
+                *else_expr = Some(else_expr_new);
+
                 Ok(None)
             }
         }
+    }
+
+    fn errror_unmatched_closing_tag(
+        &mut self,
+        span: Span,
+        trailing_block: TrailingBlockKind,
+    ) {
+        self.error(
+            span,
+            format!("unmatched closing tag `/{}`", trailing_block.to_str()),
+        );
+    }
+
+    fn error_no_closing_tag(
+        &mut self,
+        span: Span,
+        trailing_block: TrailingBlockKind,
+    ) {
+        self.error(
+            span,
+            format!("missing closing tag for `{}`", trailing_block.to_str()),
+        );
+    }
+
+    fn error_unexpected_end_tag(
+        &mut self,
+        span: Span,
+        kind: TrailingBlockKind,
+    ) {
+        self.error(span, format!("unexpected end tag `{}`", kind.to_str()));
     }
 }

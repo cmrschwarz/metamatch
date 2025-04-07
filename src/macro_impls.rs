@@ -16,30 +16,36 @@ impl<I: IntoIterator> IntoIterIntoVec for I {
 
 pub fn unquote(body: TokenStream) -> TokenStream {
     let body = body.into_vec();
-    let mut ctx = Context::new(ScopeKind::Unquoted);
+    let mut ctx = Context::new();
 
+    ctx.push_dummy_scope(ScopeKind::Unquoted);
     let expr = ctx.parse_body_deny_trailing(Span::call_site(), &body);
+    ctx.scopes.pop();
 
     ctx.eval_to_token_stream(Span::call_site(), &expr)
 }
 
 pub fn quote(body: TokenStream) -> TokenStream {
     let body = body.into_vec();
-    let mut ctx = Context::new(ScopeKind::Quoted);
+    let mut ctx = Context::new();
 
+    ctx.push_dummy_scope(ScopeKind::Quoted);
     let Ok(exprs) = ctx.parse_raw_block_to_exprs(Span::call_site(), &body)
     else {
         return ctx.expand_errors();
     };
+    ctx.scopes.pop();
 
     ctx.eval_to_token_stream(Span::call_site(), &exprs)
 }
 
 pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
     let attrib = attrib.into_vec();
-    let mut ctx = Context::new(ScopeKind::Unquoted);
+    let mut ctx = Context::new();
+    ctx.push_dummy_scope(ScopeKind::Unquoted);
     let (mut exprs, rest, trailing_block) =
         ctx.parse_body(Span::call_site(), &attrib, true);
+    ctx.scopes.pop();
 
     if !rest.is_empty() && ctx.errors.is_empty() {
         let tb = trailing_block.expect("rest without trailing block");
@@ -71,12 +77,15 @@ pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
 
 pub fn metamatch(body: TokenStream) -> TokenStream {
     let body = body.into_vec();
-    let mut ctx = Context::new(ScopeKind::Metamatch);
+    let mut ctx = Context::new();
+
+    ctx.push_dummy_scope(ScopeKind::Metamatch);
 
     let Ok(exprs) = ctx.parse_raw_block_to_exprs(Span::call_site(), &body)
     else {
         return ctx.expand_errors();
     };
+    ctx.scopes.pop();
 
     ctx.eval_to_token_stream(Span::call_site(), &exprs)
 }

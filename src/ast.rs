@@ -236,6 +236,7 @@ pub struct Binding {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScopeKind {
+    Builtin,
     Raw,
     Quoted,
     Unquoted,
@@ -256,7 +257,7 @@ pub struct Context {
     pub errors: Vec<MetaError>,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum TrailingBlockKind {
     For,
     If,

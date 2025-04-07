@@ -249,6 +249,40 @@ fn char_type() {
 }
 
 #[test]
+fn if_statements() {
+    let res = unquote! {
+        let x = 5;
+        if x % 2 == 0 {
+            1
+        }
+        else if x % 2 == 1 {
+            2
+        }
+        else {
+            3
+        }
+    };
+
+    assert_eq!(res, 2);
+}
+
+#[test]
+fn if_templates() {
+    let res = quote! {
+        [<let x = 5>]
+        [<if x % 2 == 0>]
+        1
+        [<else if x % 2 == 1>]
+        2
+        [<else>]
+        3
+        [</if>]
+    };
+
+    assert_eq!(res, 2);
+}
+
+#[test]
 fn macro_errors() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/**/*.rs");
