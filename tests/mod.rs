@@ -269,48 +269,74 @@ fn if_statements() {
 #[test]
 fn if_templates_parse() {
     let res = quote! {
+        // 1
         [<if true>]
-            1+
-        [</if>]
-
-        [<if false>]
-            99 +
-        [<else>]
-            1+
-        [</if>]
-
-        [<if false>]
-            99+
-        [<else if true>]
-            1+
-        [</if>]
-
-        [<if false>]
-            99+
-        [<else if false>]
-            99+
-        [</if>]
-
-
-
-        [<if false>]
-            99+
-        [<else if true>]
-            1+
-        [<else>]
-            99+
-        [</if>]
-
-        [<if false>]
-            99
-        [<else if false>]
-            99
-        [<else>]
             1
+        [</if>]
+
+        // +1
+        [<if false>]
+            +99
+        [<else>]
+            +1
+        [</if>]
+
+        // +1
+        [<if false>]
+            +99
+        [<else if true>]
+            +1
+        [</if>]
+
+        // <nothing>
+        [<if false>]
+            99+
+        [<else if false>]
+            99+
+        [</if>]
+
+
+        // + 1
+        [<if false>]
+            +99
+        [<else if true>]
+            +1
+        [<else>]
+            +99
+        [</if>]
+
+        // + 1
+        [<if false>]
+            +99
+        [<else if false>]
+            +99
+        [<else>]
+            +1
         [</if>]
     };
 
     assert_eq!(res, 5);
+}
+
+#[test]
+fn if_template_expansion() {
+    let res = unquote! {
+        fn expand(x) {
+            [<quote>]
+                [<if x==1>]
+                    1
+                [<else if x==2>]
+                    2
+                [<else if x==3>]
+                    3
+                [<else>]
+                    4
+                [</if>]
+            [</quote>]
+        }
+        (1..=5).map(expand)
+    };
+    assert_eq!(res, [1, 2, 3, 4, 4]);
 }
 
 #[test]

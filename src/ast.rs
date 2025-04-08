@@ -605,6 +605,26 @@ impl MetaExpr {
             MetaExpr::ListAccess { .. } => "property access",
         }
     }
+    pub fn may_drop_semicolon(&self) -> bool {
+        match self {
+            MetaExpr::LetBinding { .. } | MetaExpr::FnDecl(..) => true,
+
+            MetaExpr::Literal { .. }
+            | MetaExpr::Ident { .. }
+            | MetaExpr::Call { .. }
+            | MetaExpr::Lambda(..)
+            | MetaExpr::RawOutputGroup { .. }
+            | MetaExpr::IfExpr { .. }
+            | MetaExpr::ForExpansion { .. }
+            | MetaExpr::ExpandPattern(..)
+            | MetaExpr::Scope { .. }
+            | MetaExpr::List { .. }
+            | MetaExpr::Tuple { .. }
+            | MetaExpr::OpUnary { .. }
+            | MetaExpr::OpBinary { .. }
+            | MetaExpr::ListAccess { .. } => false,
+        }
+    }
 }
 
 impl TrailingBlockKind {

@@ -48,6 +48,13 @@ struct MatchArmEnds {
     body_end: usize,
 }
 
+fn starts_with_uppercase(name: &str) -> bool {
+    name.chars()
+        .next()
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
+}
+
 // for a match arm ( ... => ... )
 // returns the location before the fat arrow and the location after the end of
 // match expression body, and after a potential trailing comma
@@ -362,7 +369,10 @@ impl Context {
             self.parse_expr_value(parent_span, tokens, allow_trailing_block)?;
 
         loop {
-            if rest.is_empty() || trailing.is_some() {
+            if rest.is_empty()
+                || trailing.is_some()
+                || lhs.may_drop_semicolon()
+            {
                 return Ok((lhs, rest, trailing));
             }
 
@@ -1058,6 +1068,9 @@ impl Context {
             self.error(tokens[0].span(), "expected function name");
         })?;
 
+        let superbound = starts_with_uppercase(&name);
+        self.insert_dummy_binding(name.clone(), superbound);
+
         let Some(TokenTree::Group(param_group)) = tokens.get(1) else {
             self.error(tokens[1].span(), "expected parameter list");
             return Err(());
@@ -1104,7 +1117,7 @@ impl Context {
             }
         }
 
-        let rest = &tokens[3..];
+        let rest = &tokens[2..];
 
         let (body, rest, trailing_block) = if rest.is_empty() {
             if !allow_trailing_block {
@@ -1508,8 +1521,7 @@ impl Context {
                 let mut rest = &tokens[1..];
                 let mut span = ident.span();
                 let mut mutable = false;
-                let mut super_bound =
-                    name.chars().next().unwrap().is_uppercase();
+                let mut super_bound = starts_with_uppercase(&name);
                 if &*name == "super" {
                     if let Some(TokenTree::Ident(ident)) = tokens.get(1) {
                         name = ident.to_string();
@@ -1697,6 +1709,7 @@ impl Context {
             }
 
             rest = new_rest;
+            let may_drop_semi = expr.may_drop_semicolon();
             exprs.push(expr);
 
             if trailing_block.is_some() {
@@ -1710,9 +1723,10 @@ impl Context {
                         is_semi = true;
                     }
                 }
-                // TODO: define exceptions that may drop the semi
                 if !is_semi {
-                    pending_trailing_semi_error = Some(first.span());
+                    if !may_drop_semi {
+                        pending_trailing_semi_error = Some(first.span());
+                    }
                 } else {
                     rest = &rest[1..];
                 }
