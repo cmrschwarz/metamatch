@@ -664,6 +664,13 @@ impl Context {
                             allow_trailing_block,
                         );
                     }
+                    "while" => {
+                        return self.parse_while(
+                            span,
+                            &tokens[1..],
+                            allow_trailing_block,
+                        );
+                    }
                     "break" => {
                         return self.parse_break(span, &tokens[1..]);
                     }
@@ -1347,6 +1354,150 @@ impl Context {
             trailing_block,
         ))
     }
+    fn parse_while_let<'a>(
+        &mut self,
+        while_span: Span,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        let (pattern, rest) = self.parse_pattern(while_span, tokens)?;
+
+        let mut has_eq = false;
+        if let Some(TokenTree::Punct(p)) = rest.first() {
+            has_eq = p.as_char() == '=';
+        }
+        if !has_eq {
+            self.error(
+                rest.first().map(|f| f.span()).unwrap_or(while_span),
+                "expected '=' after `while let` pattern",
+            );
+            return Err(());
+        }
+
+        if rest.len() < 2 {
+            self.error(rest[0].span(), "expected expression after '='");
+            return Err(());
+        }
+
+        let last_tok = rest.last().unwrap();
+
+        let (expr, rest) =
+            self.parse_expr_deny_trailing_block(while_span, &rest[1..], 1)?;
+
+        self.push_dummy_scope(ScopeKind::Unquoted);
+        self.insert_dummy_bindings_for_pattern(&pattern);
+
+        let (body, final_rest, trailing_block);
+        if rest.is_empty() && allow_trailing_block {
+            body = Vec::new();
+            final_rest = rest;
+            trailing_block = Some(TrailingBlockKind::While);
+        } else {
+            // Parse body
+            let Some(TokenTree::Group(body_group)) = rest.first() else {
+                self.error(
+                    rest.first().unwrap_or(last_tok).span(),
+                    "expected while loop body",
+                );
+                return Err(());
+            };
+
+            if body_group.delimiter() != Delimiter::Brace {
+                self.error(
+                    body_group.span(),
+                    "expected braces around while loop body",
+                );
+                return Err(());
+            }
+
+            let body_tokens = body_group.stream().into_vec();
+
+            body =
+                self.parse_body_deny_trailing(body_group.span(), &body_tokens);
+
+            self.pop_scope();
+            final_rest = &rest[1..];
+            trailing_block = None;
+        };
+
+        Ok((
+            Rc::new(MetaExpr::WhileLet {
+                span: while_span,
+                pattern,
+                expr,
+                body,
+            }),
+            final_rest,
+            trailing_block,
+        ))
+    }
+
+    fn parse_while<'a>(
+        &mut self,
+        while_span: Span,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        if let Some(TokenTree::Ident(i)) = tokens.first() {
+            if i.to_string() == "let" {
+                return self.parse_while_let(
+                    while_span,
+                    &tokens[1..],
+                    allow_trailing_block,
+                );
+            }
+        }
+
+        let (condition, rest) =
+            self.parse_expr_deny_trailing_block(while_span, tokens, 1)?;
+
+        self.push_dummy_scope(ScopeKind::Unquoted);
+
+        let (body, final_rest, trailing_block);
+        if rest.is_empty() && allow_trailing_block {
+            body = Vec::new();
+            final_rest = rest;
+            trailing_block = Some(TrailingBlockKind::While);
+        } else {
+            // Parse body
+            let Some(TokenTree::Group(body_group)) = rest.first() else {
+                self.error(
+                    rest.first().map(|t| t.span()).unwrap_or(while_span),
+                    "expected while loop body",
+                );
+                return Err(());
+            };
+
+            if body_group.delimiter() != Delimiter::Brace {
+                self.error(
+                    body_group.span(),
+                    "expected braces around while loop body",
+                );
+                return Err(());
+            }
+
+            let body_tokens = body_group.stream().into_vec();
+
+            body =
+                self.parse_body_deny_trailing(body_group.span(), &body_tokens);
+
+            self.pop_scope();
+            final_rest = &rest[1..];
+            trailing_block = None;
+        };
+
+        Ok((
+            Rc::new(MetaExpr::While {
+                span: while_span,
+                condition,
+                body,
+            }),
+            final_rest,
+            trailing_block,
+        ))
+    }
 
     fn parse_loop<'a>(
         &mut self,
@@ -1649,7 +1800,7 @@ impl Context {
                 let mut mutable = false;
                 let mut super_bound = false;
                 if &*name == "super" {
-                    if let Some(TokenTree::Ident(ident)) = tokens.get(1) {
+                    if let Some(TokenTree::Ident(ident)) = rest.first() {
                         name = ident.to_string();
                         span = ident.span();
                         rest = &rest[1..];
@@ -1663,7 +1814,7 @@ impl Context {
                     }
                 }
                 if &*name == "mut" {
-                    if let Some(TokenTree::Ident(ident)) = tokens.get(1) {
+                    if let Some(TokenTree::Ident(ident)) = rest.first() {
                         name = ident.to_string();
                         span = ident.span();
                         rest = &rest[1..];
@@ -1681,6 +1832,7 @@ impl Context {
                     return Err(());
                 }
                 super_bound = super_bound || starts_with_uppercase(&name);
+
                 Ok((
                     Pattern::Ident(BindingParameter {
                         span: ident.span(),
@@ -1884,6 +2036,14 @@ impl Context {
                 };
                 *body = contents;
             }
+            TrailingBlockKind::While => {
+                let body = match expr {
+                    MetaExpr::While { body, .. } => body,
+                    MetaExpr::WhileLet { body, .. } => body,
+                    _ => unreachable!(),
+                };
+                *body = contents;
+            }
             TrailingBlockKind::Loop => {
                 let MetaExpr::Loop { body, .. } = expr else {
                     unreachable!()
@@ -1986,6 +2146,7 @@ impl Context {
         let tag = ident.to_string();
         let kind = match &*tag {
             "for" => TrailingBlockKind::For,
+            "while" => TrailingBlockKind::While,
             "let" => TrailingBlockKind::Let,
             "fn" => TrailingBlockKind::Fn,
             "quote" => TrailingBlockKind::Quote,

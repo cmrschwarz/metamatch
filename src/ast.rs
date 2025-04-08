@@ -20,8 +20,12 @@ pub struct BindingParameter {
 }
 
 pub enum EvalError {
+    PatternMissmatch,
     Error,
-    Break(Option<Rc<MetaValue>>),
+    Break {
+        span: Span,
+        value: Option<Rc<MetaValue>>,
+    },
     Continue,
 }
 
@@ -161,6 +165,17 @@ pub enum MetaExpr {
         span: Span,
         body: Vec<Rc<MetaExpr>>,
     },
+    While {
+        condition: Rc<MetaExpr>,
+        span: Span,
+        body: Vec<Rc<MetaExpr>>,
+    },
+    WhileLet {
+        pattern: Pattern,
+        expr: Rc<MetaExpr>,
+        span: Span,
+        body: Vec<Rc<MetaExpr>>,
+    },
     Parenthesized {
         span: Span,
         expr: Rc<MetaExpr>,
@@ -281,6 +296,7 @@ pub struct Context {
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum TrailingBlockKind {
     For,
+    While,
     Loop,
     If,
     Else,
@@ -611,6 +627,8 @@ impl MetaExpr {
             MetaExpr::OpBinary { span, .. } => span,
             MetaExpr::ListAccess { span, .. } => span,
             MetaExpr::Parenthesized { span, .. } => span,
+            MetaExpr::While { span, .. } => span,
+            MetaExpr::WhileLet { span, .. } => span,
         }
     }
     pub fn kind_str(&self) -> &'static str {
@@ -627,6 +645,8 @@ impl MetaExpr {
             MetaExpr::IfExpr { .. } => "if expression",
             MetaExpr::For { .. } => "for loop",
             MetaExpr::Loop { .. } => "loop",
+            MetaExpr::While { .. } => "while loop",
+            MetaExpr::WhileLet { .. } => "while loop",
             MetaExpr::ExpandPattern { .. } => "expand pattern",
             MetaExpr::Scope { .. } => "scope",
             MetaExpr::List { .. } => "list",
@@ -643,6 +663,8 @@ impl MetaExpr {
             | MetaExpr::FnDecl(..)
             | MetaExpr::For { .. }
             | MetaExpr::Loop { .. }
+            | MetaExpr::While { .. }
+            | MetaExpr::WhileLet { .. }
             | MetaExpr::IfExpr { .. } => true,
 
             MetaExpr::Literal { .. }
@@ -668,6 +690,7 @@ impl TrailingBlockKind {
     pub fn to_str(self) -> &'static str {
         match self {
             TrailingBlockKind::For => "for",
+            TrailingBlockKind::While => "while",
             TrailingBlockKind::Loop => "loop",
             TrailingBlockKind::If => "if",
             TrailingBlockKind::Else => "else",

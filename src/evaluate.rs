@@ -134,6 +134,7 @@ impl<'a> Callable<'a> {
                     ctx.match_and_bind_pattern(
                         &function.params[i],
                         arg.clone(),
+                        false,
                     )?;
                 }
                 let res = ctx.eval_stmt_list_to_meta_val(span, &function.body);
@@ -158,6 +159,7 @@ impl<'a> Callable<'a> {
                     ctx.match_and_bind_pattern(
                         &lambda.params[i],
                         arg.clone(),
+                        false,
                     )?;
                 }
                 let res = ctx.eval(&lambda.body);
@@ -530,6 +532,7 @@ impl Context {
         &mut self,
         pat: &Pattern,
         val: Rc<MetaValue>,
+        suppress_missmatch_error: bool,
     ) -> Result<()> {
         match pat {
             Pattern::Ident(bind) => {
@@ -547,31 +550,36 @@ impl Context {
                 elems: pat_bindings,
             } => {
                 let MetaValue::Tuple(val_elems) = &*val else {
-                    // TODO: more context
-                    self.error(
-                        *span,
-                        format!(
-                            "tuple pattern does not match `{}`",
-                            val.kind()
-                        ),
-                    );
-                    return Err(EvalError::Error);
+                    if !suppress_missmatch_error {
+                        // TODO: more context
+                        self.error(
+                            *span,
+                            format!(
+                                "tuple pattern does not match `{}`",
+                                val.kind()
+                            ),
+                        );
+                    }
+                    return Err(EvalError::PatternMissmatch);
                 };
                 if pat_bindings.len() != val_elems.len() {
-                    self.error(
-                        *span,
-                        format!(
-                            "tuple pattern missmatch: expected length {}, got {}",
-                            pat_bindings.len(),
-                            val_elems.len()
-                        ),
-                    );
-                    return Err(EvalError::Error);
+                    if !suppress_missmatch_error {
+                        self.error(
+                            *span,
+                            format!(
+                                "tuple pattern missmatch: expected length {}, got {}",
+                                pat_bindings.len(),
+                                val_elems.len()
+                            ),
+                        );
+                    }
+                    return Err(EvalError::PatternMissmatch);
                 }
                 for i in 0..val_elems.len() {
                     self.match_and_bind_pattern(
                         &pat_bindings[i],
                         val_elems[i].clone(),
+                        suppress_missmatch_error,
                     )?;
                 }
                 Ok(())
@@ -581,16 +589,22 @@ impl Context {
                 elems: pat_bindings,
             } => {
                 let MetaValue::List(list) = &*val else {
-                    // TODO: more context
-                    self.error(
-                        *span,
-                        format!("list pattern does not match {}", val.kind()),
-                    );
-                    return Err(EvalError::Error);
+                    if !suppress_missmatch_error {
+                        // TODO: more context
+                        self.error(
+                            *span,
+                            format!(
+                                "list pattern does not match {}",
+                                val.kind()
+                            ),
+                        );
+                    }
+                    return Err(EvalError::PatternMissmatch);
                 };
                 let list = list.borrow();
                 if pat_bindings.len() != list.len() {
-                    self.error(
+                    if !suppress_missmatch_error {
+                        self.error(
                         *span,
                         format!(
                             "list pattern missmatch: expected length {}, got {}",
@@ -598,12 +612,14 @@ impl Context {
                             list.len()
                         ),
                     );
-                    return Err(EvalError::Error);
+                    }
+                    return Err(EvalError::PatternMissmatch);
                 }
                 for i in 0..list.len() {
                     self.match_and_bind_pattern(
                         &pat_bindings[i],
                         list[i].clone(),
+                        suppress_missmatch_error,
                     )?;
                 }
                 Ok(())
@@ -841,9 +857,10 @@ impl Context {
 
     fn eval(&mut self, expr: &MetaExpr) -> Result<Rc<MetaValue>> {
         match expr {
-            MetaExpr::Break { span: _, expr } => Err(EvalError::Break(
-                expr.as_ref().map(|x| self.eval(x)).transpose()?,
-            )),
+            MetaExpr::Break { span, expr } => Err(EvalError::Break {
+                value: expr.as_ref().map(|x| self.eval(x)).transpose()?,
+                span: *span,
+            }),
             MetaExpr::Continue { .. } => Err(EvalError::Continue),
             MetaExpr::Parenthesized { span: _, expr } => self.eval(expr),
             MetaExpr::Literal { span: _, value } => Ok(value.clone()),
@@ -861,7 +878,7 @@ impl Context {
                 expr,
             } => {
                 let val = self.eval(expr.as_ref().unwrap())?;
-                self.match_and_bind_pattern(pattern, val)?;
+                self.match_and_bind_pattern(pattern, val, false)?;
                 Ok(self.empty_token_list.clone())
             }
             MetaExpr::Call { span, lhs, args } => {
@@ -897,8 +914,11 @@ impl Context {
 
                 for elem in &*list_elems.borrow() {
                     self.push_eval_scope();
-                    let mut res =
-                        self.match_and_bind_pattern(pattern, elem.clone());
+                    let mut res = self.match_and_bind_pattern(
+                        pattern,
+                        elem.clone(),
+                        false,
+                    );
                     if res.is_ok() {
                         res = self.eval_stmt_list_to_stream(
                             &mut res_tokens,
@@ -911,20 +931,15 @@ impl Context {
                     match res {
                         Ok(()) => continue,
                         Err(EvalError::Continue) => continue,
-                        Err(EvalError::Break(expr)) => {
-                            if let Some(expr) = expr {
-                                if res_tokens.is_empty() {
-                                    return Ok(expr);
-                                }
-                                self.append_value_to_stream(
-                                    &mut res_tokens,
-                                    *span,
-                                    &expr,
-                                )?;
+                        Err(EvalError::Break { value, span }) => {
+                            if value.is_some() {
+                                self.error(span, "`break` values are not supported in `for`");
+                                return Err(EvalError::Error);
                             }
                             break;
                         }
-                        Err(EvalError::Error) => {
+                        Err(EvalError::Error)
+                        | Err(EvalError::PatternMissmatch) => {
                             return Err(EvalError::Error);
                         }
                     }
@@ -942,23 +957,131 @@ impl Context {
                     match v {
                         Ok(()) => continue,
                         Err(EvalError::Continue) => continue,
-                        Err(EvalError::Break(expr)) => {
-                            if let Some(expr) = expr {
-                                if res.is_empty() {
-                                    return Ok(expr);
+                        Err(EvalError::Break { value, span }) => {
+                            if let Some(value) = value {
+                                if !res.is_empty() {
+                                    self.error(span, "`break` values in `loop` with non empty output token list");
+                                    return Err(EvalError::Error);
                                 }
-                                self.append_value_to_stream(
-                                    &mut res, *span, &expr,
-                                )?;
+                                return Ok(value);
                             }
                             break;
+                        }
+                        Err(EvalError::Error)
+                        | Err(EvalError::PatternMissmatch) => {
+                            return Err(EvalError::Error);
+                        }
+                    }
+                }
+                Ok(Rc::new(MetaValue::Tokens(res)))
+            }
+            MetaExpr::While {
+                condition,
+                span,
+                body,
+            } => {
+                let mut res_tokens = Vec::new();
+                loop {
+                    let condition_val = self.eval(condition)?;
+                    let MetaValue::Bool {
+                        value: condition,
+                        span: _,
+                    } = &*condition_val
+                    else {
+                        self.error(
+                            condition.span(),
+                            format!(
+                                "`while` expression must evaluate as `bool`, not `{}`",
+                                condition_val.kind()
+                            ),
+                        );
+                        return Err(EvalError::Error);
+                    };
+                    if !*condition {
+                        break;
+                    }
+                    self.push_eval_scope();
+                    let res = self.eval_stmt_list_to_stream(
+                        &mut res_tokens,
+                        *span,
+                        body,
+                    );
+                    self.scopes.pop();
+
+                    match res {
+                        Ok(()) => continue,
+                        Err(EvalError::Continue) => continue,
+                        Err(EvalError::Break { value, span }) => {
+                            if value.is_some() {
+                                self.error(span, "`break` values are not supported in `while`");
+                                return Err(EvalError::Error);
+                            }
+                            break;
+                        }
+                        Err(EvalError::Error)
+                        | Err(EvalError::PatternMissmatch) => {
+                            return Err(EvalError::Error);
+                        }
+                    }
+                }
+                Ok(Rc::new(MetaValue::Tokens(res_tokens)))
+            }
+            MetaExpr::WhileLet {
+                pattern,
+                expr,
+                span,
+                body,
+            } => {
+                let input_list = self.eval(expr)?;
+                let MetaValue::List(list_elems) = &*input_list else {
+                    self.error(
+                        expr.span(),
+                        format!("cannot iterate over {}", input_list.kind()),
+                    );
+                    return Err(EvalError::Error);
+                };
+                let mut res_tokens = Vec::new();
+
+                for elem in &*list_elems.borrow() {
+                    self.push_eval_scope();
+                    let mut res = self.match_and_bind_pattern(
+                        pattern,
+                        elem.clone(),
+                        true,
+                    );
+                    let let_pattern_missmatch =
+                        matches!(res, Err(EvalError::PatternMissmatch));
+                    if res.is_ok() {
+                        res = self.eval_stmt_list_to_stream(
+                            &mut res_tokens,
+                            *span,
+                            body,
+                        );
+                    }
+                    self.scopes.pop();
+
+                    match res {
+                        Ok(()) => continue,
+                        Err(EvalError::Continue) => continue,
+                        Err(EvalError::Break { value, span }) => {
+                            if value.is_some() {
+                                self.error(span, "`break` values are not supported in `while`");
+                                return Err(EvalError::Error);
+                            }
+                            break;
+                        }
+                        Err(EvalError::PatternMissmatch) => {
+                            if let_pattern_missmatch {
+                                break;
+                            }
+                            return Err(EvalError::Error);
                         }
                         Err(EvalError::Error) => {
                             return Err(EvalError::Error);
                         }
                     }
                 }
-                Ok(Rc::new(MetaValue::Tokens(res)))
+                Ok(Rc::new(MetaValue::Tokens(res_tokens)))
             }
             MetaExpr::Scope {
                 span,
@@ -1052,8 +1175,11 @@ impl Context {
                             Spacing::Alone,
                         )));
                     }
-                    let mut res = self
-                        .match_and_bind_pattern(&ep.for_pattern, elem.clone());
+                    let mut res = self.match_and_bind_pattern(
+                        &ep.for_pattern,
+                        elem.clone(),
+                        false,
+                    );
 
                     if res.is_ok() {
                         res = self.eval_stmt_list_to_stream(
@@ -1411,6 +1537,8 @@ impl Context {
             | MetaExpr::IfExpr { .. }
             | MetaExpr::For { .. }
             | MetaExpr::Loop { .. }
+            | MetaExpr::While { .. }
+            | MetaExpr::WhileLet { .. }
             | MetaExpr::ExpandPattern(..)
             | MetaExpr::Scope { .. }
             | MetaExpr::List { .. }

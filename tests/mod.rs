@@ -189,6 +189,19 @@ fn unquote_array() {
 }
 
 #[test]
+fn while_template() {
+    let array: [i32; 4] = quote! {
+        [
+            [<let mut X = 1; while X < 5>]
+                X,
+                [< X += 1>]
+            [</while>]
+        ]
+    };
+    assert_eq!(array, [1, 2, 3, 4]);
+}
+
+#[test]
 fn ufcs() {
     let list_len = unquote! {
         let list = [1, 2, 3];
@@ -375,6 +388,30 @@ fn for_continue() {
         quote!([ELEMS]);
     };
     assert_eq!(res, [1, 3]);
+}
+
+#[test]
+fn while_loop() {
+    let res = unquote! {
+        let super mut x = 5;
+        let ELEMS = while x > 0  {
+            quote!(x,);
+            x -= 2;
+        };
+        quote!([ELEMS]);
+    };
+    assert_eq!(res, [5, 3, 1]);
+}
+
+#[test]
+fn while_let() {
+    let res = unquote! {
+        let ELEMS = while let (X,) = [(1,), (2,), 3, (4,)] {
+            quote!((X,),);
+        };
+        quote!([ELEMS]);
+    };
+    assert_eq!(res, [(1,), (2,)]);
 }
 
 #[test]
