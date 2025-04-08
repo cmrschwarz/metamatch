@@ -12,26 +12,43 @@
 [msrv]: https://img.shields.io/crates/msrv/metamatch?logo=rust
 [docs-rs]: https://img.shields.io/badge/docs.rs-metamatch-66c2a5?logo=docs.rs
 
-A zero dependency proc-macro for generating repetitive `match` arms.
+A zero dependency proc-macro for practical metaprogramming.
 
-Match arms for differently typed variants usually cannot be combined,
-even if the are syntactically identical.
-This macro implements a simple templating attribute (`#[expand]`)
-to automatically stamp out the neccessary copies.
+Because macros should be simple and readable.
 
-The macro syntax was carefully chosen to ensure maximum compatability
-with `rustfmt`. It will correctly format the macro body as if it was
-a regular `match` expression. Rust-analyzer also works correctly within this macro.
-Even auto refactorings that affect the `#[expand]` (like changing the
-name of an enum variant) work correctly.
+## [`#[replicate]`](https://docs.rs/metamatch/latest/metamatch/attr.replicate.html)
+Easily generate repetitive syntax like trait impls.
 
-`metamatch!` has since gained a few additional features that make it useful for
-a wider range of token manipulation tasks. See the `replicate!` and `quote!`
-variants below.
+```rust
+use metamatch::replicate;
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct NodeIdx(usize);
+
+#[replicate(
+    for (TRAIT, FUNC) in [Add, Sub, Mul, Div, Rem].map(|t| (t, t.lowercase()))
+)]
+impl core::ops::TRAIT for NodeIdx {
+    type Output = Self;
+    fn FUNC(self, rhs: Self) -> Self {
+        NodeIdx(self.0.FUNC(rhs.0))
+    }
+}
+assert!(NodeIdx(1) + NodeIdx(2) == NodeIdx(3));
+```
 
 ## [`metamatch!`](https://docs.rs/metamatch/latest/metamatch/macro.metamatch.html)
+The original motivation and namesake of this crate.
 
-A proc-macro for generating repetitive match arms.
+Match arms for differently typed variants cannot be combined, even if the are
+syntactically identical. This macro lets you stamp out the neccessary
+copies using (`#[expand]`).
+
+The syntax was carefully chosen to ensure compatability with `rustfmt`.
+It will correctly format the macro body as if it was a regular `match` expression.
+Rust-analyzer also works correctly within this macro,
+including auto refactorings that affect the `#[expand]`.
+(The same is also true for `#[replicate]`).
 
 ```rust
 use metamatch::metamatch;
@@ -50,7 +67,7 @@ impl DynVec{
         })
     }
     // v   expands into   v
-    fn len_expanded(&self) -> usize {
+    fn len_after_expansion(&self) -> usize {
         match self {
             DynVec::I8(v) => v.len(),
             DynVec::I16(v) => v.len(),
@@ -60,41 +77,42 @@ impl DynVec{
     }
 }
 ```
-
-Note that `#[expand(..)]` is not an actual attribute,
+<sub>
+Note: <code>#[expand(..)]</code> is not an 'actual' Rust attribute,
 as Rust does not allow attributes on match arms.
-`rustfmt` does though, and that's the trick behind this syntax.
-The `metamatch!` proc macro simply replaces
-`#[expand(..)]` with the generated match arms.
+<code>rustfmt</code> does though, and that's the trick behind this syntax.
+</sub>
 
-## [`#[replicate]`](https://docs.rs/metamatch/latest/metamatch/attr.replicate.html)
-An attribute styled proc-macro with the same syntax as `#[expand]`.
-This still works with `rustfmt`.
+## [`unquote!`](https://docs.rs/metamatch/latest/metamatch/macro.quote.html)
+A generalized expression evaluator.
 
 ```rust
-use metamatch::replicate;
+use metamatch::unquote;
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-struct NodeIdx(usize);
-
-#[replicate(for (TRAIT, FN) in [
-    (Add, add),
-    (Sub, sub),
-    (Mul, mul),
-    (Div, div),
-])]
-impl core::ops::TRAIT for NodeIdx {
-    type Output = Self;
-    fn FN(self, other: Self) -> Self {
-        NodeIdx(self.0.FN(other.0))
-    }
-}
-assert!(NodeIdx(1) + NodeIdx(2) == NodeIdx(3));
+const ARRAY: [i32; 4] = unquote! {
+    let ELEMENTS = for X in 1..5 {
+        quote!(X,)
+    };
+    quote!([ELEMENTS])
+};
+assert_eq!(ARRAY, [1, 2, 3, 4]);
 ```
 
+<sub>
+Note: you may have noticed the use of uppercase variables in these examples.
+That's because by default, metamatch will not replace identifiers
+in your quoted sections that happen to also be defined in your metaprogram.
+Because there's no shadowing in the templates (they're just tokens),
+this could lead to really subtle bugs e.g. if you used an <code>i</code>
+variable. By using uppercase identifiers you indicate that you want these names
+to be replaced inside of nested <code>quote!</code> blocks.
+</sub>
+
 ## [`quote!`](https://docs.rs/metamatch/latest/metamatch/macro.quote.html)
-A generalized version for arbitrary expressions.
-This version gives up on `rustfmt` in exchange for more expressive power.
+Like `unquote!`, but starts out in quoted mode.
+It supports `[< ... >]` styled template tags for more readable templating.
+This syntax was inspired by the `paste` crate,
+and is mostly useful for larger bodies of code that only have a few dynamic parts.
 
 ```rust
 use metamatch::quote;
@@ -109,35 +127,9 @@ const ARRAY: [i32; 4] = quote!{
 assert_eq!(ARRAY, [1, 2, 3, 4]);
 ```
 
-It uses `[< ... >]` styled template tags inspired by the `paste` crate.
-These tags also work within regular `metatmatch` blocks.
-
-## [`unquote!`](https://docs.rs/metamatch/latest/metamatch/macro.quote.html)
-Just like `quote!`, but starts out in unquoted mode.
-Here's the same example as above expressed using `unquote!`:
-
-```rust
-use metamatch::unquote;
-
-const ARRAY: [i32; 4] = unquote! {
-    let ELEMENTS = for X in 1..5 {
-        quote!(X,)
-    };
-    quote!([ELEMENTS])
-};
-assert_eq!(ARRAY, [1, 2, 3, 4]);
-```
 You can switch between quoted and unquoted mode from within any macro using
 the `[<quote>]` and `[<unquote>]` template tags.
-The `quote!(..)` used above is a covenience alias for `[<quote>]..[</quote>]`
-
-Inside `unquote!` you can only use a tiny subset of the full Rust syntax
-thats then evaluated by metamatch. It is dynamically typed and only supports a
-few constructs, so e.g. no structs inside an `unquote`.
-(You can of course use all of Rust inside the quoted context).
-
-All other macros also allow this syntax, despite `for` blocks
-being the main usecase in those.
+The `quote!(..)` used earlier is a covenience alias for `[<quote>]..[</quote>]`
 
 
 ## License

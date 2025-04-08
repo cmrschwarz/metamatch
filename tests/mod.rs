@@ -166,6 +166,26 @@ fn replicate_trait_defs() {
 }
 
 #[test]
+fn replicate_trait_defs_fancy() {
+    #[derive(Debug, PartialEq)]
+    struct NodeIdx(usize);
+
+    #[replicate{
+        let traits = [Add, Sub, Mul, Div];
+        for (TRAIT, FUNC) in zip(traits, traits.map(lowercase))
+    }]
+    impl core::ops::TRAIT for NodeIdx {
+        type Output = Self;
+        fn FUNC(self, other: Self) -> Self {
+            NodeIdx(self.0.FUNC(other.0))
+        }
+    }
+
+    assert_eq!(NodeIdx(1) + NodeIdx(2), NodeIdx(3));
+    assert_eq!(NodeIdx(2) * NodeIdx(3), NodeIdx(6));
+}
+
+#[test]
 fn quote_array() {
     let array: [i32; 4] = quote! {
         [
@@ -192,7 +212,8 @@ fn unquote_array() {
 fn while_template() {
     let array: [i32; 4] = quote! {
         [
-            [<let mut X = 1; while X < 5>]
+            [<let mut X = 1;>]
+            [<while X < 5>]
                 X,
                 [< X += 1>]
             [</while>]
@@ -427,6 +448,19 @@ fn while_let() {
         quote!([ELEMS]);
     };
     assert_eq!(res, [(1,), (2,)]);
+}
+
+#[test]
+fn replicate_while_let() {
+    #![allow(unused)]
+    #[replicate(
+        let items = (0..10);
+        while let (FN, X, Y) = zip(items.map(|x| ident("f_" + str(x))), items, items.map(|x|x*2))
+    )]
+    fn FN() -> i32 {
+        X + Y
+    }
+    assert_eq!(f_5(), 15);
 }
 
 #[test]
