@@ -10,11 +10,11 @@ use proc_macro::{
 };
 
 use super::ast::{
-    BinaryOpKind, Binding, BuiltinFn, Context, Function, Lambda, MetaExpr,
-    MetaValue, Pattern, Scope, ScopeKind, UnaryOpKind,
+    BinaryOpKind, Binding, BuiltinFn, Context, EvalError, Function, Lambda,
+    MetaExpr, MetaValue, Pattern, Scope, ScopeKind, UnaryOpKind,
 };
 
-type Result<T> = std::result::Result<T, ()>;
+type Result<T> = std::result::Result<T, EvalError>;
 
 fn comma_token(span: Span) -> TokenTree {
     let mut punct = Punct::new(',', Spacing::Alone);
@@ -127,7 +127,7 @@ impl<'a> Callable<'a> {
                         args.len()
                     ),
                     );
-                    return Err(());
+                    return Err(EvalError::Error);
                 }
                 ctx.push_eval_scope();
                 for (i, arg) in args.iter().enumerate() {
@@ -151,7 +151,7 @@ impl<'a> Callable<'a> {
                             args.len()
                         ),
                     );
-                    return Err(());
+                    return Err(EvalError::Error);
                 }
                 ctx.push_eval_scope();
                 for (i, arg) in args.iter().enumerate() {
@@ -177,7 +177,7 @@ impl<'a> Callable<'a> {
                             args.len()
                         ),
                     );
-                        return Err(());
+                        return Err(EvalError::Error);
                     }
                 }
                 (builtin_fn.builtin)(ctx, span, args)
@@ -202,7 +202,7 @@ fn builtin_fn_zip(
                     i + 1
                 ),
             );
-            return Err(());
+            return Err(EvalError::Error);
         };
         source_lists.push(iterable);
     }
@@ -220,7 +220,7 @@ fn builtin_fn_zip(
                        len
                     ),
                 );
-            return Err(());
+            return Err(EvalError::Error);
         }
     }
     let mut res = Vec::new();
@@ -257,7 +257,7 @@ fn builtin_fn_len(
                 callsite,
                 format!("value of type `{}` has no len()", args[0].kind()),
             );
-            return Err(());
+            return Err(EvalError::Error);
         }
     };
     Ok(Rc::new(MetaValue::Int {
@@ -287,7 +287,7 @@ fn builtin_fn_chars(
         MetaValue::Token(t) => match t {
             TokenTree::Group(_) => {
                 ctx.error(callsite, "cannot call `chars()` on a Token Group");
-                return Err(());
+                return Err(EvalError::Error);
             }
             TokenTree::Ident(ident) => to_char_list(ident.to_string().chars()),
             TokenTree::Punct(punct) => to_char_list([punct.as_char()]),
@@ -313,7 +313,7 @@ fn builtin_fn_chars(
                     args[0].kind()
                 ),
             );
-            return Err(());
+            return Err(EvalError::Error);
         }
     };
     Ok(Rc::new(MetaValue::List(RefCell::new(chars))))
@@ -340,7 +340,7 @@ fn builtin_fn_bytes(
         MetaValue::Token(t) => match t {
             TokenTree::Group(_) => {
                 ctx.error(callsite, "cannot call `bytes()` on a Token Group");
-                return Err(());
+                return Err(EvalError::Error);
             }
             TokenTree::Ident(ident) => to_byte_list(ident.to_string().bytes()),
             TokenTree::Punct(punct) => to_byte_list([punct.as_char() as u8]),
@@ -369,7 +369,7 @@ fn builtin_fn_bytes(
                     args[0].kind()
                 ),
             );
-            return Err(());
+            return Err(EvalError::Error);
         }
     };
     Ok(Rc::new(MetaValue::List(RefCell::new(chars))))
@@ -388,7 +388,7 @@ fn builtin_fn_map(
                 args[0].kind()
             ),
         );
-        return Err(());
+        return Err(EvalError::Error);
     };
 
     let Some(callable) = Callable::from_value(&args[1]) else {
@@ -399,7 +399,7 @@ fn builtin_fn_map(
                 args[0].kind()
             ),
         );
-        return Err(());
+        return Err(EvalError::Error);
     };
 
     let mut res = Vec::new();
@@ -458,7 +458,7 @@ fn builtin_fn_ident(
             callsite,
             format!("cannot cast `{}` to `ident`", args[0].kind()),
         );
-        return Err(());
+        return Err(EvalError::Error);
     };
     let span = args[0].span();
     // HACK //TODO: better impl of this
@@ -468,7 +468,7 @@ fn builtin_fn_ident(
             callsite,
             format!("cast failed: invalid identifier `{name}`",),
         );
-        return Err(());
+        return Err(EvalError::Error);
     };
     Ok(Rc::new(MetaValue::Token(TokenTree::Ident(ident))))
 }
@@ -483,7 +483,7 @@ fn builtin_fn_str(
             callsite,
             format!("cannot cast `{}` to `str`", args[0].kind()),
         );
-        return Err(());
+        return Err(EvalError::Error);
     };
 
     Ok(Rc::new(MetaValue::String {
@@ -555,7 +555,7 @@ impl Context {
                             val.kind()
                         ),
                     );
-                    return Err(());
+                    return Err(EvalError::Error);
                 };
                 if pat_bindings.len() != val_elems.len() {
                     self.error(
@@ -566,7 +566,7 @@ impl Context {
                             val_elems.len()
                         ),
                     );
-                    return Err(());
+                    return Err(EvalError::Error);
                 }
                 for i in 0..val_elems.len() {
                     self.match_and_bind_pattern(
@@ -586,7 +586,7 @@ impl Context {
                         *span,
                         format!("list pattern does not match {}", val.kind()),
                     );
-                    return Err(());
+                    return Err(EvalError::Error);
                 };
                 let list = list.borrow();
                 if pat_bindings.len() != list.len() {
@@ -598,7 +598,7 @@ impl Context {
                             list.len()
                         ),
                     );
-                    return Err(());
+                    return Err(EvalError::Error);
                 }
                 for i in 0..list.len() {
                     self.match_and_bind_pattern(
@@ -660,7 +660,7 @@ impl Context {
                             args[0].kind()
                         ),
                     );
-                    Err(())
+                    Err(EvalError::Error)
                 }
             }
         };
@@ -683,7 +683,7 @@ impl Context {
                         args[0].kind()
                     ),
                 );
-                return Err(());
+                return Err(EvalError::Error);
             };
             Ok(Rc::new(MetaValue::List(RefCell::new(f(&list.borrow())))))
         };
@@ -733,7 +733,7 @@ impl Context {
             | MetaValue::Lambda(_)
             | MetaValue::BuiltinFn(_) => {
                 self.error(eval_span, "function cannot be tokenized");
-                return Err(());
+                return Err(EvalError::Error);
             }
             MetaValue::List(vals) => {
                 let mut list = Vec::new();
@@ -788,13 +788,16 @@ impl Context {
     ) -> TokenStream {
         debug_assert_eq!(self.scopes.len(), 1, "scopes");
         if self.errors.is_empty() {
-            let mut res = Vec::new();
-            if self
-                .eval_stmt_list_to_stream(&mut res, eval_span, exprs)
-                .is_ok()
-                && self.errors.is_empty()
-            {
-                return TokenStream::from_iter(res);
+            self.push_eval_scope();
+            let mut res_stream = Vec::new();
+            let res = self.eval_stmt_list_to_stream(
+                &mut res_stream,
+                eval_span,
+                exprs,
+            );
+            self.pop_scope();
+            if res.is_ok() && self.errors.is_empty() {
+                return TokenStream::from_iter(res_stream);
             }
         }
         self.expand_errors()
@@ -806,9 +809,7 @@ impl Context {
         exprs: &[Rc<MetaExpr>],
     ) -> Result<()> {
         for expr in exprs {
-            let Ok(v) = self.eval(expr) else {
-                continue;
-            };
+            let v = self.eval(expr)?;
             self.append_value_to_stream(tgt, eval_span, &v)?;
         }
         Ok(())
@@ -821,9 +822,7 @@ impl Context {
         let mut res = Vec::new();
         let mut last_expr = self.empty_token_list.clone();
         for expr in exprs {
-            let Ok(v) = self.eval(expr) else {
-                continue;
-            };
+            let v = self.eval(expr)?;
             self.append_value_to_stream(&mut res, eval_span, &last_expr)?;
             last_expr = v;
         }
@@ -842,6 +841,10 @@ impl Context {
 
     fn eval(&mut self, expr: &MetaExpr) -> Result<Rc<MetaValue>> {
         match expr {
+            MetaExpr::Break { span: _, expr } => Err(EvalError::Break(
+                expr.as_ref().map(|x| self.eval(x)).transpose()?,
+            )),
+            MetaExpr::Continue { .. } => Err(EvalError::Continue),
             MetaExpr::Parenthesized { span: _, expr } => self.eval(expr),
             MetaExpr::Literal { span: _, value } => Ok(value.clone()),
             MetaExpr::Ident { span, name } => {
@@ -876,7 +879,7 @@ impl Context {
                     TokenStream::from_iter(res),
                 )))))
             }
-            MetaExpr::ForExpansion {
+            MetaExpr::For {
                 span,
                 pattern,
                 variants_expr,
@@ -888,7 +891,7 @@ impl Context {
                         variants_expr.span(),
                         format!("cannot iterate over {}", input_list.kind()),
                     );
-                    return Err(());
+                    return Err(EvalError::Error);
                 };
                 let mut res = Vec::new();
 
@@ -899,16 +902,45 @@ impl Context {
                         .is_err()
                     {
                         self.scopes.pop();
-                        return Err(());
+                        return Err(EvalError::Error);
                     }
                     if self
                         .eval_stmt_list_to_stream(&mut res, *span, body)
                         .is_err()
                     {
                         self.scopes.pop();
-                        return Err(());
+                        return Err(EvalError::Error);
                     }
                     self.scopes.pop();
+                }
+                Ok(Rc::new(MetaValue::Tokens(res)))
+            }
+            MetaExpr::Loop { span, body } => {
+                let mut res = Vec::new();
+                loop {
+                    self.push_eval_scope();
+                    let v =
+                        self.eval_stmt_list_to_stream(&mut res, *span, body);
+                    self.pop_scope();
+
+                    match v {
+                        Ok(()) => continue,
+                        Err(EvalError::Continue) => continue,
+                        Err(EvalError::Break(expr)) => {
+                            if let Some(expr) = expr {
+                                if res.is_empty() {
+                                    return Ok(expr);
+                                }
+                                self.append_value_to_stream(
+                                    &mut res, *span, &expr,
+                                )?;
+                            }
+                            break;
+                        }
+                        Err(EvalError::Error) => {
+                            return Err(EvalError::Error);
+                        }
+                    }
                 }
                 Ok(Rc::new(MetaValue::Tokens(res)))
             }
@@ -965,7 +997,7 @@ impl Context {
                             condition_val.kind()
                         ),
                     );
-                    return Err(());
+                    return Err(EvalError::Error);
                 };
                 if *condition {
                     self.eval_stmt_list_to_meta_val(*span, body)
@@ -993,7 +1025,7 @@ impl Context {
                         ep.for_expr.span(),
                         format!("cannot iterate over {}", input_list.kind()),
                     );
-                    return Err(());
+                    return Err(EvalError::Error);
                 };
                 let mut res = Vec::new();
                 for (i, elem) in list_elems.borrow().iter().enumerate() {
@@ -1009,7 +1041,7 @@ impl Context {
                         .is_err()
                     {
                         self.scopes.pop();
-                        return Err(());
+                        return Err(EvalError::Error);
                     }
                     if self
                         .eval_stmt_list_to_stream(
@@ -1020,7 +1052,7 @@ impl Context {
                         .is_err()
                     {
                         self.scopes.pop();
-                        return Err(());
+                        return Err(EvalError::Error);
                     }
 
                     self.scopes.pop();
@@ -1063,7 +1095,7 @@ impl Context {
                 *span,
                 format!("cannot index into `{}`", list_val.kind()),
             );
-            return Err(());
+            return Err(EvalError::Error);
         };
 
         let index_val = self.eval(index)?;
@@ -1076,7 +1108,7 @@ impl Context {
                 list_expr.span(),
                 format!("cannot index into `{}`", index_val.kind()),
             );
-            return Err(());
+            return Err(EvalError::Error);
         };
 
         let list = list.borrow();
@@ -1091,7 +1123,7 @@ impl Context {
                     list.len()
                 ),
             );
-            return Err(());
+            return Err(EvalError::Error);
         };
         drop(list);
         Ok((idx, list_val))
@@ -1137,7 +1169,7 @@ impl Context {
                             operand.kind()
                         ),
                     );
-                    Err(())
+                    Err(EvalError::Error)
                 }
             },
             UnaryOpKind::Not => match &*operand {
@@ -1170,7 +1202,7 @@ impl Context {
                             operand.kind(),
                         ),
                     );
-                    Err(())
+                    Err(EvalError::Error)
                 }
             },
         }
@@ -1233,7 +1265,7 @@ impl Context {
                         op_kind.symbol(),
                     ),
                 );
-                Err(())
+                Err(EvalError::Error)
             }
             BinaryOpKind::Assign
             | BinaryOpKind::AddAssign
@@ -1294,7 +1326,7 @@ impl Context {
                         op_kind.symbol(),
                     ),
                 );
-                Err(())
+                Err(EvalError::Error)
             }
 
             BinaryOpKind::Assign
@@ -1332,7 +1364,7 @@ impl Context {
                                 span,
                                 format!("cannot assign to immutable variable `{name}`"),
                             );
-                            return Err(());
+                            return Err(EvalError::Error);
                         }
                         let binding_value = binding.value.clone();
 
@@ -1360,7 +1392,7 @@ impl Context {
                     span,
                     format!("cannot find `{name}` in this scope"),
                 );
-                Err(())
+                Err(EvalError::Error)
             }
             MetaExpr::Literal { .. }
             | MetaExpr::LetBinding { .. }
@@ -1369,18 +1401,21 @@ impl Context {
             | MetaExpr::Lambda(..)
             | MetaExpr::RawOutputGroup { .. }
             | MetaExpr::IfExpr { .. }
-            | MetaExpr::ForExpansion { .. }
+            | MetaExpr::For { .. }
+            | MetaExpr::Loop { .. }
             | MetaExpr::ExpandPattern(..)
             | MetaExpr::Scope { .. }
             | MetaExpr::List { .. }
             | MetaExpr::Tuple { .. }
+            | MetaExpr::Break { .. }
+            | MetaExpr::Continue { .. }
             | MetaExpr::OpUnary { .. }
             | MetaExpr::OpBinary { .. } => {
                 self.error(
                     lhs.span(),
                     format!("{} is not assignable", lhs.kind_str()),
                 );
-                Err(())
+                Err(EvalError::Error)
             }
             MetaExpr::ListAccess { span, list, index } => {
                 let (idx, list) = self.access_list(span, list, index)?;
@@ -1474,7 +1509,7 @@ impl Context {
                         ),
                     );
                 }
-                Err(())
+                Err(EvalError::Error)
             }
         }
     }
@@ -1484,7 +1519,7 @@ impl Context {
         span: Span,
         lhs: &MetaExpr,
         arg_exprs: &Vec<Rc<MetaExpr>>,
-    ) -> std::result::Result<Rc<MetaValue>, ()> {
+    ) -> Result<Rc<MetaValue>> {
         let lhs = if let MetaExpr::Ident { span, name } = lhs {
             // We could just evaluate but we want a better error message
             // than "`token` is not callable".
@@ -1492,7 +1527,7 @@ impl Context {
                 val
             } else {
                 self.error(*span, format!("undefined function `{name}`"));
-                return Err(());
+                return Err(EvalError::Error);
             }
         } else {
             self.eval(lhs)?
@@ -1503,13 +1538,13 @@ impl Context {
                 span,
                 format!("value of type `{}` is not callable", lhs.kind()),
             );
-            return Err(());
+            return Err(EvalError::Error);
         };
 
         let mut args = Vec::new();
         for arg in arg_exprs {
             let Ok(val) = self.eval(arg) else {
-                return Err(());
+                return Err(EvalError::Error);
             };
             args.push(val);
         }

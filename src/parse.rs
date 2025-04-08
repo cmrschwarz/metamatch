@@ -320,7 +320,7 @@ impl Context {
             bindings: HashMap::new(),
         });
     }
-    pub fn pop_dummy_scope(&mut self) {
+    pub fn pop_scope(&mut self) {
         debug_assert!(self.scopes.len() > 1);
         self.scopes.pop();
     }
@@ -530,7 +530,7 @@ impl Context {
 
         let res = self.parse_raw_block(group.span(), rest_tokens);
 
-        self.pop_dummy_scope();
+        self.pop_scope();
 
         match res? {
             RawBodyParseResult::ParseRaw | RawBodyParseResult::Complete(_) => {
@@ -659,6 +659,19 @@ impl Context {
                     }
                     "for" => {
                         return self.parse_for(
+                            span,
+                            &tokens[1..],
+                            allow_trailing_block,
+                        );
+                    }
+                    "break" => {
+                        return self.parse_break(span, &tokens[1..]);
+                    }
+                    "continue" => {
+                        return self.parse_continue(span, &tokens[1..]);
+                    }
+                    "loop" => {
+                        return self.parse_loop(
                             span,
                             &tokens[1..],
                             allow_trailing_block,
@@ -967,7 +980,7 @@ impl Context {
             .parse_raw_block_to_exprs(raw_span, &raw_block_contents)
             .unwrap_or_default(); // we continue in case of a nested error
 
-        self.pop_dummy_scope();
+        self.pop_scope();
 
         Ok((
             Rc::new(MetaExpr::Scope {
@@ -1127,7 +1140,7 @@ impl Context {
                         params_rest[0].span(),
                         "expected `,` between parameters",
                     );
-                    self.pop_dummy_scope();
+                    self.pop_scope();
                     return Err(());
                 }
             }
@@ -1141,7 +1154,7 @@ impl Context {
                     tokens[2].span(),
                     "expected function body after parameters",
                 );
-                self.pop_dummy_scope();
+                self.pop_scope();
 
                 return Err(());
             }
@@ -1149,7 +1162,7 @@ impl Context {
         } else {
             let TokenTree::Group(body_group) = &rest[0] else {
                 self.error(tokens[0].span(), "expected function body");
-                self.pop_dummy_scope();
+                self.pop_scope();
                 return Err(());
             };
 
@@ -1158,14 +1171,14 @@ impl Context {
                     body_group.span(),
                     "expected braces around function body",
                 );
-                self.pop_dummy_scope();
+                self.pop_scope();
                 return Err(());
             }
 
             let body_tokens = body_group.stream().into_vec();
             let body = self.parse_body_deny_trailing(name_span, &body_tokens);
 
-            self.pop_dummy_scope();
+            self.pop_scope();
 
             (body, &rest[1..], None)
         };
@@ -1215,7 +1228,7 @@ impl Context {
                     }
                 }
                 self.error(rest[0].span(), "expected `,` between parameters");
-                self.pop_dummy_scope();
+                self.pop_scope();
                 return Err(());
             }
         }
@@ -1233,18 +1246,18 @@ impl Context {
                     .unwrap_or(tokens[tokens.len() - rest.len() - 1].span()),
                 "expected `|` to close parameter list".to_owned(),
             );
-            self.pop_dummy_scope();
+            self.pop_scope();
             return Err(());
         }
 
         let Ok((body, rest)) =
             self.parse_expr_deny_trailing_block(fn_span, &rest[1..], 1)
         else {
-            self.pop_dummy_scope();
+            self.pop_scope();
             return Err(());
         };
 
-        self.pop_dummy_scope();
+        self.pop_scope();
 
         Ok((
             Rc::new(MetaExpr::Lambda(Rc::new(Lambda {
@@ -1318,13 +1331,13 @@ impl Context {
             body =
                 self.parse_body_deny_trailing(body_group.span(), &body_tokens);
 
-            self.pop_dummy_scope();
+            self.pop_scope();
             final_rest = &rest[1..];
             trailing_block = None;
         };
 
         Ok((
-            Rc::new(MetaExpr::ForExpansion {
+            Rc::new(MetaExpr::For {
                 span: for_span,
                 pattern,
                 variants_expr,
@@ -1332,6 +1345,103 @@ impl Context {
             }),
             final_rest,
             trailing_block,
+        ))
+    }
+
+    fn parse_loop<'a>(
+        &mut self,
+        loop_span: Span,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        self.push_dummy_scope(ScopeKind::Unquoted);
+        let (body, rest, trailing_block);
+        if tokens.is_empty() && allow_trailing_block {
+            body = Vec::new();
+            rest = tokens;
+            trailing_block = Some(TrailingBlockKind::Loop);
+        } else {
+            // Parse body
+            let Some(TokenTree::Group(body_group)) = tokens.first() else {
+                self.error(
+                    tokens.first().map(|t| t.span()).unwrap_or(loop_span),
+                    "expected for loop body",
+                );
+                return Err(());
+            };
+
+            if body_group.delimiter() != Delimiter::Brace {
+                self.error(
+                    body_group.span(),
+                    "expected braces around for loop body",
+                );
+                return Err(());
+            }
+
+            let body_tokens = body_group.stream().into_vec();
+
+            body =
+                self.parse_body_deny_trailing(body_group.span(), &body_tokens);
+
+            self.pop_scope();
+            rest = &tokens[1..];
+            trailing_block = None;
+        };
+
+        Ok((
+            Rc::new(MetaExpr::Loop {
+                span: loop_span,
+                body,
+            }),
+            rest,
+            trailing_block,
+        ))
+    }
+
+    fn parse_break<'a>(
+        &mut self,
+        break_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        let mut followed_by_semi = false;
+        if let Some(TokenTree::Punct(p)) = tokens.first() {
+            if p.as_char() == ';' {
+                followed_by_semi = true;
+            }
+        }
+        let mut rest = tokens;
+        let mut break_val = None;
+        if !tokens.is_empty() && !followed_by_semi {
+            let (val, rest_new) =
+                self.parse_expr_deny_trailing_block(break_span, tokens, 1)?;
+            break_val = Some(val);
+            rest = rest_new;
+        }
+
+        Ok((
+            Rc::new(MetaExpr::Break {
+                span: break_span,
+                expr: break_val,
+            }),
+            rest,
+            None,
+        ))
+    }
+
+    fn parse_continue<'a>(
+        &mut self,
+        continue_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        Ok((
+            Rc::new(MetaExpr::Continue {
+                span: continue_span,
+            }),
+            tokens,
+            None,
         ))
     }
 
@@ -1382,7 +1492,7 @@ impl Context {
         let body =
             self.parse_body_deny_trailing(body_group.span(), &body_tokens);
 
-        self.pop_dummy_scope();
+        self.pop_scope();
 
         let mut rest = &rest[1..];
 
@@ -1537,7 +1647,7 @@ impl Context {
                 let mut rest = &tokens[1..];
                 let mut span = ident.span();
                 let mut mutable = false;
-                let mut super_bound = starts_with_uppercase(&name);
+                let mut super_bound = false;
                 if &*name == "super" {
                     if let Some(TokenTree::Ident(ident)) = tokens.get(1) {
                         name = ident.to_string();
@@ -1570,6 +1680,7 @@ impl Context {
                     self.error(span, "`super` must come before `mut`");
                     return Err(());
                 }
+                super_bound = super_bound || starts_with_uppercase(&name);
                 Ok((
                     Pattern::Ident(BindingParameter {
                         span: ident.span(),
@@ -1768,7 +1879,13 @@ impl Context {
 
         match kind {
             TrailingBlockKind::For => {
-                let MetaExpr::ForExpansion { body, .. } = expr else {
+                let MetaExpr::For { body, .. } = expr else {
+                    unreachable!()
+                };
+                *body = contents;
+            }
+            TrailingBlockKind::Loop => {
+                let MetaExpr::Loop { body, .. } = expr else {
                     unreachable!()
                 };
                 *body = contents;
@@ -1935,7 +2052,7 @@ impl Context {
                     format!("template tag `{}` is never closed", tb.to_str()),
                 );
             }
-            self.pop_dummy_scope();
+            self.pop_scope();
             return Err(());
         }
 
@@ -1946,7 +2063,7 @@ impl Context {
                     "expand ignores the attribute body",
                 );
             }
-            self.pop_dummy_scope();
+            self.pop_scope();
             return Ok((self.empty_token_list_expr.clone(), parent_rest));
         };
 
@@ -1958,7 +2075,7 @@ impl Context {
                     .unwrap_or(group.span()),
                 "invalid match arm",
             );
-            self.pop_dummy_scope();
+            self.pop_scope();
             return Err(());
         };
 
@@ -1973,7 +2090,7 @@ impl Context {
                     trailing_block,
                     contents?,
                 );
-                self.pop_dummy_scope();
+                self.pop_scope();
             }
             ExpandKind::ExpandPattern => {
                 if trailing_block != TrailingBlockKind::For {
@@ -1997,9 +2114,9 @@ impl Context {
                     &parent_rest[match_arm_ends.guard_end + 2
                         ..match_arm_ends.body_end],
                 );
-                self.pop_dummy_scope();
+                self.pop_scope();
 
-                let MetaExpr::ForExpansion {
+                let MetaExpr::For {
                     span: _,
                     pattern: for_pattern,
                     variants_expr: for_expr,
@@ -2261,7 +2378,7 @@ impl Context {
         if trailing_block == TrailingBlockKind::Unquote {
             let (contents, rest, trailing_block_kind) =
                 self.parse_body(block_parent_span, continuation, false);
-            self.pop_dummy_scope();
+            self.pop_scope();
 
             let tokens_consumed = continuation.len() - rest.len();
 
@@ -2289,7 +2406,7 @@ impl Context {
             return Ok(TemplateInRawParseResult::ExprsAdded);
         }
         let res = self.parse_raw_block(block_parent_span, continuation);
-        self.pop_dummy_scope();
+        self.pop_scope();
         match res? {
             RawBodyParseResult::ParseRaw | RawBodyParseResult::Complete(_) => {
                 self.error_no_closing_tag(group.span(), trailing_block);
@@ -2343,7 +2460,7 @@ impl Context {
                         else_tag.span(),
                         &block_tokens[*block_continuation..],
                     );
-                    self.pop_dummy_scope();
+                    self.pop_scope();
                     let RawBodyParseResult::UnmatchedEnd {
                         span,
                         kind,

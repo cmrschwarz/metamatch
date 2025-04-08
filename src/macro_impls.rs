@@ -71,8 +71,8 @@ pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
 
     ctx.close_expr_after_trailing_body(&mut exprs, trailing_block, contents);
 
-    ctx.pop_dummy_scope();
-    ctx.pop_dummy_scope();
+    ctx.pop_scope();
+    ctx.pop_scope();
 
     ctx.eval_to_token_stream(Span::call_site(), &exprs)
 }

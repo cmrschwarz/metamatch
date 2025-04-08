@@ -19,6 +19,12 @@ pub struct BindingParameter {
     pub super_bound: bool,
 }
 
+pub enum EvalError {
+    Error,
+    Break(Option<Rc<MetaValue>>),
+    Continue,
+}
+
 pub struct BuiltinFn {
     pub name: Rc<str>,
     pub param_count: Option<usize>,
@@ -28,7 +34,7 @@ pub struct BuiltinFn {
             &mut Context,
             Span,
             &[Rc<MetaValue>],
-        ) -> Result<Rc<MetaValue>, ()>,
+        ) -> Result<Rc<MetaValue>, EvalError>,
     >,
 }
 
@@ -107,6 +113,13 @@ pub struct ExpandPattern {
 
 #[derive(Debug)]
 pub enum MetaExpr {
+    Break {
+        span: Span,
+        expr: Option<Rc<MetaExpr>>,
+    },
+    Continue {
+        span: Span,
+    },
     Literal {
         span: Span,
         value: Rc<MetaValue>,
@@ -138,10 +151,14 @@ pub enum MetaExpr {
         body: Vec<Rc<MetaExpr>>,
         else_expr: Option<Rc<MetaExpr>>,
     },
-    ForExpansion {
+    For {
         span: Span,
         pattern: Pattern,
         variants_expr: Rc<MetaExpr>,
+        body: Vec<Rc<MetaExpr>>,
+    },
+    Loop {
+        span: Span,
         body: Vec<Rc<MetaExpr>>,
     },
     Parenthesized {
@@ -264,6 +281,7 @@ pub struct Context {
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum TrailingBlockKind {
     For,
+    Loop,
     If,
     Else,
     Let,
@@ -573,6 +591,8 @@ impl BinaryOpKind {
 impl MetaExpr {
     pub fn span(&self) -> Span {
         *match self {
+            MetaExpr::Break { span, .. } => span,
+            MetaExpr::Continue { span, .. } => span,
             MetaExpr::Literal { span, .. } => span,
             MetaExpr::Ident { span, .. } => span,
             MetaExpr::LetBinding { span, .. } => span,
@@ -582,7 +602,8 @@ impl MetaExpr {
             MetaExpr::Lambda(lambda) => &lambda.span,
             MetaExpr::RawOutputGroup { span, .. } => span,
             MetaExpr::IfExpr { span, .. } => span,
-            MetaExpr::ForExpansion { span, .. } => span,
+            MetaExpr::For { span, .. } => span,
+            MetaExpr::Loop { span, .. } => span,
             MetaExpr::Scope { span, .. } => span,
             MetaExpr::List { span, .. } => span,
             MetaExpr::Tuple { span, .. } => span,
@@ -594,6 +615,8 @@ impl MetaExpr {
     }
     pub fn kind_str(&self) -> &'static str {
         match self {
+            MetaExpr::Break { .. } => "continue",
+            MetaExpr::Continue { .. } => "break",
             MetaExpr::Literal { .. } => "literal",
             MetaExpr::Ident { .. } => "identifier",
             MetaExpr::LetBinding { .. } => "let binding",
@@ -602,7 +625,8 @@ impl MetaExpr {
             MetaExpr::Lambda { .. } => "lambda",
             MetaExpr::RawOutputGroup { .. } => "token tree",
             MetaExpr::IfExpr { .. } => "if expression",
-            MetaExpr::ForExpansion { .. } => "for loop",
+            MetaExpr::For { .. } => "for loop",
+            MetaExpr::Loop { .. } => "loop",
             MetaExpr::ExpandPattern { .. } => "expand pattern",
             MetaExpr::Scope { .. } => "scope",
             MetaExpr::List { .. } => "list",
@@ -617,7 +641,8 @@ impl MetaExpr {
         match self {
             MetaExpr::LetBinding { .. }
             | MetaExpr::FnDecl(..)
-            | MetaExpr::ForExpansion { .. }
+            | MetaExpr::For { .. }
+            | MetaExpr::Loop { .. }
             | MetaExpr::IfExpr { .. } => true,
 
             MetaExpr::Literal { .. }
@@ -632,7 +657,9 @@ impl MetaExpr {
             | MetaExpr::OpUnary { .. }
             | MetaExpr::OpBinary { .. }
             | MetaExpr::ListAccess { .. }
-            | MetaExpr::Parenthesized { .. } => false,
+            | MetaExpr::Parenthesized { .. }
+            | MetaExpr::Break { .. }
+            | MetaExpr::Continue { .. } => false,
         }
     }
 }
@@ -641,6 +668,7 @@ impl TrailingBlockKind {
     pub fn to_str(self) -> &'static str {
         match self {
             TrailingBlockKind::For => "for",
+            TrailingBlockKind::Loop => "loop",
             TrailingBlockKind::If => "if",
             TrailingBlockKind::Else => "else",
             TrailingBlockKind::Let => "let",

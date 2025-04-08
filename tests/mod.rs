@@ -348,6 +348,22 @@ fn if_within_parentheses_remains_typed() {
 }
 
 #[test]
+fn loop_break() {
+    let res = unquote! {
+        let mut X = 0;
+        loop {
+            X += 1;
+            if X == 10 {
+                break;
+            }
+            quote!(X+);
+        }
+        quote!(X);
+    };
+    assert_eq!(res, 55);
+}
+
+#[test]
 fn macro_errors() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/**/*.rs");
