@@ -340,6 +340,14 @@ fn if_template_expansion() {
 }
 
 #[test]
+fn if_within_parentheses_remains_typed() {
+    let res = unquote! {
+        (if true {1} else {2}) + 2
+    };
+    assert_eq!(res, 3);
+}
+
+#[test]
 fn macro_errors() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/**/*.rs");

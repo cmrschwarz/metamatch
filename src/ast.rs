@@ -144,6 +144,10 @@ pub enum MetaExpr {
         variants_expr: Rc<MetaExpr>,
         body: Vec<Rc<MetaExpr>>,
     },
+    Parenthesized {
+        span: Span,
+        expr: Rc<MetaExpr>,
+    },
     // boxed cause large
     ExpandPattern(Box<ExpandPattern>),
     Scope {
@@ -585,6 +589,7 @@ impl MetaExpr {
             MetaExpr::OpUnary { span, .. } => span,
             MetaExpr::OpBinary { span, .. } => span,
             MetaExpr::ListAccess { span, .. } => span,
+            MetaExpr::Parenthesized { span, .. } => span,
         }
     }
     pub fn kind_str(&self) -> &'static str {
@@ -605,26 +610,29 @@ impl MetaExpr {
             MetaExpr::OpUnary { .. } => "unary operator",
             MetaExpr::OpBinary { .. } => "binary operator",
             MetaExpr::ListAccess { .. } => "property access",
+            MetaExpr::Parenthesized { .. } => "parentheses",
         }
     }
     pub fn may_drop_semicolon(&self) -> bool {
         match self {
-            MetaExpr::LetBinding { .. } | MetaExpr::FnDecl(..) => true,
+            MetaExpr::LetBinding { .. }
+            | MetaExpr::FnDecl(..)
+            | MetaExpr::ForExpansion { .. }
+            | MetaExpr::IfExpr { .. } => true,
 
             MetaExpr::Literal { .. }
             | MetaExpr::Ident { .. }
             | MetaExpr::Call { .. }
             | MetaExpr::Lambda(..)
             | MetaExpr::RawOutputGroup { .. }
-            | MetaExpr::IfExpr { .. }
-            | MetaExpr::ForExpansion { .. }
             | MetaExpr::ExpandPattern(..)
             | MetaExpr::Scope { .. }
             | MetaExpr::List { .. }
             | MetaExpr::Tuple { .. }
             | MetaExpr::OpUnary { .. }
             | MetaExpr::OpBinary { .. }
-            | MetaExpr::ListAccess { .. } => false,
+            | MetaExpr::ListAccess { .. }
+            | MetaExpr::Parenthesized { .. } => false,
         }
     }
 }

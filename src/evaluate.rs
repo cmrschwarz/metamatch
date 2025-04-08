@@ -819,7 +819,18 @@ impl Context {
         exprs: &[Rc<MetaExpr>],
     ) -> Result<Rc<MetaValue>> {
         let mut res = Vec::new();
-        self.eval_stmt_list_to_stream(&mut res, eval_span, exprs)?;
+        let mut last_expr = self.empty_token_list.clone();
+        for expr in exprs {
+            let Ok(v) = self.eval(expr) else {
+                continue;
+            };
+            self.append_value_to_stream(&mut res, eval_span, &last_expr)?;
+            last_expr = v;
+        }
+        if res.is_empty() {
+            return Ok(last_expr);
+        }
+        self.append_value_to_stream(&mut res, eval_span, &last_expr)?;
         Ok(Rc::new(MetaValue::Tokens(res)))
     }
     fn push_eval_scope(&mut self) {
@@ -831,6 +842,7 @@ impl Context {
 
     fn eval(&mut self, expr: &MetaExpr) -> Result<Rc<MetaValue>> {
         match expr {
+            MetaExpr::Parenthesized { span: _, expr } => self.eval(expr),
             MetaExpr::Literal { span: _, value } => Ok(value.clone()),
             MetaExpr::Ident { span, name } => {
                 if let Some(expr) = self.lookup(name, false) {
@@ -1307,6 +1319,9 @@ impl Context {
         rhs: &MetaExpr,
     ) -> Result<Rc<MetaValue>> {
         match lhs {
+            MetaExpr::Parenthesized { expr, span: _ } => {
+                self.assign_to_expr(op_base_version, span, expr, rhs)
+            }
             MetaExpr::Ident { span: _, name } => {
                 for scope_idx in 0..self.scopes.len() {
                     if let Some(binding) =

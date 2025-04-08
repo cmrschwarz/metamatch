@@ -1607,7 +1607,10 @@ impl Context {
                 self.parse_expr_deny_trailing_block(parent_span, rest, 1)?;
 
             if new_rest.is_empty() && exprs.is_empty() {
-                return Ok(expr);
+                return Ok(Rc::new(MetaExpr::Parenthesized {
+                    span: parent_span,
+                    expr,
+                }));
             }
             exprs.push(expr);
             rest = new_rest;
