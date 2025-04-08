@@ -893,27 +893,43 @@ impl Context {
                     );
                     return Err(EvalError::Error);
                 };
-                let mut res = Vec::new();
+                let mut res_tokens = Vec::new();
 
                 for elem in &*list_elems.borrow() {
                     self.push_eval_scope();
-                    if self
-                        .match_and_bind_pattern(pattern, elem.clone())
-                        .is_err()
-                    {
-                        self.scopes.pop();
-                        return Err(EvalError::Error);
-                    }
-                    if self
-                        .eval_stmt_list_to_stream(&mut res, *span, body)
-                        .is_err()
-                    {
-                        self.scopes.pop();
-                        return Err(EvalError::Error);
+                    let mut res =
+                        self.match_and_bind_pattern(pattern, elem.clone());
+                    if res.is_ok() {
+                        res = self.eval_stmt_list_to_stream(
+                            &mut res_tokens,
+                            *span,
+                            body,
+                        );
                     }
                     self.scopes.pop();
+
+                    match res {
+                        Ok(()) => continue,
+                        Err(EvalError::Continue) => continue,
+                        Err(EvalError::Break(expr)) => {
+                            if let Some(expr) = expr {
+                                if res_tokens.is_empty() {
+                                    return Ok(expr);
+                                }
+                                self.append_value_to_stream(
+                                    &mut res_tokens,
+                                    *span,
+                                    &expr,
+                                )?;
+                            }
+                            break;
+                        }
+                        Err(EvalError::Error) => {
+                            return Err(EvalError::Error);
+                        }
+                    }
                 }
-                Ok(Rc::new(MetaValue::Tokens(res)))
+                Ok(Rc::new(MetaValue::Tokens(res_tokens)))
             }
             MetaExpr::Loop { span, body } => {
                 let mut res = Vec::new();
@@ -1027,47 +1043,39 @@ impl Context {
                     );
                     return Err(EvalError::Error);
                 };
-                let mut res = Vec::new();
+                let mut res_tokens = Vec::new();
                 for (i, elem) in list_elems.borrow().iter().enumerate() {
                     self.push_eval_scope();
                     if i != 0 {
-                        res.push(TokenTree::Punct(Punct::new(
+                        res_tokens.push(TokenTree::Punct(Punct::new(
                             '|',
                             Spacing::Alone,
                         )));
                     }
-                    if self
-                        .match_and_bind_pattern(&ep.for_pattern, elem.clone())
-                        .is_err()
-                    {
-                        self.scopes.pop();
-                        return Err(EvalError::Error);
-                    }
-                    if self
-                        .eval_stmt_list_to_stream(
-                            &mut res,
+                    let mut res = self
+                        .match_and_bind_pattern(&ep.for_pattern, elem.clone());
+
+                    if res.is_ok() {
+                        res = self.eval_stmt_list_to_stream(
+                            &mut res_tokens,
                             ep.span,
                             &ep.match_arm_patterns,
-                        )
-                        .is_err()
-                    {
-                        self.scopes.pop();
-                        return Err(EvalError::Error);
-                    }
-
+                        );
+                    };
                     self.scopes.pop();
+                    res?;
                 }
                 self.eval_stmt_list_to_stream(
-                    &mut res,
+                    &mut res_tokens,
                     ep.span,
                     &ep.match_arm_guard,
                 )?;
                 self.eval_stmt_list_to_stream(
-                    &mut res,
+                    &mut res_tokens,
                     ep.span,
                     &ep.match_arm_body,
                 )?;
-                Ok(Rc::new(MetaValue::Tokens(res)))
+                Ok(Rc::new(MetaValue::Tokens(res_tokens)))
             }
             MetaExpr::ListAccess {
                 span,

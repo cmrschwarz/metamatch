@@ -364,6 +364,20 @@ fn loop_break() {
 }
 
 #[test]
+fn for_continue() {
+    let res = unquote! {
+        let ELEMS = for X in [1, 2, 3] {
+            if X % 2 == 0 {
+                continue;
+            }
+            quote!(X,);
+        };
+        quote!([ELEMS]);
+    };
+    assert_eq!(res, [1, 3]);
+}
+
+#[test]
 fn macro_errors() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/**/*.rs");
