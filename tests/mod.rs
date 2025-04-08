@@ -267,19 +267,50 @@ fn if_statements() {
 }
 
 #[test]
-fn if_templates() {
+fn if_templates_parse() {
     let res = quote! {
-        [<let x = 5>]
-        [<if x % 2 == 0>]
-        1
-        [<else if x % 2 == 1>]
-        2
+        [<if true>]
+            1+
+        [</if>]
+
+        [<if false>]
+            99 +
         [<else>]
-        3
+            1+
+        [</if>]
+
+        [<if false>]
+            99+
+        [<else if true>]
+            1+
+        [</if>]
+
+        [<if false>]
+            99+
+        [<else if false>]
+            99+
+        [</if>]
+
+
+
+        [<if false>]
+            99+
+        [<else if true>]
+            1+
+        [<else>]
+            99+
+        [</if>]
+
+        [<if false>]
+            99
+        [<else if false>]
+            99
+        [<else>]
+            1
         [</if>]
     };
 
-    assert_eq!(res, 2);
+    assert_eq!(res, 5);
 }
 
 #[test]

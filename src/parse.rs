@@ -2359,11 +2359,7 @@ impl Context {
                         TemplateInRawParseResult::ExprsAdded => (),
                     };
 
-                    let else_expr =
-                        std::mem::replace(&mut exprs[if_expr_index], if_expr);
-                    *block_continuation += offset + 1;
-                    *raw_token_list_start = *block_continuation;
-                    else_expr
+                    std::mem::replace(&mut exprs[if_expr_index], if_expr)
                 };
 
                 let if_expr = Rc::get_mut(&mut exprs[if_expr_index]).unwrap();
