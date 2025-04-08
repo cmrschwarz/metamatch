@@ -786,7 +786,7 @@ impl Context {
         eval_span: Span,
         exprs: &[Rc<MetaExpr>],
     ) -> TokenStream {
-        debug_assert_eq!(self.scopes.len(), 1);
+        debug_assert_eq!(self.scopes.len(), 1, "scopes");
         if self.errors.is_empty() {
             let mut res = Vec::new();
             if self

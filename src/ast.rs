@@ -608,7 +608,7 @@ impl MetaExpr {
 }
 
 impl TrailingBlockKind {
-    pub fn to_str(&self) -> &'static str {
+    pub fn to_str(self) -> &'static str {
         match self {
             TrailingBlockKind::For => "for",
             TrailingBlockKind::If => "if",
