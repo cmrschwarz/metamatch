@@ -659,8 +659,7 @@ impl MetaExpr {
     }
     pub fn may_drop_semicolon(&self) -> bool {
         match self {
-            MetaExpr::LetBinding { .. }
-            | MetaExpr::FnDecl(..)
+            MetaExpr::FnDecl(..)
             | MetaExpr::For { .. }
             | MetaExpr::Loop { .. }
             | MetaExpr::While { .. }
@@ -681,7 +680,8 @@ impl MetaExpr {
             | MetaExpr::ListAccess { .. }
             | MetaExpr::Parenthesized { .. }
             | MetaExpr::Break { .. }
-            | MetaExpr::Continue { .. } => false,
+            | MetaExpr::Continue { .. }
+            | MetaExpr::LetBinding { .. } => false,
         }
     }
 }

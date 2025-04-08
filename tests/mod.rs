@@ -377,6 +377,21 @@ fn loop_break() {
 }
 
 #[test]
+fn typed_break_expr() {
+    let res = unquote! {
+        let mut X = 0;
+        let super res = loop {
+            X += 1;
+            if X == 10 {
+                break X;
+            }
+        };
+        quote!(res);
+    };
+    assert_eq!(res, 10);
+}
+
+#[test]
 fn for_continue() {
     let res = unquote! {
         let ELEMS = for X in [1, 2, 3] {

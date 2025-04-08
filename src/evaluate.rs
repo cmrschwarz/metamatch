@@ -960,7 +960,7 @@ impl Context {
                         Err(EvalError::Break { value, span }) => {
                             if let Some(value) = value {
                                 if !res.is_empty() {
-                                    self.error(span, "`break` values in `loop` with non empty output token list");
+                                    self.error(span, "`break` value in `loop` with non empty output token list");
                                     return Err(EvalError::Error);
                                 }
                                 return Ok(value);
