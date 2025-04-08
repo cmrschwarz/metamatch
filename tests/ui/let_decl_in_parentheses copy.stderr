@@ -1,0 +1,5 @@
+error: `let` cannot occur within expression
+ --> tests/ui/let_decl_in_parentheses copy.rs:4:10
+  |
+4 |         (let foo = 3) + 3
+  |          ^^^

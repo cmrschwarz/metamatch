@@ -329,9 +329,13 @@ impl Context {
         &mut self,
         parent_span: Span,
         tokens: &[TokenTree],
+        min_prec: u8,
     ) -> Result<Rc<MetaExpr>> {
-        let (expr, rest) =
-            self.parse_expr_deny_trailing_block(parent_span, tokens)?;
+        let (expr, rest) = self.parse_expr_deny_trailing_block(
+            parent_span,
+            tokens,
+            min_prec,
+        )?;
         if let Some(stray) = rest.first() {
             self.error(stray.span(), "stray token after expression");
         }
@@ -342,22 +346,14 @@ impl Context {
         &mut self,
         parent_span: Span,
         tokens: &'a [TokenTree],
+        min_prec: u8,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree])> {
         let (expr, rest, _trailing_block) =
-            self.parse_expr(parent_span, tokens, false)?;
+            self.parse_expr(parent_span, tokens, false, min_prec)?;
         Ok((expr, rest))
     }
-    fn parse_expr<'a>(
-        &mut self,
-        parent_span: Span,
-        tokens: &'a [TokenTree],
-        allow_trailing_block: bool,
-    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
-    {
-        self.parse_expr_with_prec(parent_span, tokens, allow_trailing_block, 0)
-    }
 
-    fn parse_expr_with_prec<'a>(
+    fn parse_expr<'a>(
         &mut self,
         parent_span: Span,
         tokens: &'a [TokenTree],
@@ -365,8 +361,12 @@ impl Context {
         min_prec: u8,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
-        let (mut lhs, mut rest, mut trailing) =
-            self.parse_expr_value(parent_span, tokens, allow_trailing_block)?;
+        let (mut lhs, mut rest, mut trailing) = self.parse_expr_value(
+            parent_span,
+            tokens,
+            allow_trailing_block,
+            min_prec,
+        )?;
 
         loop {
             if rest.is_empty()
@@ -385,7 +385,7 @@ impl Context {
                     }
                     rest = &rest[1..];
                     let index = self
-                        .parse_expr_deny_rest(g.span(), &inner)
+                        .parse_expr_deny_rest(g.span(), &inner, 1)
                         .unwrap_or(self.empty_token_list_expr.clone());
                     lhs = Rc::new(MetaExpr::ListAccess {
                         span: g.span(),
@@ -461,7 +461,7 @@ impl Context {
                 prec + 1
             };
 
-            let (rhs, rest_new, trailing_new) = self.parse_expr_with_prec(
+            let (rhs, rest_new, trailing_new) = self.parse_expr(
                 parent_span,
                 next_rest,
                 allow_trailing_block,
@@ -563,6 +563,7 @@ impl Context {
         parent_span: Span,
         tokens: &'a [TokenTree],
         allow_trailing_block: bool,
+        min_prec: u8,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
         if tokens.is_empty() {
@@ -612,6 +613,7 @@ impl Context {
                             .parse_expr_deny_trailing_block(
                                 group.span(),
                                 &group_tokens,
+                                0,
                             )?;
                         if !rest.is_empty() {
                             self.error(
@@ -642,11 +644,18 @@ impl Context {
 
                 match &*name {
                     "let" => {
+                        if min_prec != 0 {
+                            self.error(
+                                ident.span(),
+                                "`let` cannot occur within expression",
+                            );
+                            return Err(());
+                        }
                         return self.parse_let(
                             span,
                             &tokens[1..],
                             allow_trailing_block,
-                        )
+                        );
                     }
                     "for" => {
                         return self.parse_for(
@@ -656,6 +665,13 @@ impl Context {
                         );
                     }
                     "fn" => {
+                        if min_prec != 0 {
+                            self.error(
+                                ident.span(),
+                                "`fn` cannot occur within expression",
+                            );
+                            return Err(());
+                        }
                         return self.parse_fn(
                             span,
                             &tokens[1..],
@@ -757,7 +773,7 @@ impl Context {
                     return Ok((expr, rest, None));
                 }
                 if let Some(op_kind) = as_unary_operator(p) {
-                    let (operand, rest, _tb) = self.parse_expr_with_prec(
+                    let (operand, rest, _tb) = self.parse_expr(
                         p.span(),
                         &tokens[1..],
                         false,
@@ -872,7 +888,7 @@ impl Context {
             return Err(());
         }
         let (expr, rest) =
-            self.parse_expr_deny_trailing_block(let_span, rest)?;
+            self.parse_expr_deny_trailing_block(let_span, rest, 1)?;
 
         self.insert_dummy_bindings_for_pattern(&pattern);
 
@@ -1222,7 +1238,7 @@ impl Context {
         }
 
         let Ok((body, rest)) =
-            self.parse_expr_deny_trailing_block(fn_span, &rest[1..])
+            self.parse_expr_deny_trailing_block(fn_span, &rest[1..], 1)
         else {
             self.pop_dummy_scope();
             return Err(());
@@ -1269,7 +1285,7 @@ impl Context {
         let last_tok = rest.last().unwrap();
 
         let (variants_expr, rest) =
-            self.parse_expr_deny_trailing_block(for_span, &rest[1..])?;
+            self.parse_expr_deny_trailing_block(for_span, &rest[1..], 1)?;
 
         self.push_dummy_scope(ScopeKind::Unquoted);
         self.insert_dummy_bindings_for_pattern(&pattern);
@@ -1327,7 +1343,7 @@ impl Context {
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
         let (condition, rest) =
-            self.parse_expr_deny_trailing_block(if_span, tokens)?;
+            self.parse_expr_deny_trailing_block(if_span, tokens, 1)?;
 
         self.push_dummy_scope(ScopeKind::Unquoted);
 
@@ -1588,7 +1604,7 @@ impl Context {
 
         while !rest.is_empty() {
             let (expr, new_rest) =
-                self.parse_expr_deny_trailing_block(parent_span, rest)?;
+                self.parse_expr_deny_trailing_block(parent_span, rest, 1)?;
 
             if new_rest.is_empty() && exprs.is_empty() {
                 return Ok(expr);
@@ -1636,7 +1652,7 @@ impl Context {
 
         while !rest.is_empty() {
             let (expr, new_rest) =
-                self.parse_expr_deny_trailing_block(parent_span, rest)?;
+                self.parse_expr_deny_trailing_block(parent_span, rest, 1)?;
             exprs.push(expr);
             rest = new_rest;
 
@@ -1692,7 +1708,7 @@ impl Context {
 
         while !rest.is_empty() {
             let Ok((expr, new_rest, trailing_block)) =
-                self.parse_expr(parent_span, rest, allow_trailing_block)
+                self.parse_expr(parent_span, rest, allow_trailing_block, 0)
             else {
                 break;
             };

@@ -487,6 +487,8 @@ impl BinaryOpKind {
             | BinaryOpKind::BinaryXorAssign
             | BinaryOpKind::ShiftLeftAssign
             | BinaryOpKind::ShiftRightAssign => 1,
+            // we use prec 0 to differentiate between top level statements
+            // and nested ones inside parentheses
         }
     }
 
