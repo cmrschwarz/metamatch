@@ -14,10 +14,14 @@
 
 A zero dependency proc-macro for practical metaprogramming.
 
-Because macros should be simple and readable.
+Macro expressions using familiar Rust syntax, evaluated by a tiny interpreter.
+
+Two specialized entrypoints for common usecases,
+two generalized versions for maximum flexibility.
 
 ## [`#[replicate]`](https://docs.rs/metamatch/latest/metamatch/attr.replicate.html)
-Easily generate repetitive syntax like trait impls.
+Generate repetitive syntax like trait impls without giving up on
+`rustfmt` or rust-analyzer.
 
 ```rust
 use metamatch::replicate;
@@ -26,7 +30,8 @@ use metamatch::replicate;
 struct NodeIdx(usize);
 
 #[replicate(
-    for (TRAIT, FUNC) in [Add, Sub, Mul, Div, Rem].map(|t| (t, t.lowercase()))
+    let traits = [Add, Sub, Mul, Div, Rem];
+    for (TRAIT, FUNC) in zip(traits, traits.map(lowercase))
 )]
 impl core::ops::TRAIT for NodeIdx {
     type Output = Self;
@@ -44,11 +49,10 @@ Match arms for differently typed variants cannot be combined, even if the are
 syntactically identical. This macro lets you stamp out the neccessary
 copies using (`#[expand]`).
 
-The syntax was carefully chosen to ensure compatability with `rustfmt`.
-It will correctly format the macro body as if it was a regular `match` expression.
-Rust-analyzer also works correctly within this macro,
-including auto refactorings that affect the `#[expand]`.
-(The same is also true for `#[replicate]`).
+Just like `#[replicate]`, this macro is fully compatible `rustfmt`
+and rust-analyzer. It will be correctly formatted like a regular
+`match` expression, and is targettable even by auto refactorings
+that affect the `#[expand]`, like changing the name of an enum variant.
 
 ```rust
 use metamatch::metamatch;
@@ -67,7 +71,7 @@ impl DynVec{
         })
     }
     // v   expands into   v
-    fn len_after_expansion(&self) -> usize {
+    fn len_(&self) -> usize {
         match self {
             DynVec::I8(v) => v.len(),
             DynVec::I16(v) => v.len(),
@@ -77,15 +81,9 @@ impl DynVec{
     }
 }
 ```
-<sub>
-Note: <code>#[expand(..)]</code> is not an 'actual' Rust attribute,
-as Rust does not allow attributes on match arms.
-<code>rustfmt</code> does though, and that's the trick behind this syntax.
-</sub>
 
 ## [`unquote!`](https://docs.rs/metamatch/latest/metamatch/macro.quote.html)
-A generalized expression evaluator.
-
+Evaluate arbitrary expressions.
 ```rust
 use metamatch::unquote;
 
@@ -99,32 +97,30 @@ assert_eq!(ARRAY, [1, 2, 3, 4]);
 ```
 
 <sub>
-Note: you may have noticed the use of uppercase variables in these examples.
-That's because by default, metamatch will not replace identifiers
+Note:  By default, metamatch will not replace identifiers
 in your quoted sections that happen to also be defined in your metaprogram.
 Because there's no shadowing in the templates (they're just tokens),
 this could lead to really subtle bugs e.g. if you used an <code>i</code>
-variable. By using uppercase identifiers you indicate that you want these names
+variable in both contexts. Uppercase identifiers indicate to metamatch that you want these names
 to be replaced inside of nested <code>quote!</code> blocks.
 </sub>
 
 ## [`quote!`](https://docs.rs/metamatch/latest/metamatch/macro.quote.html)
 Like `unquote!`, but starts out in quoted mode.
-It supports `[< ... >]` styled template tags for more readable templating.
-This syntax was inspired by the `paste` crate,
-and is mostly useful for larger bodies of code that only have a few dynamic parts.
+It supports `[< ... >]` styled template tags for readable templating
+within large blocks of rust code with few dynamic parts.
 
 ```rust
 use metamatch::quote;
 
-const ARRAY: [i32; 4] = quote!{
-    [
-        [<for X in 1..5>]
-        X,
+quote! {
+    enum ErrorCode {
+        [<for err_id in 0..=42>]
+            [<ident("E" + str(err_id))>](String),
         [</for>]
-    ]
+    }
 };
-assert_eq!(ARRAY, [1, 2, 3, 4]);
+let err = ErrorCode::E42("oh noes!".to_owned());
 ```
 
 You can switch between quoted and unquoted mode from within any macro using

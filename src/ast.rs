@@ -386,7 +386,7 @@ impl Kind {
             Kind::Int => "int",
             Kind::Float => "float",
             Kind::Bool => "bool",
-            Kind::String => "string",
+            Kind::String => "str",
             Kind::Char => "char",
             Kind::Token => "token",
             Kind::Tokens => "tokens",

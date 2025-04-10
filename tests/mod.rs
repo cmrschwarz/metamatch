@@ -454,7 +454,7 @@ fn while_let() {
 fn replicate_while_let() {
     #![allow(unused)]
     #[replicate(
-        let items = (0..10);
+        let items = (1..10);
         while let (FN, X, Y) = zip(items.map(|x| ident("f_" + str(x))), items, items.map(|x|x*2))
     )]
     fn FN() -> i32 {
