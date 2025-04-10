@@ -418,15 +418,15 @@ fn value_to_str(v: &MetaValue) -> Option<Rc<str>> {
         MetaValue::String { value, span: _ } => Some(value.clone()),
         MetaValue::Char { value, span: _ } => {
             let mut data = [0; 4];
-            Some(Rc::from(value.encode_utf8(&mut data)))
+            Some(Rc::from(value.encode_utf8(&mut data).to_string()))
         }
         MetaValue::Token(t) => match t {
-            TokenTree::Ident(i) => Some(i.to_string().into()),
-            TokenTree::Literal(literal) => Some(literal.to_string().into()),
+            TokenTree::Ident(i) => Some(Rc::from(i.to_string())),
+            TokenTree::Literal(literal) => Some(Rc::from(literal.to_string())),
             TokenTree::Group(_) => None, // TODO:?
-            TokenTree::Punct(punct) => {
-                Some(punct.as_char().encode_utf8(&mut [0; 4]).into())
-            }
+            TokenTree::Punct(punct) => Some(Rc::from(
+                punct.as_char().encode_utf8(&mut [0; 4]).to_string(),
+            )),
         },
         MetaValue::List(..) => None,  // TODO: ?
         MetaValue::Tuple(..) => None, // TODO: ?

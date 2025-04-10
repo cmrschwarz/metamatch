@@ -7,9 +7,7 @@ name = "metamatch"
 version = "0.3.0"
 edition = "2021"
 
-# bump: 1.65 needed for let .. else
-# bump: 1.70 needed for Rc::into_inner
-# remember to update in ci when bumping this
+# 1.70 is needed for trybuild
 rust-version = "1.70.0"
 
 authors = ["Christian Schwarz <cmrs@cmrs.io>"]
