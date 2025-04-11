@@ -71,15 +71,6 @@ impl DynVec{
             DynVec::X(v) => v.len(),
         })
     }
-    // v   expands into   v
-    fn len_(&self) -> usize {
-        match self {
-            DynVec::I8(v) => v.len(),
-            DynVec::I16(v) => v.len(),
-            DynVec::I32(v) => v.len(),
-            DynVec::I64(v) => v.len(),
-        }
-    }
 }
 ```
 
