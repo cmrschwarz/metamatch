@@ -94,6 +94,7 @@ const ARRAY: [i32; 4] = unquote! {
     };
     quote!([ELEMENTS])
 };
+
 assert_eq!(ARRAY, [1, 2, 3, 4]);
 ```
 
@@ -121,12 +122,14 @@ quote! {
         [</for>]
     }
 };
+
 let err = ErrorCode::E42("oh noes!".to_owned());
 ```
 
 You can switch between quoted and unquoted mode from within any macro using
-the `[<quote>]` and `[<unquote>]` template tags.
-The `quote!(..)` used earlier is a covenience alias for `[<quote>]..[</quote>]`
+the `[<quote>]` and `[<unquote>]` template tags. See the documentation of
+[`quote!`](https://docs.rs/metamatch/latest/metamatch/macro.quote.html) for
+a full list of template block tags.
 
 ## Supported Rust Syntax
 - `let` statements and basic pattern matching.
@@ -140,10 +143,10 @@ The `quote!(..)` used earlier is a covenience alias for `[<quote>]..[</quote>]`
   `-=`, `*=`, `/=`, `%=`, `<<=`, `>>=`, `&=`, `|=`, `^=`, `&`, `|`, `^`,
   `!`,  `<`, `>`, `<=`, `>=`, `==`, `!=`, `&&`, `||`, `[..]`
 
-## Currently not supported
-- `struct`, `enum`, `match`, `type`, `trait`, generics, ...
+## Currently not Supported
+- `struct`, `enum`, `match`, `type`, `trait`, ...
 
-## Builtin functions
+## Builtin Functions
 - `lowercase(str) -> str`
 - `uppercase(str) -> str`
 - `capitalize(str) -> str`
