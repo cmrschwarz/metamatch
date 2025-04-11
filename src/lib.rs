@@ -1,47 +1,5 @@
-//! # `metamatch!`
-//!
-//! A zero dependency proc-macro for practical metaprogramming.
-//!
-//! Macro expressions using familiar Rust syntax, evaluated by a tiny
-//! interpreter.
-//!
-//! ## Supported Rust Syntax:
-//! - `let` statements and pattern matching.
-//! - `loop`, `while`, `while let`, and `for` loops, including `continue` and
-//!   `break`
-//! - `if` and `else` blocks
-//! - Functions (`fn`)  and lambdas (`|..|`)
-//! - Arrays (`[1,2,3]`)
-//! - Ranges (`0..=10`)
-//! - All expression operators like `+` or `<<`.
-//!
-//! ## Not supported:
-//! - `struct`, `enum`, `type`, `trait`, generics, ...
-//!
-//! ## Builtin functions:
-//! - `lowercase(str) -> str`
-//! - `uppercase(str) -> str`
-//! - `capitalize(str) -> str`
-//! - `enumerate([T]) -> [(int, T)]`
-//! - `zip([A], [B], ..) -> [(A, B, ..)]`
-//! - `map([T], Fn(T) -> U) -> [U]`
-//! - `chars(str) -> [char]`
-//! - `bytes(str) -> [int]`
-//! - `ident(str) -> token`
-//! - `str(any) -> str`
-//! - `len([T]) -> int`
-//!
-//! String functions also work on tokens.
-//!
-//! All functions support UFCS, so `[1,2,3].len() == len([1,2,3])`
-//!
-//! ## Special Purpose Macros:
-//! - `quote! {..} -> [token]`: nested version of [`quote!`].
-//! - `raw! {..} -> [token]`: raw Rust, no template tags or expanded meta
-//!   variables
-//!
-//! Just like Rust macros, you can use any of `{}`, `[]`, and `()`
-//! interchangably for the macro invocations.
+#![doc = include_str!("../README.md")]
+
 use proc_macro::TokenStream;
 
 mod ast;
@@ -69,7 +27,7 @@ mod parse;
 ///     let traits = [Add, Sub, Mul, Div, Rem];
 ///     for (TRAIT, FUNC) in zip(traits, traits.map(lowercase))
 /// )]
-/// impl core::ops::TRAIT for NodeIdx {
+/// impl std::ops::TRAIT for NodeIdx {
 ///     type Output = Self;
 ///     fn FUNC(self, rhs: Self) -> Self {
 ///         NodeIdx(self.0.FUNC(rhs.0))
@@ -162,19 +120,22 @@ pub fn unquote(body: TokenStream) -> TokenStream {
 /// let err = ErrorCode::E42("oh noes!".to_owned());
 /// ```
 ///
-/// ## Supported template tags
+/// ## Template blocks
+/// While template tags can contain arbitrarily complex expressions,
+/// template blocks are usually preferred for readability.
+///
 /// - `[<for ..>] [</for>]`
 /// - `[<while ..>] [</while>]`
-/// - `[<while let ...>] [</while>]`
+/// - `[<while let .. = ..>] [</while>]`
 /// - `[<loop>] [</loop>]`
 /// - `[<if ..>] [<else if ..>] [<else>] [</if>]`
 /// - `[<fn .. (..)>] [</fn>]`
-/// - `[<let .. = ..>]`;
-/// - `[< ("arbitrary expressions") >]`
 ///
-/// ## Special tags
-/// - `[<unquote>][</unquote>]`: Evaluate expressions.
-/// - `[<raw>]..[</raw>]`: Paste raw Rust without identifier replacements.
+/// ## Special blocks
+/// - `[<unquote>][</unquote>]`: Larger blocks of dynamic code can be put
+///   inside an `unquote` block.
+/// - `[<raw>]..[</raw>]`: Paste raw Rust without any identifier replacements.
+///   Useful e.g. when metamatch is combined with `macro_rules!`.
 #[proc_macro]
 pub fn quote(body: TokenStream) -> TokenStream {
     macro_impls::quote(body)

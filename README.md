@@ -33,12 +33,13 @@ struct NodeIdx(usize);
     let traits = [Add, Sub, Mul, Div, Rem];
     for (TRAIT, FUNC) in zip(traits, traits.map(lowercase))
 )]
-impl core::ops::TRAIT for NodeIdx {
+impl std::ops::TRAIT for NodeIdx {
     type Output = Self;
     fn FUNC(self, rhs: Self) -> Self {
         NodeIdx(self.0.FUNC(rhs.0))
     }
 }
+
 assert!(NodeIdx(1) + NodeIdx(2) == NodeIdx(3));
 ```
 
@@ -82,7 +83,7 @@ impl DynVec{
 }
 ```
 
-## [`unquote!`](https://docs.rs/metamatch/latest/metamatch/macro.quote.html)
+## [`unquote!`](https://docs.rs/metamatch/latest/metamatch/macro.unquote.html)
 Evaluate arbitrary expressions.
 ```rust
 use metamatch::unquote;
@@ -127,6 +128,47 @@ You can switch between quoted and unquoted mode from within any macro using
 the `[<quote>]` and `[<unquote>]` template tags.
 The `quote!(..)` used earlier is a covenience alias for `[<quote>]..[</quote>]`
 
+## Supported Rust Syntax
+- `let` statements and basic pattern matching.
+- `loop`, `while`, `while let`, and `for` loops, including `continue` and
+  `break`
+- `if` and `else` blocks
+- Functions (`fn`)  and lambdas (`|..|`)
+- Arrays (`[1,2,3]`)
+- Ranges (`0..=10`)
+- All basic operators: `+`, `-`, `*`, `/`, `%`, `<<`, `>>`, `=`, `+=`,
+  `-=`, `*=`, `/=`, `%=`, `<<=`, `>>=`, `&=`, `|=`, `^=`, `&`, `|`, `^`,
+  `!`,  `<`, `>`, `<=`, `>=`, `==`, `!=`, `&&`, `||`, `[..]`
+
+## Currently not supported
+- `struct`, `enum`, `match`, `type`, `trait`, generics, ...
+
+## Builtin functions
+- `lowercase(str) -> str`
+- `uppercase(str) -> str`
+- `capitalize(str) -> str`
+- `enumerate([T]) -> [(int, T)]`
+- `zip([A], [B], ..) -> [(A, B, ..)]`
+- `map([T], Fn(T) -> U) -> [U]`
+- `chars(str) -> [char]`
+- `bytes(str) -> [int]`
+- `ident(str) -> token`
+- `str(any) -> str`
+- `len([T]) -> int`
+
+All functions support UFCS, so `[1,2,3].len() == len([1,2,3])`
+
+String functions also work on tokens.
+
+## Special Purpose Macros
+- `quote! {..} -> [token]`: nested version of [`quote!`].
+- `raw! {..} -> [token]`: raw Rust, no template tags or expanded meta
+  variables
+
+Just like Rust macros, you can use any of `{}`, `[]`, and `()`
+interchangably for the macro invocations.
 
 ## License
-[MIT](./LICENSE-MIT) or [Apache Version 2.0](./LICENSE-APACHE), at your option.
+[MIT](https://github.com/cmrschwarz/metamatch/blob/main/LICENSE-MIT)
+or [Apache Version 2.0](https://github.com/cmrschwarz/metamatch/blob/main/LICENSE-APACHE),
+at your option.
