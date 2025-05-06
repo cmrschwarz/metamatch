@@ -69,7 +69,7 @@ impl<'a> Iterable<'a> {
         Some(res)
     }
 }
-impl<'a, 'b> IntoIterator for &'b Iterable<'a> {
+impl<'b> IntoIterator for &'b Iterable<'_> {
     type Item = &'b Rc<MetaValue>;
 
     type IntoIter = std::slice::Iter<'b, Rc<MetaValue>>;
@@ -745,10 +745,28 @@ impl Context {
                 lit.set_span(span.unwrap_or(eval_span));
                 tgt.push(TokenTree::Literal(lit));
             }
-            MetaValue::Fn(_)
-            | MetaValue::Lambda(_)
-            | MetaValue::BuiltinFn(_) => {
-                self.error(eval_span, "function cannot be tokenized");
+            MetaValue::Fn(f) => {
+                self.error(
+                    eval_span,
+                    format!(
+                        "cannot convert function to tokens (`{}`)",
+                        f.name
+                    ),
+                );
+                return Err(EvalError::Error);
+            }
+            MetaValue::Lambda(_) => {
+                self.error(eval_span, "cannot convert lambda to tokens");
+                return Err(EvalError::Error);
+            }
+            MetaValue::BuiltinFn(f) => {
+                self.error(
+                    eval_span,
+                    format!(
+                        "cannot convert function to tokens (`{}`)",
+                        f.name
+                    ),
+                );
                 return Err(EvalError::Error);
             }
             MetaValue::List(vals) => {
