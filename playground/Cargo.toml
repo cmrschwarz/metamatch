@@ -7,7 +7,7 @@ rust-version = "1.85"
 
 [dependencies]
 proc-macro2 = "1.0.95"
-syn = "2.0.100"
+syn = "2.0.101"
 prettyplease = "0.2.32"
 clap = { version = "4.5.37", features = ["derive"] }
 
