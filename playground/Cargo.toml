@@ -9,7 +9,7 @@ rust-version = "1.85"
 proc-macro2 = "1.0.95"
 syn = "2.0.101"
 prettyplease = "0.2.32"
-clap = { version = "4.5.38", features = ["derive"] }
+clap = { version = "4.5.39", features = ["derive"] }
 
 [features]
 default = ["debug"]
