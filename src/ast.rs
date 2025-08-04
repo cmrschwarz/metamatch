@@ -105,7 +105,7 @@ pub struct Lambda {
     pub body: Rc<MetaExpr>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UseSegment {
     /// Regular identifier
     Ident(Rc<str>),
@@ -117,10 +117,18 @@ pub enum UseSegment {
     CrateKeyword,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct UsePath {
     pub leading_double_colon: bool,
     pub segments: Vec<UseSegment>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UseReplacement {
+    pub target_path: UsePath,
+    pub name: String,
+    pub span: Span,
+    pub binding: String,
 }
 
 #[derive(Debug)]
@@ -145,6 +153,7 @@ pub enum UseTree {
 pub struct UseDecl {
     pub span: Span,
     pub tree: UseTree,
+    pub replacements: RefCell<Option<Vec<UseReplacement>>>,
 }
 
 #[derive(Debug)]
@@ -750,5 +759,16 @@ impl TrailingBlockKind {
             TrailingBlockKind::Template => "quote",
             TrailingBlockKind::Raw => "raw",
         }
+    }
+}
+
+impl Display for UseSegment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            UseSegment::Ident(i) => i,
+            UseSegment::SelfKeyword => "self",
+            UseSegment::SuperKeyword => "super",
+            UseSegment::CrateKeyword => "crate",
+        })
     }
 }

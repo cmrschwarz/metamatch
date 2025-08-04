@@ -1,5 +1,5 @@
 use proc_macro::{Delimiter, Group, Spacing, Span, TokenTree};
-use std::{collections::HashMap, fmt::Debug, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, fmt::Debug, rc::Rc};
 
 use super::{
     ast::{
@@ -893,12 +893,15 @@ impl Context {
 
         let (use_tree, rest) = self.parse_use_tree(use_span, tokens)?;
 
-        let use_decl = Rc::new(MetaExpr::UseDecl(Rc::new(UseDecl {
+        let use_decl = Rc::new(UseDecl {
             span: use_span,
             tree: use_tree,
-        })));
+            replacements: RefCell::new(None),
+        });
 
-        Ok((use_decl, rest, None))
+        self.extern_uses.push(use_decl.clone());
+
+        Ok((Rc::new(MetaExpr::UseDecl(use_decl)), rest, None))
     }
 
     fn parse_use_group_items(

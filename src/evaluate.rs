@@ -12,7 +12,7 @@ use proc_macro::{
 use super::ast::{
     BinaryOpKind, Binding, BuiltinFn, Context, EvalError, Function, Lambda,
     MetaExpr, MetaValue, Pattern, Scope, ScopeKind, UnaryOpKind, UsePath,
-    UseSegment, UseTree,
+    UseReplacement, UseSegment, UseTree,
 };
 
 type Result<T> = std::result::Result<T, EvalError>;
@@ -613,6 +613,80 @@ fn append_use_tree(tgt: &mut Vec<TokenTree>, tree: &UseTree) {
     }
 }
 
+fn merge_use_path(parent: &UsePath, child: &UsePath) -> UsePath {
+    UsePath {
+        leading_double_colon: parent.leading_double_colon
+            || (parent.segments.is_empty() && child.leading_double_colon),
+        segments: parent
+            .segments
+            .iter()
+            .chain(child.segments.iter())
+            .cloned()
+            .collect(),
+    }
+}
+
+pub fn gather_use_replacements(
+    target: &mut Vec<UseReplacement>,
+    parent_path: &UsePath,
+    tree: &UseTree,
+    idx: &mut usize,
+) {
+    match tree {
+        UseTree::Path { span, path } => {
+            *idx += 1;
+            append_use_replacement(
+                target,
+                *span,
+                *idx,
+                parent_path,
+                path,
+                None,
+            );
+        }
+        UseTree::Group {
+            path,
+            items,
+            span: _,
+        } => {
+            let path = merge_use_path(parent_path, path);
+            for item in items {
+                gather_use_replacements(target, &path, item, idx);
+            }
+        }
+        UseTree::Rename { span, path, alias } => {
+            append_use_replacement(
+                target,
+                *span,
+                *idx,
+                parent_path,
+                path,
+                Some(alias),
+            );
+        }
+    }
+}
+
+fn append_use_replacement(
+    tgt: &mut Vec<UseReplacement>,
+    span: Span,
+    idx: usize,
+    parent: &UsePath,
+    child: &UsePath,
+    name_override: Option<&str>,
+) {
+    let path = merge_use_path(parent, child);
+    let name = name_override
+        .map(|s| s.to_owned())
+        .unwrap_or_else(|| path.segments.last().unwrap().to_string());
+    tgt.push(UseReplacement {
+        target_path: path,
+        name,
+        span,
+        binding: format!("__metamatch_extern_use_{idx}"),
+    });
+}
+
 fn append_ident(tgt: &mut Vec<TokenTree>, name: impl AsRef<str>, span: Span) {
     tgt.push(TokenTree::Ident(Ident::new(name.as_ref(), span)));
 }
@@ -843,6 +917,20 @@ impl Context {
         self.insert_builtin_fn(name, Some(1), list_fn);
     }
 
+    fn append_quoted_statement_list(
+        &mut self,
+        tgt: &mut Vec<TokenTree>,
+        stmts: &[Rc<MetaExpr>],
+    ) -> Result<()> {
+        for (i, stmt) in stmts.iter().enumerate() {
+            if i > 0 {
+                tgt.push(TokenTree::Punct(Punct::new(';', Spacing::Alone)));
+            }
+            self.append_quoted_expression(tgt, stmt)?;
+        }
+        Ok(())
+    }
+
     fn append_quoted_block(
         &mut self,
         tgt: &mut Vec<TokenTree>,
@@ -850,12 +938,7 @@ impl Context {
         stmts: &[Rc<MetaExpr>],
     ) -> Result<()> {
         let mut block = Vec::new();
-        for (i, stmt) in stmts.iter().enumerate() {
-            if i > 0 {
-                block.push(TokenTree::Punct(Punct::new(';', Spacing::Alone)));
-            }
-            self.append_quoted_expression(&mut block, stmt)?;
-        }
+        self.append_quoted_statement_list(&mut block, stmts)?;
 
         let mut group =
             Group::new(Delimiter::Brace, TokenStream::from_iter(block));
@@ -931,8 +1014,46 @@ impl Context {
                 self.append_quoted_expression(tgt, &lambda.body)?;
             }
             MetaExpr::UseDecl(use_decl) => {
-                append_ident(tgt, "use", use_decl.span);
-                append_use_tree(tgt, &use_decl.tree);
+                let repl = use_decl.replacements.borrow();
+
+                let Some(repl) = &*repl else {
+                    append_ident(tgt, "use", use_decl.span);
+                    append_use_tree(tgt, &use_decl.tree);
+                    return Ok(());
+                };
+                append_ident(tgt, "let", use_decl.span);
+
+                if repl.len() == 1 {
+                    append_ident(tgt, &repl[0].name, repl[0].span);
+                } else {
+                    append_comma_separated_list(
+                        tgt,
+                        Delimiter::Parenthesis,
+                        use_decl.span,
+                        repl,
+                        |tgt, r| {
+                            append_ident(tgt, &r.name, r.span);
+                            Ok(())
+                        },
+                    )?;
+                }
+
+                append_punct(tgt, '=', Spacing::Alone, use_decl.span);
+
+                if repl.len() == 1 {
+                    append_ident(tgt, &repl[0].binding, repl[0].span);
+                } else {
+                    append_comma_separated_list(
+                        tgt,
+                        Delimiter::Parenthesis,
+                        use_decl.span,
+                        repl,
+                        |tgt, r| {
+                            append_ident(tgt, &r.binding, r.span);
+                            Ok(())
+                        },
+                    )?;
+                }
             }
             MetaExpr::RawOutputGroup {
                 span,
@@ -1256,8 +1377,8 @@ impl Context {
                 append_ident(tgt, "path", decl_span);
                 append_punct(tgt, ',', Spacing::Alone, decl_span);
 
-                // [ $($prefix:tt)* ]
-                append_group(tgt, Delimiter::Parenthesis, decl_span, |tgt| {
+                // [ $($prefix:tt)* ],
+                append_group(tgt, Delimiter::Bracket, decl_span, |tgt| {
                     append_punct(tgt, '$', Spacing::Alone, decl_span);
                     append_group(
                         tgt,
@@ -1265,7 +1386,7 @@ impl Context {
                         decl_span,
                         |tgt| {
                             append_punct(tgt, '$', Spacing::Alone, decl_span);
-                            append_ident(tgt, "rest", decl_span);
+                            append_ident(tgt, "prefix", decl_span);
                             append_punct(tgt, ':', Spacing::Alone, decl_span);
                             append_ident(tgt, "tt", decl_span);
                             Ok(())
@@ -1274,6 +1395,7 @@ impl Context {
                     append_punct(tgt, '*', Spacing::Alone, decl_span);
                     Ok(())
                 })?;
+                append_punct(tgt, ',', Spacing::Alone, decl_span);
 
                 // $($rest: tt)*
                 append_punct(tgt, '$', Spacing::Alone, decl_span);
@@ -1296,6 +1418,7 @@ impl Context {
                 append_punct(tgt, '!', Spacing::Alone, decl_span);
                 append_group(tgt, Delimiter::Brace, decl_span, |tgt| {
                     // $($prefix)*
+                    append_punct(tgt, '$', Spacing::Alone, decl_span);
                     append_group(
                         tgt,
                         Delimiter::Parenthesis,
@@ -1367,40 +1490,123 @@ impl Context {
         Ok(())
     }
 
+    pub fn expand_extern_uses(
+        &mut self,
+        tgt: &mut Vec<TokenTree>,
+        stmts: &[Rc<MetaExpr>],
+    ) {
+        let mut replacement_idx = 0;
+        let mut replacements = Vec::new();
+        let root_path = UsePath {
+            leading_double_colon: false,
+            segments: Vec::new(),
+        };
+        for u in &self.extern_uses {
+            let mut use_replacements = Vec::new();
+            gather_use_replacements(
+                &mut use_replacements,
+                &root_path,
+                &u.tree,
+                &mut replacement_idx,
+            );
+            replacements.extend(use_replacements.iter().cloned());
+            *u.replacements.borrow_mut() = Some(use_replacements);
+        }
+
+        let mut macro_path: Vec<TokenTree> = Vec::new();
+        let mut binding_name = String::new();
+        let mut chain_target: Vec<TokenTree> = Vec::new();
+        let mut prefix = Vec::new();
+        let mut last_span = Span::call_site();
+
+        for mut rep in replacements.drain(..) {
+            last_span = rep.span;
+            let mut prev_prefix = std::mem::take(&mut prefix);
+            _ = append_group(
+                &mut prefix,
+                Delimiter::Bracket,
+                rep.span,
+                |inner| {
+                    if prev_prefix.is_empty() {
+                        debug_assert!(chain_target.is_empty());
+                        append_double_colon(&mut chain_target, last_span);
+                        append_ident(
+                            &mut chain_target,
+                            "metamatch",
+                            last_span,
+                        );
+                        append_double_colon(&mut chain_target, last_span);
+                        append_ident(&mut chain_target, "eval", last_span);
+                    } else {
+                        append_ident(inner, &binding_name, last_span);
+                        append_punct(inner, ',', Spacing::Alone, last_span);
+                        inner.extend_from_slice(&chain_target);
+                        append_punct(inner, ',', Spacing::Alone, last_span);
+                        chain_target = std::mem::take(&mut macro_path);
+                        inner.append(&mut prev_prefix);
+                        append_punct(inner, ',', Spacing::Alone, last_span);
+                    }
+
+                    Ok(())
+                },
+            );
+            append_use_path(&mut macro_path, last_span, &rep.target_path);
+            binding_name = std::mem::take(&mut rep.binding);
+        }
+
+        tgt.extend_from_slice(&macro_path);
+        append_punct(tgt, '!', Spacing::Alone, last_span);
+
+        _ = append_group(tgt, Delimiter::Brace, last_span, |inner| {
+            append_ident(inner, &binding_name, last_span);
+            append_punct(inner, ',', Spacing::Alone, last_span);
+            inner.append(&mut chain_target);
+            append_punct(inner, ',', Spacing::Alone, last_span);
+            inner.append(&mut prefix);
+            append_punct(inner, ',', Spacing::Alone, last_span);
+            self.append_quoted_statement_list(inner, stmts)?;
+            Ok(())
+        });
+    }
+
     pub fn eval_to_token_stream(
         &mut self,
         eval_span: Span,
         exprs: &[Rc<MetaExpr>],
     ) -> TokenStream {
         debug_assert_eq!(self.scopes.len(), 1, "scopes");
-        if self.errors.is_empty() {
-            self.push_eval_scope();
-            let mut res_stream = Vec::new();
 
-            let mut res = self.eval_stmt_list_to_stream(
-                &mut res_stream,
-                eval_span,
-                exprs,
-            );
-
-            if res.is_ok()
-                && self.errors.is_empty()
-                && !self.extern_decls.is_empty()
-            {
-                let mut extern_decls = Vec::new();
-                res = self.expand_extern_decls(&mut extern_decls);
-                extern_decls.append(&mut res_stream);
-                res_stream = extern_decls;
-            }
-
-            self.pop_scope();
-
-            if res.is_ok() && self.errors.is_empty() && res.is_ok() {
-                return TokenStream::from_iter(res_stream);
-            }
+        if !self.errors.is_empty() {
+            return self.expand_errors();
         }
 
-        self.expand_errors()
+        self.push_eval_scope();
+        let mut res_stream = Vec::new();
+
+        if !self.extern_uses.is_empty() {
+            self.expand_extern_uses(&mut res_stream, exprs);
+            if !self.errors.is_empty() {
+                return self.expand_errors();
+            }
+            return TokenStream::from_iter(res_stream);
+        }
+
+        _ = self.eval_stmt_list_to_stream(&mut res_stream, eval_span, exprs);
+
+        if self.errors.is_empty() && !self.extern_decls.is_empty() {
+            let mut extern_decls = Vec::new();
+            _ = self.expand_extern_decls(&mut extern_decls);
+            extern_decls.append(&mut res_stream);
+            res_stream = extern_decls;
+        }
+
+        self.pop_scope();
+
+        if !self.errors.is_empty() {
+            return self.expand_errors();
+        }
+
+        TokenStream::from_iter(res_stream)
     }
 
     fn eval_stmt_list_to_stream(
@@ -1468,10 +1674,7 @@ impl Context {
                 self.match_and_bind_pattern(pattern, val, false)?;
                 Ok(self.empty_token_list.clone())
             }
-            MetaExpr::UseDecl(use_decl) => {
-                self.extern_uses.push(use_decl.clone());
-                Ok(self.empty_token_list.clone())
-            }
+            MetaExpr::UseDecl(_) => Ok(self.empty_token_list.clone()),
             MetaExpr::Call { span, lhs, args } => {
                 self.eval_fn_call(*span, lhs, args)
             }

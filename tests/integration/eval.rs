@@ -277,3 +277,17 @@ fn func_to_tokens() {
     };
     assert_eq!(42, double_me(21));
 }
+
+#[test]
+fn extern_decl() {
+    eval! {
+        extern let foo = [1, 2, 3];
+        extern let bar = [1, 2, 3];
+    };
+
+    eval! {
+        use foo;
+        use bar;
+        foo + bar
+    }
+}
