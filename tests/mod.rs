@@ -40,7 +40,7 @@ fn let_pattern() {
 #[test]
 fn quote_expr() {
     let res = template! {
-        [<for X in [1, template!(+2), template!(+3)]>]
+        [<for X in [1, quote!(+2), quote!(+3)]>]
             X
         [</for>]
     };
@@ -51,9 +51,9 @@ fn quote_expr() {
 #[test]
 fn quote_stmt() {
     let res = eval! {
-        template!(1);
+        quote!(1);
         for X in [2, 3, 4] {
-            template!(+ X);
+            quote!(+ X);
         }
     };
 
@@ -63,7 +63,7 @@ fn quote_stmt() {
 #[test]
 fn template_block() {
     let res = eval! {
-        template!(1);
+        quote!(1);
         for X in [2, 3, 4] {
             [<template>]
                 +X
@@ -80,7 +80,7 @@ fn eval_block() {
         1
         [<eval>]
         for X in [2, 3, 4] {
-            template!(+X)
+            quote!(+X)
         }
         [</eval>]
     };
@@ -134,7 +134,7 @@ fn lowercase_vars_not_superbound() {
     let res = eval! {
         raw!(1);
         for x in [2, 3, 4] {
-            template!{
+            quote!{
                 + x
             }
         }
@@ -201,9 +201,9 @@ fn quote_array() {
 fn eval_array() {
     const ARRAY: [i32; 4] = eval! {
         let ELEMENTS = for X in 1..5 {
-            template!(X,)
+            quote!(X,)
         };
-        template!([ELEMENTS])
+        quote!([ELEMENTS])
     };
     assert_eq!(ARRAY, [1, 2, 3, 4]);
 }
@@ -390,9 +390,9 @@ fn loop_break() {
             if X == 10 {
                 break;
             }
-            template!(X+);
+            quote!(X+);
         }
-        template!(X);
+        quote!(X);
     };
     assert_eq!(res, 55);
 }
@@ -407,7 +407,7 @@ fn typed_break_expr() {
                 break X;
             }
         };
-        template!(res);
+        quote!(res);
     };
     assert_eq!(res, 10);
 }
@@ -419,9 +419,9 @@ fn for_continue() {
             if X % 2 == 0 {
                 continue;
             }
-            template!(X,);
+            quote!(X,);
         };
-        template!([ELEMS]);
+        quote!([ELEMS]);
     };
     assert_eq!(res, [1, 3]);
 }
@@ -431,10 +431,10 @@ fn while_loop() {
     let res = eval! {
         let super mut x = 5;
         let ELEMS = while x > 0  {
-            template!(x,);
+            quote!(x,);
             x -= 2;
         };
-        template!([ELEMS]);
+        quote!([ELEMS]);
     };
     assert_eq!(res, [5, 3, 1]);
 }
@@ -443,9 +443,9 @@ fn while_loop() {
 fn while_let() {
     let res = eval! {
         let ELEMS = while let (X,) = [(1,), (2,), 3, (4,)] {
-            template!((X,),);
+            quote!((X,),);
         };
-        template!([ELEMS]);
+        quote!([ELEMS]);
     };
     assert_eq!(res, [(1,), (2,)]);
 }

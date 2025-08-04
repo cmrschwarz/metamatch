@@ -8,9 +8,9 @@ fn main() {
             if X == 10 {
                 break X;
             }
-            template!(X);
+            quote!(X);
         };
-        template!(res);
+        quote!(res);
     };
     assert_eq!(res, 10);
 }

@@ -275,6 +275,7 @@ pub enum ScopeKind {
     Builtin,
     Raw,
     Template,
+    Quote,
     Eval,
     Metamatch,
     // not `eval`, but used during execution of the program

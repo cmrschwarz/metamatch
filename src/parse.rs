@@ -705,6 +705,9 @@ impl Context {
                             allow_trailing_block,
                         );
                     }
+                    "quote" => {
+                        return self.parse_quote_expr(span, &tokens[1..])
+                    }
                     "template" => {
                         return self.parse_template_expr(
                             span,
@@ -923,45 +926,15 @@ impl Context {
         ))
     }
 
-    fn parse_template_expr<'a>(
+    fn parse_quote_expr<'a>(
         &mut self,
         raw_span: Span,
         tokens: &'a [TokenTree],
-        allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
         let mut has_exclam = false;
         if let Some(TokenTree::Punct(p)) = tokens.first() {
             has_exclam = p.as_char() == '!';
-        }
-
-        if allow_trailing_block
-            && (tokens.is_empty() || has_exclam && tokens.len() == 1)
-        {
-            if has_exclam {
-                self.error(
-                    tokens.first().unwrap().span(),
-                    "the `quote` template tag does not use an `!`",
-                );
-            }
-
-            if self.scopes.last().as_mut().unwrap().kind == ScopeKind::Template
-            {
-                self.error(
-                    raw_span,
-                    "redundant template tag, already inside template",
-                );
-            }
-
-            self.push_dummy_scope(ScopeKind::Template);
-            return Ok((
-                Rc::new(MetaExpr::Scope {
-                    span: raw_span,
-                    body: Vec::new(),
-                }),
-                &[],
-                Some(TrailingBlockKind::Template),
-            ));
         }
 
         if !has_exclam {
@@ -973,13 +946,13 @@ impl Context {
 
         let tokens = &tokens[usize::from(has_exclam)..];
 
-        self.push_dummy_scope(ScopeKind::Template);
+        self.push_dummy_scope(ScopeKind::Quote);
 
         let Some(TokenTree::Group(p)) = tokens.first() else {
             if has_exclam {
                 self.error(
                     tokens.first().map(|t| t.span()).unwrap_or(raw_span),
-                    "expected block after `template!`",
+                    "expected block after `quote!`",
                 );
             }
             return Err(());
@@ -1000,6 +973,48 @@ impl Context {
             }),
             &tokens[1..],
             None,
+        ))
+    }
+
+    fn parse_template_expr<'a>(
+        &mut self,
+        raw_span: Span,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        if !allow_trailing_block || !tokens.is_empty() {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(raw_span),
+                "`template` is only allowed as a block, consider using `quote!`",
+            );
+            return Err(());
+        }
+
+        let curr_scope_kind = self.scopes.last().as_mut().unwrap().kind;
+
+        if curr_scope_kind == ScopeKind::Template {
+            self.error(
+                raw_span,
+                "redundant template tag, already inside a template",
+            );
+        }
+        if curr_scope_kind == ScopeKind::Quote {
+            self.error(
+                raw_span,
+                "redundant template tag, already inside quote!",
+            );
+        }
+
+        self.push_dummy_scope(ScopeKind::Template);
+
+        Ok((
+            Rc::new(MetaExpr::Scope {
+                span: raw_span,
+                body: Vec::new(),
+            }),
+            &[],
+            Some(TrailingBlockKind::Template),
         ))
     }
 

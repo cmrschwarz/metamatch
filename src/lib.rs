@@ -89,9 +89,9 @@ pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
 ///
 /// const ARRAY: [i32; 4] = eval! {
 ///     let ELEMENTS = for X in 1..5 {
-///         template!(X,)
+///         quote!(X,)
 ///     };
-///     template!([ELEMENTS])
+///     quote!([ELEMENTS])
 /// };
 /// assert_eq!(ARRAY, [1, 2, 3, 4]);
 /// ```

@@ -57,9 +57,9 @@ use metamatch::eval;
 
 const ARRAY: [i32; 4] = eval! {
     let ELEMENTS = for X in 1..5 {
-        template!(X,)
+        quote!(X,)
     };
-    template!([ELEMENTS])
+    quote!([ELEMENTS])
 };
 
 assert_eq!(ARRAY, [1, 2, 3, 4]);
@@ -67,11 +67,11 @@ assert_eq!(ARRAY, [1, 2, 3, 4]);
 
 <sub>
 Note:  By default, metamatch will not replace identifiers
-in your `template!`d sections that happen to also be defined in your metaprogram.
+in your `quote!`d sections that happen to also be defined in your metaprogram.
 Because there's no shadowing in the templates (they're just tokens),
 this could lead to really subtle bugs e.g. if you used an <code>i</code>
 variable in both contexts. Screaming case identifiers indicate to metamatch that
-you want these names to be replaced inside of nested <code>template!</code> blocks.
+you want these names to be replaced inside of nested <code>quote!</code> blocks.
 </sub>
 
 ## [`template!`](https://docs.rs/metamatch/latest/metamatch/macro.quote.html)
@@ -93,10 +93,10 @@ template! {
 let err = ErrorCode::E42("oh noes!".to_owned());
 ```
 
-You can switch between template and eval mode from within any macro using
-the `[<quote>]` and `[<eval>]` tags. See the documentation of
+You can switch back and forth between template and eval mode from within
+any macro using the `[<eval>]` and `[<template>]` tags. See the documentation of
 [`template!`](https://docs.rs/metamatch/latest/metamatch/macro.template.html) for
-a full list of template block tags.
+a full list of template tags.
 
 
 ## [`#[replicate]`](https://docs.rs/metamatch/latest/metamatch/attr.replicate.html)
@@ -156,9 +156,8 @@ All `str -> str` functions also work `token -> token`.
 - `len([T]) -> int`
 
 ## Special Purpose 'Macros'
-- `template! {..} -> [token]`: nested / eager version of [`template!`].
-- `raw! {..} -> [token]`: paste raw tokens without worrying about template tags or expanded meta
-  variables
+- `quote!(..) -> [token]`: Shorthand for a nested `[<template>]` block.
+- `raw!(..) -> [token]`: like `quote!`, but no meta variable expansion or template tags.
 
 Just like Rust macros, you can use any of `{}`, `[]`, and `()`
 interchangably for these macro invocations.
