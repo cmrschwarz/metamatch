@@ -61,8 +61,8 @@ pub fn pretty_print_token_stream(input: TokenStream) -> String {
 #[derive(Default, clap::Subcommand)]
 enum MacroKind {
     #[default]
-    Quote,
-    Unquote,
+    Template,
+    Eval,
     Metamatch,
     Replicate,
 }
@@ -76,7 +76,7 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let kind = args.subcommand.unwrap_or(MacroKind::Quote);
+    let kind = args.subcommand.unwrap_or(MacroKind::Template);
 
     let sandbox = format!("{}/sandbox", env!("CARGO_MANIFEST_DIR"));
 
@@ -104,8 +104,8 @@ fn main() {
         .expect("failed to parse playground_body.rs");
 
     let result = match kind {
-        MacroKind::Quote => metamatch_impl::quote(body_tt),
-        MacroKind::Unquote => metamatch_impl::unquote(body_tt),
+        MacroKind::Template => metamatch_impl::template(body_tt),
+        MacroKind::Eval => metamatch_impl::eval(body_tt),
         MacroKind::Metamatch => metamatch_impl::metamatch(body_tt),
         MacroKind::Replicate => {
             let attrib_str = std::fs::read_to_string(&attrib)
@@ -117,4 +117,18 @@ fn main() {
     };
 
     println!("{}", pretty_print_token_stream(result));
+}
+
+struct NodeIdx(u32);
+
+#[metamatch::replicate(
+    let traits = [Add, Sub, Mul, Div, Rem];
+    let funcs = traits.map(lowercase);
+    for (TRAIT, FUNC) in zip(traits, funcs)
+)]
+impl std::ops::TRAIT for NodeIdx {
+    type Output = Self;
+    fn FUNC(self, rhs: Self) -> Self {
+        NodeIdx(self.0.FUNC(rhs.0))
+    }
 }

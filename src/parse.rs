@@ -493,7 +493,7 @@ impl Context {
             if p.as_char() == '/' {
                 let end_tag =
                     self.parse_closing_tag(group, template_tokens)?;
-                if end_tag == TrailingBlockKind::Unquote {
+                if end_tag == TrailingBlockKind::Eval {
                     return Ok((
                         self.empty_token_list_expr.clone(),
                         rest_tokens,
@@ -510,20 +510,20 @@ impl Context {
         let mut is_quote = false;
         if template_tokens.len() == 1 {
             if let Some(TokenTree::Ident(i)) = template_tokens.first() {
-                is_quote = i.to_string() == "quote";
+                is_quote = i.to_string() == "template";
                 is_raw = i.to_string() == "raw";
             }
         }
 
         if !is_quote && !is_raw {
-            self.error(group.span(), "template tags besides `raw` and `quote` are only supported in quoted output");
+            self.error(group.span(), "template tags besides `raw` and `template` are only supported in templates");
             return Err(()); // TODO: debatable?
         }
 
         let (trail_kind, scope_kind) = if is_raw {
             (TrailingBlockKind::Raw, ScopeKind::Raw)
         } else {
-            (TrailingBlockKind::Quote, ScopeKind::Quoted)
+            (TrailingBlockKind::Template, ScopeKind::Template)
         };
 
         self.push_dummy_scope(scope_kind);
@@ -705,8 +705,8 @@ impl Context {
                             allow_trailing_block,
                         );
                     }
-                    "quote" => {
-                        return self.parse_quote_expr(
+                    "template" => {
+                        return self.parse_template_expr(
                             span,
                             &tokens[1..],
                             allow_trailing_block,
@@ -719,8 +719,8 @@ impl Context {
                             allow_trailing_block,
                         )
                     }
-                    "unquote" => {
-                        return self.parse_unquote_expr(
+                    "eval" => {
+                        return self.parse_eval_expr(
                             span,
                             &tokens[1..],
                             allow_trailing_block,
@@ -923,7 +923,7 @@ impl Context {
         ))
     }
 
-    fn parse_quote_expr<'a>(
+    fn parse_template_expr<'a>(
         &mut self,
         raw_span: Span,
         tokens: &'a [TokenTree],
@@ -945,18 +945,22 @@ impl Context {
                 );
             }
 
-            if self.scopes.last().as_mut().unwrap().kind == ScopeKind::Quoted {
-                self.error(raw_span, "redundant quote tag, arlready quoted");
+            if self.scopes.last().as_mut().unwrap().kind == ScopeKind::Template
+            {
+                self.error(
+                    raw_span,
+                    "redundant template tag, already inside template",
+                );
             }
 
-            self.push_dummy_scope(ScopeKind::Quoted);
+            self.push_dummy_scope(ScopeKind::Template);
             return Ok((
                 Rc::new(MetaExpr::Scope {
                     span: raw_span,
                     body: Vec::new(),
                 }),
                 &[],
-                Some(TrailingBlockKind::Quote),
+                Some(TrailingBlockKind::Template),
             ));
         }
 
@@ -969,13 +973,13 @@ impl Context {
 
         let tokens = &tokens[usize::from(has_exclam)..];
 
-        self.push_dummy_scope(ScopeKind::Quoted);
+        self.push_dummy_scope(ScopeKind::Template);
 
         let Some(TokenTree::Group(p)) = tokens.first() else {
             if has_exclam {
                 self.error(
                     tokens.first().map(|t| t.span()).unwrap_or(raw_span),
-                    "expected block after `quote!`",
+                    "expected block after `template!`",
                 );
             }
             return Err(());
@@ -1044,7 +1048,7 @@ impl Context {
             if has_exclam {
                 self.error(
                     tokens.first().map(|t| t.span()).unwrap_or(raw_span),
-                    "expected block after `quote!`",
+                    "expected block after `template!`",
                 );
             }
             return Err(());
@@ -1062,7 +1066,7 @@ impl Context {
         ))
     }
 
-    fn parse_unquote_expr<'a>(
+    fn parse_eval_expr<'a>(
         &mut self,
         raw_span: Span,
         tokens: &'a [TokenTree],
@@ -1072,12 +1076,12 @@ impl Context {
         if !allow_trailing_block || !tokens.is_empty() {
             self.error(
                 tokens.first().map(|t| t.span()).unwrap_or(raw_span),
-                "`unquote` is only allowed as a template block",
+                "`eval` is only allowed as a template block",
             );
             return Err(());
         }
 
-        self.push_dummy_scope(ScopeKind::Unquoted);
+        self.push_dummy_scope(ScopeKind::Eval);
 
         Ok((
             Rc::new(MetaExpr::Scope {
@@ -1085,7 +1089,7 @@ impl Context {
                 body: Vec::new(),
             }),
             &[],
-            Some(TrailingBlockKind::Unquote),
+            Some(TrailingBlockKind::Eval),
         ))
     }
 
@@ -1124,7 +1128,7 @@ impl Context {
         let mut params = Vec::new();
         let mut params_rest = &param_tokens[..];
 
-        self.push_dummy_scope(ScopeKind::Unquoted);
+        self.push_dummy_scope(ScopeKind::Eval);
 
         while !params_rest.is_empty() {
             let Ok((pat, rest)) = self.parse_pattern(fn_span, params_rest)
@@ -1214,7 +1218,7 @@ impl Context {
         let mut params = Vec::new();
         let mut rest = tokens;
 
-        self.push_dummy_scope(ScopeKind::Unquoted);
+        self.push_dummy_scope(ScopeKind::Eval);
 
         while !rest.is_empty() {
             let Ok((pat, rest_new)) = self.parse_pattern(fn_span, rest) else {
@@ -1307,7 +1311,7 @@ impl Context {
         let (variants_expr, rest) =
             self.parse_expr_deny_trailing_block(for_span, &rest[1..], 1)?;
 
-        self.push_dummy_scope(ScopeKind::Unquoted);
+        self.push_dummy_scope(ScopeKind::Eval);
         self.insert_dummy_bindings_for_pattern(&pattern);
 
         let (body, final_rest, trailing_block);
@@ -1385,7 +1389,7 @@ impl Context {
         let (expr, rest) =
             self.parse_expr_deny_trailing_block(while_span, &rest[1..], 1)?;
 
-        self.push_dummy_scope(ScopeKind::Unquoted);
+        self.push_dummy_scope(ScopeKind::Eval);
         self.insert_dummy_bindings_for_pattern(&pattern);
 
         let (body, final_rest, trailing_block);
@@ -1453,7 +1457,7 @@ impl Context {
         let (condition, rest) =
             self.parse_expr_deny_trailing_block(while_span, tokens, 1)?;
 
-        self.push_dummy_scope(ScopeKind::Unquoted);
+        self.push_dummy_scope(ScopeKind::Eval);
 
         let (body, final_rest, trailing_block);
         if rest.is_empty() && allow_trailing_block {
@@ -1506,7 +1510,7 @@ impl Context {
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
-        self.push_dummy_scope(ScopeKind::Unquoted);
+        self.push_dummy_scope(ScopeKind::Eval);
         let (body, rest, trailing_block);
         if tokens.is_empty() && allow_trailing_block {
             body = Vec::new();
@@ -1606,7 +1610,7 @@ impl Context {
         let (condition, rest) =
             self.parse_expr_deny_trailing_block(if_span, tokens, 1)?;
 
-        self.push_dummy_scope(ScopeKind::Unquoted);
+        self.push_dummy_scope(ScopeKind::Eval);
 
         if rest.is_empty() && allow_trailing_block {
             return Ok((
@@ -1981,10 +1985,10 @@ impl Context {
 
             // we have delay this error by once iteration because if the
             // expression after the one with the missing semi
-            // might be an `[</unquote>]`, in qhich case it was fine
+            // might be an `[</eval>]`, in qhich case it was fine
             // to drop the semi
             if let Some(tse) = pending_trailing_semi_error {
-                if trailing_block != Some(TrailingBlockKind::Unquote) {
+                if trailing_block != Some(TrailingBlockKind::Eval) {
                     self.error(tse, "missing semicolon after expression");
                 }
                 pending_trailing_semi_error = None;
@@ -2081,8 +2085,8 @@ impl Context {
                 Rc::get_mut(fd).unwrap().body = contents;
             }
             TrailingBlockKind::Else => unreachable!(),
-            TrailingBlockKind::Unquote
-            | TrailingBlockKind::Quote
+            TrailingBlockKind::Eval
+            | TrailingBlockKind::Template
             | TrailingBlockKind::Raw => {
                 let MetaExpr::Scope { body, .. } = expr else {
                     unreachable!()
@@ -2149,8 +2153,8 @@ impl Context {
             "while" => TrailingBlockKind::While,
             "let" => TrailingBlockKind::Let,
             "fn" => TrailingBlockKind::Fn,
-            "quote" => TrailingBlockKind::Quote,
-            "unquote" => TrailingBlockKind::Unquote,
+            "template" => TrailingBlockKind::Template,
+            "eval" => TrailingBlockKind::Eval,
             "raw" => TrailingBlockKind::Raw,
             "if" => TrailingBlockKind::If,
             "else" => TrailingBlockKind::Else,
@@ -2536,7 +2540,7 @@ impl Context {
 
         let continuation = &block_tokens[*block_continuation..];
 
-        if trailing_block == TrailingBlockKind::Unquote {
+        if trailing_block == TrailingBlockKind::Eval {
             let (contents, rest, trailing_block_kind) =
                 self.parse_body(block_parent_span, continuation, false);
             self.pop_scope();
@@ -2544,10 +2548,10 @@ impl Context {
             let tokens_consumed = continuation.len() - rest.len();
 
             let Some(trailing_block_kind) = trailing_block_kind else {
-                self.error(group.span(), "`unquote` tag is never terminated");
+                self.error(group.span(), "`eval` tag is never terminated");
                 return Err(());
             };
-            if trailing_block_kind != TrailingBlockKind::Unquote {
+            if trailing_block_kind != TrailingBlockKind::Eval {
                 let continuation_tag_span =
                     continuation[tokens_consumed - 1].span();
                 self.error_unexpected_end_tag(
@@ -2616,7 +2620,7 @@ impl Context {
                     &else_tag_tokens[2..else_tag_tokens.len() - 1];
 
                 let else_expr_new = if else_expr_toks.is_empty() {
-                    self.push_dummy_scope(ScopeKind::Quoted);
+                    self.push_dummy_scope(ScopeKind::Template);
                     let res = self.parse_raw_block(
                         else_tag.span(),
                         &block_tokens[*block_continuation..],

@@ -1,0 +1,5 @@
+error: template tags besides `raw` and `template` are only supported in templates
+ --> tests/ui/eval_tag_not_in_template.rs:5:9
+  |
+5 |         [<eval>]
+  |         ^^^^^^^^

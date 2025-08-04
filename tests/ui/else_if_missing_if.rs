@@ -1,7 +1,7 @@
-use metamatch::quote;
+use metamatch::template;
 
 fn main() {
-    let res = quote! {
+    let res = template! {
         [<if 3 > 2>]
         true
         // missing `if` below.

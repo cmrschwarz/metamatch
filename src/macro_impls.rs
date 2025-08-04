@@ -14,22 +14,22 @@ impl<I: IntoIterator> IntoIterIntoVec for I {
     }
 }
 
-pub fn unquote(body: TokenStream) -> TokenStream {
+pub fn eval(body: TokenStream) -> TokenStream {
     let body = body.into_vec();
     let mut ctx = Context::default();
 
-    ctx.push_dummy_scope(ScopeKind::Unquoted);
+    ctx.push_dummy_scope(ScopeKind::Eval);
     let expr = ctx.parse_body_deny_trailing(Span::call_site(), &body);
     ctx.scopes.pop();
 
     ctx.eval_to_token_stream(Span::call_site(), &expr)
 }
 
-pub fn quote(body: TokenStream) -> TokenStream {
+pub fn template(body: TokenStream) -> TokenStream {
     let body = body.into_vec();
     let mut ctx = Context::default();
 
-    ctx.push_dummy_scope(ScopeKind::Quoted);
+    ctx.push_dummy_scope(ScopeKind::Template);
     let Ok(exprs) = ctx.parse_raw_block_to_exprs(Span::call_site(), &body)
     else {
         return ctx.expand_errors();
@@ -42,7 +42,7 @@ pub fn quote(body: TokenStream) -> TokenStream {
 pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
     let attrib = attrib.into_vec();
     let mut ctx = Context::default();
-    ctx.push_dummy_scope(ScopeKind::Unquoted);
+    ctx.push_dummy_scope(ScopeKind::Eval);
     let (mut exprs, rest, trailing_block) =
         ctx.parse_body(Span::call_site(), &attrib, true);
 

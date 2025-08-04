@@ -1,8 +1,8 @@
-use metamatch::{quote, replicate, unquote};
+use metamatch::{eval, replicate, template};
 
 #[test]
 fn basic_enum_variants() {
-    quote! {
+    template! {
         enum Foo{
             [<for (super i, VARIANT) in enumerate([A, B, C])>]
                 VARIANT = i,
@@ -15,7 +15,7 @@ fn basic_enum_variants() {
 
 #[test]
 fn let_bindings() {
-    quote! {
+    template! {
         [<let VARIANTS = [A, B, C]>]
         enum Foo{
             [<for VARIANT in VARIANTS >]
@@ -29,7 +29,7 @@ fn let_bindings() {
 
 #[test]
 fn let_pattern() {
-    let asdf = quote! {
+    let asdf = template! {
         [<let (FOO, BAR) = (42, 27)>]
         FOO + BAR
     };
@@ -39,8 +39,8 @@ fn let_pattern() {
 
 #[test]
 fn quote_expr() {
-    let res = quote! {
-        [<for X in [1, quote!(+2), quote!(+3)]>]
+    let res = template! {
+        [<for X in [1, template!(+2), template!(+3)]>]
             X
         [</for>]
     };
@@ -50,10 +50,10 @@ fn quote_expr() {
 
 #[test]
 fn quote_stmt() {
-    let res = unquote! {
-        quote!(1);
+    let res = eval! {
+        template!(1);
         for X in [2, 3, 4] {
-            quote!(+ X);
+            template!(+ X);
         }
     };
 
@@ -61,13 +61,13 @@ fn quote_stmt() {
 }
 
 #[test]
-fn quote_block() {
-    let res = unquote! {
-        quote!(1);
+fn template_block() {
+    let res = eval! {
+        template!(1);
         for X in [2, 3, 4] {
-            [<quote>]
+            [<template>]
                 +X
-            [</quote>]
+            [</template>]
         }
     };
 
@@ -75,14 +75,14 @@ fn quote_block() {
 }
 
 #[test]
-fn unquote_block() {
-    let res = quote! {
+fn eval_block() {
+    let res = template! {
         1
-        [<unquote>]
+        [<eval>]
         for X in [2, 3, 4] {
-            quote!(+X)
+            template!(+X)
         }
-        [</unquote>]
+        [</eval>]
     };
 
     assert_eq!(res, 10);
@@ -90,7 +90,7 @@ fn unquote_block() {
 
 #[test]
 fn raw_expr() {
-    let res = quote! {
+    let res = template! {
         [<for X in [1, raw!(+2), raw!(+3)]>]
             X
         [</for>]
@@ -102,7 +102,7 @@ fn raw_expr() {
 #[test]
 fn raw_stmt() {
     const X: i64 = 5;
-    let res = unquote! {
+    let res = eval! {
         raw!(1);
         for X in [2, 3, 4] {
             // this will *not* evaluate the X
@@ -116,7 +116,7 @@ fn raw_stmt() {
 #[test]
 fn raw_block() {
     const X: i64 = 5;
-    let res = unquote! {
+    let res = eval! {
         raw!(1);
         for X in [2, 3, 4] {
             // this will *not* evaluate the X
@@ -131,10 +131,10 @@ fn raw_block() {
 #[test]
 fn lowercase_vars_not_superbound() {
     let x: i64 = 5;
-    let res = unquote! {
+    let res = eval! {
         raw!(1);
         for x in [2, 3, 4] {
-            quote!{
+            template!{
                 + x
             }
         }
@@ -187,7 +187,7 @@ fn replicate_trait_defs_fancy() {
 
 #[test]
 fn quote_array() {
-    let array: [i32; 4] = quote! {
+    let array: [i32; 4] = template! {
         [
             [<for X in 1..5>]
             X,
@@ -198,19 +198,19 @@ fn quote_array() {
 }
 
 #[test]
-fn unquote_array() {
-    const ARRAY: [i32; 4] = unquote! {
+fn eval_array() {
+    const ARRAY: [i32; 4] = eval! {
         let ELEMENTS = for X in 1..5 {
-            quote!(X,)
+            template!(X,)
         };
-        quote!([ELEMENTS])
+        template!([ELEMENTS])
     };
     assert_eq!(ARRAY, [1, 2, 3, 4]);
 }
 
 #[test]
 fn while_template() {
-    let array: [i32; 4] = quote! {
+    let array: [i32; 4] = template! {
         [
             [<let mut X = 1;>]
             [<while X < 5>]
@@ -224,18 +224,18 @@ fn while_template() {
 
 #[test]
 fn ufcs() {
-    let list_len = unquote! {
+    let list_len = eval! {
         let list = [1, 2, 3];
         list.len()
     };
     assert_eq!(list_len, 3);
 
-    let list_len = unquote! {
+    let list_len = eval! {
         [1, 2, 3].len()
     };
     assert_eq!(list_len, 3);
 
-    let zipped_lists = unquote! {
+    let zipped_lists = eval! {
         [1, 2, 3].zip([4, 5, 6])
     };
     assert_eq!(zipped_lists, [(1, 4), (2, 5), (3, 6)]);
@@ -243,19 +243,19 @@ fn ufcs() {
 
 #[test]
 fn lambda_expressions() {
-    let result = unquote! {
+    let result = eval! {
         let add = |x, y| x + y;
         add(2, 3)
     };
     assert_eq!(result, 5);
 
-    let result = unquote! {
+    let result = eval! {
         let add_tup = |(x, y)| x + y;
         add_tup((1, 2))
     };
     assert_eq!(result, 3);
 
-    let result = unquote! {
+    let result = eval! {
         (|x| x + 1)(5)
     };
     assert_eq!(result, 6);
@@ -263,19 +263,19 @@ fn lambda_expressions() {
 
 #[test]
 fn char_type() {
-    let result = unquote! {
+    let result = eval! {
         let x = "asdf".chars()[0];
         x
     };
     assert_eq!(result, 'a');
 
-    let result = unquote! {
+    let result = eval! {
         let x = 'x';
         x
     };
     assert_eq!(result, 'x');
 
-    let result = unquote! {
+    let result = eval! {
         let x = "äbc".bytes()[3];
         x
     };
@@ -284,7 +284,7 @@ fn char_type() {
 
 #[test]
 fn if_statements() {
-    let res = unquote! {
+    let res = eval! {
         let x = 5;
         if x % 2 == 0 {
             1
@@ -302,7 +302,7 @@ fn if_statements() {
 
 #[test]
 fn if_templates_parse() {
-    let res = quote! {
+    let res = template! {
         // 1
         [<if true>]
             1
@@ -354,9 +354,9 @@ fn if_templates_parse() {
 
 #[test]
 fn if_template_expansion() {
-    let res = unquote! {
+    let res = eval! {
         fn expand(x) {
-            [<quote>]
+            [<template>]
                 [<if x==1>]
                     1
                 [<else if x==2>]
@@ -366,7 +366,7 @@ fn if_template_expansion() {
                 [<else>]
                     4
                 [</if>]
-            [</quote>]
+            [</template>]
         }
         (1..=5).map(expand)
     };
@@ -375,7 +375,7 @@ fn if_template_expansion() {
 
 #[test]
 fn if_within_parentheses_remains_typed() {
-    let res = unquote! {
+    let res = eval! {
         (if true {1} else {2}) + 2
     };
     assert_eq!(res, 3);
@@ -383,23 +383,23 @@ fn if_within_parentheses_remains_typed() {
 
 #[test]
 fn loop_break() {
-    let res = unquote! {
+    let res = eval! {
         let mut X = 0;
         loop {
             X += 1;
             if X == 10 {
                 break;
             }
-            quote!(X+);
+            template!(X+);
         }
-        quote!(X);
+        template!(X);
     };
     assert_eq!(res, 55);
 }
 
 #[test]
 fn typed_break_expr() {
-    let res = unquote! {
+    let res = eval! {
         let mut X = 0;
         let super res = loop {
             X += 1;
@@ -407,45 +407,45 @@ fn typed_break_expr() {
                 break X;
             }
         };
-        quote!(res);
+        template!(res);
     };
     assert_eq!(res, 10);
 }
 
 #[test]
 fn for_continue() {
-    let res = unquote! {
+    let res = eval! {
         let ELEMS = for X in [1, 2, 3] {
             if X % 2 == 0 {
                 continue;
             }
-            quote!(X,);
+            template!(X,);
         };
-        quote!([ELEMS]);
+        template!([ELEMS]);
     };
     assert_eq!(res, [1, 3]);
 }
 
 #[test]
 fn while_loop() {
-    let res = unquote! {
+    let res = eval! {
         let super mut x = 5;
         let ELEMS = while x > 0  {
-            quote!(x,);
+            template!(x,);
             x -= 2;
         };
-        quote!([ELEMS]);
+        template!([ELEMS]);
     };
     assert_eq!(res, [5, 3, 1]);
 }
 
 #[test]
 fn while_let() {
-    let res = unquote! {
+    let res = eval! {
         let ELEMS = while let (X,) = [(1,), (2,), 3, (4,)] {
-            quote!((X,),);
+            template!((X,),);
         };
-        quote!([ELEMS]);
+        template!([ELEMS]);
     };
     assert_eq!(res, [(1,), (2,)]);
 }

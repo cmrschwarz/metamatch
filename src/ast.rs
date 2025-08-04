@@ -274,10 +274,11 @@ pub struct Binding {
 pub enum ScopeKind {
     Builtin,
     Raw,
-    Quoted,
-    Unquoted,
-    Evaluation,
+    Template,
+    Eval,
     Metamatch,
+    // not `eval`, but used during execution of the program
+    Evaluation,
 }
 
 #[derive(Debug)]
@@ -301,8 +302,8 @@ pub enum TrailingBlockKind {
     If,
     Else,
     Let,
-    Quote,
-    Unquote,
+    Template,
+    Eval,
     Raw,
     Fn,
 }
@@ -696,8 +697,8 @@ impl TrailingBlockKind {
             TrailingBlockKind::Else => "else",
             TrailingBlockKind::Let => "let",
             TrailingBlockKind::Fn => "fn",
-            TrailingBlockKind::Unquote => "unquote",
-            TrailingBlockKind::Quote => "quote",
+            TrailingBlockKind::Eval => "eval",
+            TrailingBlockKind::Template => "quote",
             TrailingBlockKind::Raw => "raw",
         }
     }

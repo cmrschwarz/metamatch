@@ -1,6 +1,6 @@
-use metamatch::unquote;
+use metamatch::eval;
 fn main() {
-    unquote! {
+    eval! {
         (let foo = 3) + 3
     }
 }

@@ -1,7 +1,7 @@
-use metamatch::unquote;
+use metamatch::eval;
 
 fn main() {
-    unquote! {
+    eval! {
        ident("3")
     }
 }

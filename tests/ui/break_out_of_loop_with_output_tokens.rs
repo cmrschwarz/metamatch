@@ -1,16 +1,16 @@
-use metamatch::unquote;
+use metamatch::eval;
 
 fn main() {
-    let res = unquote! {
+    let res = eval! {
         let mut X = 0;
         let super res = loop {
             X += 1;
             if X == 10 {
                 break X;
             }
-            quote!(X);
+            template!(X);
         };
-        quote!(res);
+        template!(res);
     };
     assert_eq!(res, 10);
 }
