@@ -7,7 +7,7 @@ use super::{
         Function, Lambda, MetaError, MetaExpr, MetaValue, Pattern, Scope,
         ScopeKind, TrailingBlockKind, UnaryOpKind,
     },
-    macro_impls::IntoIterIntoVec,
+    macro_impls::IntoVec,
 };
 
 type Result<T> = std::result::Result<T, ()>;

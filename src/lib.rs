@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 
-use proc_macro::TokenStream;
+use proc_macro::{Span, TokenStream};
+
+use crate::{ast::Context, macro_impls::IntoVec};
 
 mod ast;
 mod evaluate;
@@ -42,7 +44,9 @@ mod parse;
 /// ```
 #[proc_macro]
 pub fn metamatch(body: TokenStream) -> TokenStream {
-    macro_impls::metamatch(body)
+    let mut ctx = Context::default();
+    let exprs = macro_impls::parse_metamatch(&mut ctx, body.into_vec());
+    ctx.eval_to_token_stream(Span::call_site(), &exprs)
 }
 
 /// Generate repetitive syntax like trait impls without giving up on
@@ -76,7 +80,13 @@ pub fn metamatch(body: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
-    macro_impls::replicate(attrib, body)
+    let mut ctx = Context::default();
+    let exprs = macro_impls::parse_replicate(
+        &mut ctx,
+        attrib.into_vec(),
+        body.into_vec(),
+    );
+    ctx.eval_to_token_stream(Span::call_site(), &exprs)
 }
 
 /// Evaluates arbitrary expressions.
@@ -97,7 +107,9 @@ pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro]
 pub fn eval(body: TokenStream) -> TokenStream {
-    macro_impls::eval(body)
+    let mut ctx = Context::default();
+    let exprs = macro_impls::parse_eval(&mut ctx, body.into_vec());
+    ctx.eval_to_token_stream(Span::call_site(), &exprs)
 }
 
 /// Embed dynamic chunks into a larger body of Rust source.
@@ -138,5 +150,7 @@ pub fn eval(body: TokenStream) -> TokenStream {
 ///   Useful e.g. when metamatch is combined with `macro_rules!`.
 #[proc_macro]
 pub fn template(body: TokenStream) -> TokenStream {
-    macro_impls::template(body)
+    let mut ctx = Context::default();
+    let exprs = macro_impls::parse_template(&mut ctx, body.into_vec());
+    ctx.eval_to_token_stream(Span::call_site(), &exprs)
 }

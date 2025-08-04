@@ -1,12 +1,14 @@
-use proc_macro::{Span, TokenStream};
+use std::rc::Rc;
 
-use super::ast::{Context, ScopeKind};
+use proc_macro::{Span, TokenTree};
 
-pub trait IntoIterIntoVec {
+use super::ast::{Context, MetaExpr, ScopeKind};
+
+pub trait IntoVec {
     type Item;
     fn into_vec(self) -> Vec<Self::Item>;
 }
-impl<I: IntoIterator> IntoIterIntoVec for I {
+impl<I: IntoIterator> IntoVec for I {
     type Item = I::Item;
 
     fn into_vec(self) -> Vec<Self::Item> {
@@ -14,34 +16,35 @@ impl<I: IntoIterator> IntoIterIntoVec for I {
     }
 }
 
-pub fn eval(body: TokenStream) -> TokenStream {
-    let body = body.into_vec();
-    let mut ctx = Context::default();
-
+pub fn parse_eval(
+    ctx: &mut Context,
+    body: Vec<TokenTree>,
+) -> Vec<Rc<MetaExpr>> {
     ctx.push_dummy_scope(ScopeKind::Eval);
-    let expr = ctx.parse_body_deny_trailing(Span::call_site(), &body);
+    let exprs = ctx.parse_body_deny_trailing(Span::call_site(), &body);
     ctx.scopes.pop();
 
-    ctx.eval_to_token_stream(Span::call_site(), &expr)
+    exprs
 }
 
-pub fn template(body: TokenStream) -> TokenStream {
-    let body = body.into_vec();
-    let mut ctx = Context::default();
-
+pub fn parse_template(
+    ctx: &mut Context,
+    body: Vec<TokenTree>,
+) -> Vec<Rc<MetaExpr>> {
     ctx.push_dummy_scope(ScopeKind::Template);
-    let Ok(exprs) = ctx.parse_raw_block_to_exprs(Span::call_site(), &body)
-    else {
-        return ctx.expand_errors();
-    };
+    let exprs = ctx
+        .parse_raw_block_to_exprs(Span::call_site(), &body)
+        .unwrap_or_default();
     ctx.scopes.pop();
 
-    ctx.eval_to_token_stream(Span::call_site(), &exprs)
+    exprs
 }
 
-pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
-    let attrib = attrib.into_vec();
-    let mut ctx = Context::default();
+pub fn parse_replicate(
+    ctx: &mut Context,
+    attrib: Vec<TokenTree>,
+    body: Vec<TokenTree>,
+) -> Vec<Rc<MetaExpr>> {
     ctx.push_dummy_scope(ScopeKind::Eval);
     let (mut exprs, rest, trailing_block) =
         ctx.parse_body(Span::call_site(), &attrib, true);
@@ -52,7 +55,8 @@ pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
             attrib[attrib.len() - rest.len() - 1].span(),
             format!("template tag `{}` is never closed", tb.to_str()),
         );
-        return ctx.expand_errors();
+        ctx.pop_scope();
+        return Vec::new();
     }
 
     let Some(trailing_block) = trailing_block else {
@@ -60,13 +64,14 @@ pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
             exprs.last().map(|e| e.span()).unwrap_or(Span::call_site()),
             "replicate ignores the attribute body",
         );
-        return ctx.expand_errors();
+        ctx.pop_scope();
+        return Vec::new();
     };
 
-    let body = body.into_vec();
     let Ok(contents) = ctx.parse_raw_block_to_exprs(Span::call_site(), &body)
     else {
-        return ctx.expand_errors();
+        ctx.pop_scope();
+        return Vec::new();
     };
 
     ctx.close_expr_after_trailing_body(&mut exprs, trailing_block, contents);
@@ -74,20 +79,19 @@ pub fn replicate(attrib: TokenStream, body: TokenStream) -> TokenStream {
     ctx.pop_scope();
     ctx.pop_scope();
 
-    ctx.eval_to_token_stream(Span::call_site(), &exprs)
+    exprs
 }
 
-pub fn metamatch(body: TokenStream) -> TokenStream {
-    let body = body.into_vec();
-    let mut ctx = Context::default();
-
+pub fn parse_metamatch(
+    ctx: &mut Context,
+    body: Vec<TokenTree>,
+) -> Vec<Rc<MetaExpr>> {
     ctx.push_dummy_scope(ScopeKind::Metamatch);
 
-    let Ok(exprs) = ctx.parse_raw_block_to_exprs(Span::call_site(), &body)
-    else {
-        return ctx.expand_errors();
-    };
+    let exprs = ctx
+        .parse_raw_block_to_exprs(Span::call_site(), &body)
+        .unwrap_or_default();
     ctx.scopes.pop();
 
-    ctx.eval_to_token_stream(Span::call_site(), &exprs)
+    exprs
 }

@@ -9,15 +9,15 @@ mod metamatch_impl {
     // directly.
     #![allow(clippy::all, clippy::pedantic)]
 
-    mod ast {
+    pub mod ast {
         use proc_macro2 as proc_macro;
         include!("../../src/ast.rs");
     }
-    mod parse {
+    pub mod parse {
         use proc_macro2 as proc_macro;
         include!("../../src/parse.rs");
     }
-    mod evaluate {
+    pub mod evaluate {
         use proc_macro2 as proc_macro;
         include!("../../src/evaluate.rs");
     }
@@ -25,11 +25,12 @@ mod metamatch_impl {
         use proc_macro2 as proc_macro;
         include!("../../src/macro_impls.rs");
     }
-    pub use macro_impls::*;
 }
 
-use clap::Parser;
-use proc_macro2::TokenStream;
+use metamatch_impl::macro_impls::IntoVec;
+
+use clap::{Parser, ValueEnum};
+use proc_macro2::{Span, TokenStream};
 
 pub fn pretty_print_token_stream(input: TokenStream) -> String {
     let input = input.to_string();
@@ -58,7 +59,7 @@ pub fn pretty_print_token_stream(input: TokenStream) -> String {
     pretty
 }
 
-#[derive(Default, clap::Subcommand)]
+#[derive(Default, ValueEnum, Clone)]
 enum MacroKind {
     #[default]
     Template,
@@ -69,14 +70,17 @@ enum MacroKind {
 
 #[derive(Parser)]
 struct Args {
-    #[command(subcommand)]
-    subcommand: Option<MacroKind>,
+    #[arg(long, default_value = "false")]
+    print_ast: bool,
+
+    #[arg(value_enum)]
+    macro_kind: Option<MacroKind>,
 }
 
 fn main() {
     let args = Args::parse();
 
-    let kind = args.subcommand.unwrap_or(MacroKind::Template);
+    let kind = args.macro_kind.unwrap_or(MacroKind::Template);
 
     let sandbox = format!("{}/sandbox", env!("CARGO_MANIFEST_DIR"));
 
@@ -103,18 +107,39 @@ fn main() {
     let body_tt = syn::parse_str::<TokenStream>(&body_str)
         .expect("failed to parse playground_body.rs");
 
-    let result = match kind {
-        MacroKind::Template => metamatch_impl::template(body_tt),
-        MacroKind::Eval => metamatch_impl::eval(body_tt),
-        MacroKind::Metamatch => metamatch_impl::metamatch(body_tt),
+    let mut ctx = metamatch_impl::ast::Context::default();
+
+    let exprs = match kind {
+        MacroKind::Template => metamatch_impl::macro_impls::parse_template(
+            &mut ctx,
+            body_tt.into_vec(),
+        ),
+        MacroKind::Eval => metamatch_impl::macro_impls::parse_eval(
+            &mut ctx,
+            body_tt.into_vec(),
+        ),
+        MacroKind::Metamatch => metamatch_impl::macro_impls::parse_metamatch(
+            &mut ctx,
+            body_tt.into_vec(),
+        ),
         MacroKind::Replicate => {
             let attrib_str = std::fs::read_to_string(&attrib)
                 .unwrap_or_else(|_| panic!("failed to stringify {attrib}"));
             let attrib_tt = syn::parse_str::<TokenStream>(&attrib_str)
                 .unwrap_or_else(|_| panic!("failed to stringify {body}"));
-            metamatch_impl::replicate(attrib_tt, body_tt)
+            metamatch_impl::macro_impls::parse_replicate(
+                &mut ctx,
+                attrib_tt.into_vec(),
+                body_tt.into_vec(),
+            )
         }
     };
+
+    if args.print_ast && ctx.errors.is_empty() {
+        println!("{exprs:#?}");
+    }
+
+    let result = ctx.eval_to_token_stream(Span::call_site(), &exprs);
 
     println!("{}", pretty_print_token_stream(result));
 }
