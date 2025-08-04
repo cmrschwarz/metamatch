@@ -3,11 +3,10 @@ updates:
 - package-ecosystem: cargo
   directory: "/"
   schedule:
-    interval: daily
+    interval: quarterly
     time: "06:00"
   open-pull-requests-limit: 3
   groups:
     all:
       patterns:
         - "*"
-
