@@ -1,4 +1,4 @@
-use metamatch::metamatch;
+use metamatch::{eval, metamatch};
 
 #[derive(Debug, PartialEq)]
 enum DynVec {
