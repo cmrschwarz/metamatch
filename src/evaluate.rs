@@ -1626,6 +1626,17 @@ impl Context {
                 MetaValue::Float { value: lhs, .. },
                 MetaValue::Float { value: rhs, .. },
             ) => self.eval_binary_op_float(op_span, op_kind, *lhs, *rhs),
+            (MetaValue::List(lhs), MetaValue::List(rhs))
+                if op_kind == BinaryOpKind::Add =>
+            {
+                Ok(Rc::new(MetaValue::List(RefCell::new(
+                    (*lhs.borrow())
+                        .iter()
+                        .chain(&**rhs.borrow())
+                        .cloned()
+                        .collect(),
+                ))))
+            }
             (
                 MetaValue::String { value: lhs, .. },
                 MetaValue::String { value: rhs, .. },

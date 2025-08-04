@@ -91,3 +91,19 @@ fn add_assign() {
     };
     assert_eq!(val, 7);
 }
+
+#[test]
+fn string_concatenation() {
+    let val = eval! {
+        "foo" + "bar"
+    };
+    assert_eq!(val, "foobar");
+}
+
+#[test]
+fn list_concatenation() {
+    let val = eval! {
+        [1, 2, 3] + [4, 5]
+    };
+    assert_eq!(val, [1, 2, 3, 4, 5]);
+}
