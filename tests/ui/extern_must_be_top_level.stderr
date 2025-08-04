@@ -1,0 +1,5 @@
+error: `extern` can only occur at the top level
+ --> tests/ui/extern_must_be_top_level.rs:6:13
+  |
+6 |             extern let FOO = [1, 2, 3];
+  |             ^^^^^^

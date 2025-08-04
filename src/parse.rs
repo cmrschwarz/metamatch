@@ -306,6 +306,7 @@ impl Default for Context {
                 kind: ScopeKind::Builtin,
                 bindings: HashMap::new(),
             }],
+            extern_decls: Vec::new(),
             errors: Vec::new(),
         };
         ctx.insert_builtins();
@@ -314,6 +315,11 @@ impl Default for Context {
 }
 
 impl Context {
+    pub fn is_top_level_scope(&self) -> bool {
+        // builtin + top level user scope
+        self.scopes.len() == 2
+    }
+
     pub fn push_dummy_scope(&mut self, kind: ScopeKind) {
         self.scopes.push(Scope {
             kind,
@@ -578,17 +584,22 @@ impl Context {
                         }
                         Ok((expr, &tokens[1..], None))
                     }
-                    Delimiter::Brace => Ok((
-                        Rc::new(MetaExpr::Scope {
-                            span: group.span(),
-                            body: self.parse_body_deny_trailing(
-                                group.span(),
-                                &group_tokens,
-                            ),
-                        }),
-                        &tokens[1..],
-                        None,
-                    )),
+                    Delimiter::Brace => {
+                        self.push_dummy_scope(ScopeKind::Eval);
+                        let expr_block = self.parse_body_deny_trailing(
+                            group.span(),
+                            &group_tokens,
+                        );
+                        self.pop_scope();
+                        Ok((
+                            Rc::new(MetaExpr::Scope {
+                                span: group.span(),
+                                body: expr_block,
+                            }),
+                            &tokens[1..],
+                            None,
+                        ))
+                    }
                 }
             }
 
@@ -608,6 +619,7 @@ impl Context {
                         return self.parse_let(
                             span,
                             &tokens[1..],
+                            false,
                             allow_trailing_block,
                         );
                     }
@@ -649,8 +661,55 @@ impl Context {
                         return self.parse_fn(
                             span,
                             &tokens[1..],
+                            false,
                             allow_trailing_block,
                         );
+                    }
+                    "extern" => {
+                        if min_prec != 0 {
+                            self.error(
+                                ident.span(),
+                                "`extern` cannot occur within expression",
+                            );
+                            return Err(());
+                        }
+
+                        if !self.is_top_level_scope() {
+                            self.error(
+                                ident.span(),
+                                "`extern` can only occur at the top level",
+                            );
+                        }
+
+                        let mut is_fn = false;
+                        let mut is_let = false;
+
+                        if let Some(TokenTree::Ident(next)) = tokens.get(1) {
+                            let s = next.to_string();
+                            is_fn = s == "fn";
+                            is_let = s == "let";
+                        };
+                        if is_fn {
+                            return self.parse_fn(
+                                span,
+                                &tokens[2..],
+                                true,
+                                allow_trailing_block,
+                            );
+                        }
+                        if is_let {
+                            return self.parse_let(
+                                span,
+                                &tokens[2..],
+                                true,
+                                allow_trailing_block,
+                            );
+                        }
+                        self.error(
+                            ident.span(),
+                            "`extern` must be followed by `let` or `fn`",
+                        );
+                        return Err(());
                     }
                     "if" => {
                         return self.parse_if(
@@ -813,6 +872,7 @@ impl Context {
         &mut self,
         let_span: Span,
         tokens: &'a [TokenTree],
+        is_extern: bool,
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
@@ -825,15 +885,15 @@ impl Context {
 
         if rest.is_empty() && allow_trailing_block {
             self.insert_dummy_bindings_for_pattern(&pattern);
-            return Ok((
-                Rc::new(MetaExpr::LetBinding {
-                    span: let_span,
-                    pattern,
-                    expr: None,
-                }),
-                &[],
-                Some(TrailingBlockKind::Let),
-            ));
+            let let_expr = Rc::new(MetaExpr::LetBinding {
+                span: let_span,
+                pattern,
+                expr: None,
+            });
+            if is_extern {
+                self.extern_decls.push(let_expr.clone());
+            }
+            return Ok((let_expr, &[], Some(TrailingBlockKind::Let)));
         }
 
         let mut eq_span = None;
@@ -862,15 +922,15 @@ impl Context {
 
         self.insert_dummy_bindings_for_pattern(&pattern);
 
-        Ok((
-            Rc::new(MetaExpr::LetBinding {
-                span: let_span,
-                pattern,
-                expr: Some(expr),
-            }),
-            rest,
-            None,
-        ))
+        let let_expr = Rc::new(MetaExpr::LetBinding {
+            span: let_span,
+            pattern,
+            expr: Some(expr),
+        });
+        if is_extern {
+            self.extern_decls.push(let_expr.clone());
+        }
+        Ok((let_expr, rest, None))
     }
 
     fn parse_quote_expr<'a>(
@@ -1017,6 +1077,7 @@ impl Context {
         &mut self,
         fn_span: Span,
         tokens: &'a [TokenTree],
+        is_extern: bool,
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
@@ -1114,16 +1175,18 @@ impl Context {
             (body, &rest[1..], None)
         };
 
-        Ok((
-            Rc::new(MetaExpr::FnDecl(Rc::new(Function {
-                span: name_span,
-                name: name.clone(),
-                params,
-                body,
-            }))),
-            rest,
-            trailing_block,
-        ))
+        let fn_decl = Rc::new(MetaExpr::FnDecl(Rc::new(Function {
+            span: name_span,
+            name: name.clone(),
+            params,
+            body,
+        })));
+
+        if is_extern {
+            self.extern_decls.push(fn_decl.clone());
+        }
+
+        Ok((fn_decl, rest, trailing_block))
     }
 
     fn parse_lambda<'a>(

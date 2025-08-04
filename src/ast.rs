@@ -293,6 +293,7 @@ pub struct Context {
     pub empty_token_list_expr: Rc<MetaExpr>,
     pub scopes: Vec<Scope>,
     pub errors: Vec<MetaError>,
+    pub extern_decls: Vec<Rc<MetaExpr>>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
