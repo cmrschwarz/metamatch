@@ -132,8 +132,8 @@ pub fn eval(body: TokenStream) -> TokenStream {
 /// - `[<fn .. (..)>] [</fn>]`
 ///
 /// ## Special blocks
-/// - `[<eval>][</eval>]`: Larger blocks of dynamic code can be put inside an
-///   `eval` block.
+/// - `[<eval>][</eval>]`: Switch into eval mode. The body is evaluated and
+///   then pasted into the template.
 /// - `[<raw>]..[</raw>]`: Paste raw Rust without any identifier replacements.
 ///   Useful e.g. when metamatch is combined with `macro_rules!`.
 #[proc_macro]

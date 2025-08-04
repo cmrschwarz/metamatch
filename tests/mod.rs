@@ -65,9 +65,9 @@ fn template_block() {
     let res = eval! {
         quote!(1);
         for X in [2, 3, 4] {
-            [<template>]
+            quote! {
                 +X
-            [</template>]
+            }
         }
     };
 
@@ -120,9 +120,9 @@ fn raw_block() {
         raw!(1);
         for X in [2, 3, 4] {
             // this will *not* evaluate the X
-            [<raw>]
+            raw!{
             + X
-            [</raw>]
+            }
         }
     };
     assert_eq!(res, 16);
@@ -356,7 +356,7 @@ fn if_templates_parse() {
 fn if_template_expansion() {
     let res = eval! {
         fn expand(x) {
-            [<template>]
+            quote! {
                 [<if x==1>]
                     1
                 [<else if x==2>]
@@ -366,7 +366,7 @@ fn if_template_expansion() {
                 [<else>]
                     4
                 [</if>]
-            [</template>]
+            }
         }
         (1..=5).map(expand)
     };

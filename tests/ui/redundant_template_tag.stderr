@@ -1,5 +1,0 @@
-error: redundant template tag, already inside a template
- --> tests/ui/redundant_template_tag.rs:5:11
-  |
-5 |         [<template>]
-  |           ^^^^^^^^

@@ -506,57 +506,11 @@ impl Context {
             }
         }
 
-        let mut is_raw = false;
-        let mut is_quote = false;
-        if template_tokens.len() == 1 {
-            if let Some(TokenTree::Ident(i)) = template_tokens.first() {
-                is_quote = i.to_string() == "template";
-                is_raw = i.to_string() == "raw";
-            }
-        }
-
-        if !is_quote && !is_raw {
-            self.error(group.span(), "template tags besides `raw` and `template` are only supported in templates");
-            return Err(()); // TODO: debatable?
-        }
-
-        let (trail_kind, scope_kind) = if is_raw {
-            (TrailingBlockKind::Raw, ScopeKind::Raw)
-        } else {
-            (TrailingBlockKind::Template, ScopeKind::Template)
-        };
-
-        self.push_dummy_scope(scope_kind);
-
-        let res = self.parse_raw_block(group.span(), rest_tokens);
-
-        self.pop_scope();
-
-        match res? {
-            RawBodyParseResult::ParseRaw | RawBodyParseResult::Complete(_) => {
-                self.error(group.span(), "`quote` tag is never closed");
-                Err(())
-            }
-            RawBodyParseResult::UnmatchedEnd {
-                span,
-                kind,
-                offset,
-                contents,
-            } => {
-                if kind != trail_kind {
-                    self.errror_unmatched_closing_tag(span, kind);
-                    return Err(());
-                }
-                Ok((
-                    Rc::new(MetaExpr::Scope {
-                        span: group.span(),
-                        body: contents,
-                    }),
-                    &rest_tokens[offset + 1..],
-                    None,
-                ))
-            }
-        }
+        self.error(
+            group.span(),
+            "template tags are not supported in eval mode",
+        );
+        Err(())
     }
     fn parse_expr_value<'a>(
         &mut self,
@@ -707,13 +661,6 @@ impl Context {
                     }
                     "quote" => {
                         return self.parse_quote_expr(span, &tokens[1..])
-                    }
-                    "template" => {
-                        return self.parse_template_expr(
-                            span,
-                            &tokens[1..],
-                            allow_trailing_block,
-                        )
                     }
                     "raw" => {
                         return self.parse_raw_expr(
@@ -973,48 +920,6 @@ impl Context {
             }),
             &tokens[1..],
             None,
-        ))
-    }
-
-    fn parse_template_expr<'a>(
-        &mut self,
-        raw_span: Span,
-        tokens: &'a [TokenTree],
-        allow_trailing_block: bool,
-    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
-    {
-        if !allow_trailing_block || !tokens.is_empty() {
-            self.error(
-                tokens.first().map(|t| t.span()).unwrap_or(raw_span),
-                "`template` is only allowed as a block, consider using `quote!`",
-            );
-            return Err(());
-        }
-
-        let curr_scope_kind = self.scopes.last().as_mut().unwrap().kind;
-
-        if curr_scope_kind == ScopeKind::Template {
-            self.error(
-                raw_span,
-                "redundant template tag, already inside a template",
-            );
-        }
-        if curr_scope_kind == ScopeKind::Quote {
-            self.error(
-                raw_span,
-                "redundant template tag, already inside quote!",
-            );
-        }
-
-        self.push_dummy_scope(ScopeKind::Template);
-
-        Ok((
-            Rc::new(MetaExpr::Scope {
-                span: raw_span,
-                body: Vec::new(),
-            }),
-            &[],
-            Some(TrailingBlockKind::Template),
         ))
     }
 
@@ -2492,9 +2397,8 @@ impl Context {
         exprs: &mut Vec<Rc<MetaExpr>>,
     ) -> Result<TemplateInRawParseResult> {
         let offset_in_block = *block_continuation - 1;
-
-        let is_raw_block =
-            self.scopes.last().as_ref().unwrap().kind == ScopeKind::Raw;
+        let parent_scope = self.scopes.last().as_ref().unwrap().kind;
+        let is_raw_block = parent_scope == ScopeKind::Raw;
         let first_tok = template_inner_tokens.first();
         if let Some(TokenTree::Ident(ident)) = first_tok {
             if !is_raw_block && ident.to_string() == "else" {
@@ -2635,7 +2539,11 @@ impl Context {
                     &else_tag_tokens[2..else_tag_tokens.len() - 1];
 
                 let else_expr_new = if else_expr_toks.is_empty() {
-                    self.push_dummy_scope(ScopeKind::Template);
+                    debug_assert!(matches!(
+                        parent_scope,
+                        ScopeKind::Template | ScopeKind::Quote
+                    ));
+                    self.push_dummy_scope(parent_scope);
                     let res = self.parse_raw_block(
                         else_tag.span(),
                         &block_tokens[*block_continuation..],
