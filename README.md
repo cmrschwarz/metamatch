@@ -92,11 +92,11 @@ template! {
 
 let err = ErrorCode::E42("oh noes!".to_owned());
 ```
-
-You can switch back and forth between template and eval mode from within
-any macro using the `[<eval>]` and `[<template>]` tags. See the documentation of
+See the documentation of
 [`template!`](https://docs.rs/metamatch/latest/metamatch/macro.template.html) for
 a full list of template tags.
+You can switch back and forth between template and eval mode from within
+any macro using the `[<eval>]` tag and `quote!` pseudo-macro respectively.
 
 
 ## [`#[replicate]`](https://docs.rs/metamatch/latest/metamatch/attr.replicate.html)
@@ -156,7 +156,7 @@ All `str -> str` functions also work `token -> token`.
 - `len([T]) -> int`
 
 ## Special Purpose 'Macros'
-- `quote!(..) -> [token]`: Shorthand for a nested `[<template>]` block.
+- `quote!(..) -> [token]`: Like a nested `template!`, this evaluates to a list of raw tokens.
 - `raw!(..) -> [token]`: like `quote!`, but no meta variable expansion or template tags.
 
 Just like Rust macros, you can use any of `{}`, `[]`, and `()`
