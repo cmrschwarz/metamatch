@@ -326,9 +326,9 @@ impl Context {
             bindings: HashMap::new(),
         });
     }
-    pub fn pop_scope(&mut self) {
+    pub fn pop_scope(&mut self) -> Option<Scope> {
         debug_assert!(self.scopes.len() > 1);
-        self.scopes.pop();
+        self.scopes.pop()
     }
 
     fn parse_expr_deny_rest(
