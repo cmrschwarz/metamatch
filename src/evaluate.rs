@@ -11,7 +11,8 @@ use proc_macro::{
 
 use super::ast::{
     BinaryOpKind, Binding, BuiltinFn, Context, EvalError, Function, Lambda,
-    MetaExpr, MetaValue, Pattern, Scope, ScopeKind, UnaryOpKind,
+    MetaExpr, MetaValue, Pattern, Scope, ScopeKind, UnaryOpKind, UsePath,
+    UseSegment, UseTree,
 };
 
 type Result<T> = std::result::Result<T, EvalError>;
@@ -573,8 +574,51 @@ fn append_lambda_params(
     Ok(())
 }
 
+fn append_use_path(tgt: &mut Vec<TokenTree>, span: Span, path: &UsePath) {
+    for (i, seg) in path.segments.iter().enumerate() {
+        if i > 0 || path.leading_double_colon {
+            append_double_colon(tgt, span);
+        }
+        match seg {
+            UseSegment::Ident(ident) => append_ident(tgt, ident, span),
+            UseSegment::SelfKeyword => append_ident(tgt, "self", span),
+            UseSegment::SuperKeyword => append_ident(tgt, "super", span),
+            UseSegment::CrateKeyword => append_ident(tgt, "crate", span),
+        }
+    }
+}
+
+fn append_use_tree(tgt: &mut Vec<TokenTree>, tree: &UseTree) {
+    match tree {
+        UseTree::Path { span, path } => {
+            append_use_path(tgt, *span, path);
+        }
+        UseTree::Group { span, path, items } => {
+            append_use_path(tgt, *span, path);
+            let _ = append_group(tgt, Delimiter::Brace, *span, |tgt| {
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        append_punct(tgt, ',', Spacing::Alone, *span);
+                    }
+                    append_use_tree(tgt, item);
+                }
+                Ok(())
+            });
+        }
+        UseTree::Rename { span, path, alias } => {
+            append_use_path(tgt, *span, path);
+            append_ident(tgt, "as", *span);
+            append_ident(tgt, alias, *span);
+        }
+    }
+}
+
 fn append_ident(tgt: &mut Vec<TokenTree>, name: impl AsRef<str>, span: Span) {
     tgt.push(TokenTree::Ident(Ident::new(name.as_ref(), span)));
+}
+fn append_double_colon(tgt: &mut Vec<TokenTree>, span: Span) {
+    append_punct(tgt, ':', Spacing::Joint, span);
+    append_punct(tgt, ':', Spacing::Alone, span);
 }
 fn append_punct(
     tgt: &mut Vec<TokenTree>,
@@ -885,6 +929,10 @@ impl Context {
             MetaExpr::Lambda(lambda) => {
                 append_lambda_params(tgt, &lambda.params)?;
                 self.append_quoted_expression(tgt, &lambda.body)?;
+            }
+            MetaExpr::UseDecl(use_decl) => {
+                append_ident(tgt, "use", use_decl.span);
+                append_use_tree(tgt, &use_decl.tree);
             }
             MetaExpr::RawOutputGroup {
                 span,
@@ -1420,6 +1468,10 @@ impl Context {
                 self.match_and_bind_pattern(pattern, val, false)?;
                 Ok(self.empty_token_list.clone())
             }
+            MetaExpr::UseDecl(use_decl) => {
+                self.extern_uses.push(use_decl.clone());
+                Ok(self.empty_token_list.clone())
+            }
             MetaExpr::Call { span, lhs, args } => {
                 self.eval_fn_call(*span, lhs, args)
             }
@@ -1528,12 +1580,12 @@ impl Context {
                     } = &*condition_val
                     else {
                         self.error(
-                            condition.span(),
-                            format!(
-                                "`while` expression must evaluate as `bool`, not `{}`",
-                                condition_val.kind()
-                            ),
-                        );
+                                    condition.span(),
+                                    format!(
+                                        "`while` expression must evaluate as `bool`, not `{}`",
+                                        condition_val.kind()
+                                    ),
+                                );
                         return Err(EvalError::Error);
                     };
                     if !*condition {
@@ -2085,6 +2137,7 @@ impl Context {
             | MetaExpr::Break { .. }
             | MetaExpr::Continue { .. }
             | MetaExpr::OpUnary { .. }
+            | MetaExpr::UseDecl { .. }
             | MetaExpr::OpBinary { .. } => {
                 self.error(
                     lhs.span(),

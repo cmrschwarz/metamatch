@@ -5,7 +5,8 @@ use super::{
     ast::{
         BinaryOpKind, Binding, BindingParameter, Context, ExpandPattern,
         Function, Lambda, MetaError, MetaExpr, MetaValue, Pattern, Scope,
-        ScopeKind, TrailingBlockKind, UnaryOpKind,
+        ScopeKind, TrailingBlockKind, UnaryOpKind, UseDecl, UsePath,
+        UseSegment, UseTree,
     },
     macro_impls::IntoVec,
 };
@@ -307,6 +308,7 @@ impl Default for Context {
                 bindings: HashMap::new(),
             }],
             extern_decls: Vec::new(),
+            extern_uses: Vec::new(),
             errors: Vec::new(),
         };
         ctx.insert_builtins();
@@ -665,6 +667,16 @@ impl Context {
                             allow_trailing_block,
                         );
                     }
+                    "use" => {
+                        if min_prec != 0 {
+                            self.error(
+                                ident.span(),
+                                "`use` cannot occur within expression",
+                            );
+                            return Err(());
+                        }
+                        return self.parse_use_decl(span, &tokens[1..]);
+                    }
                     "extern" => {
                         if min_prec != 0 {
                             self.error(
@@ -866,6 +878,193 @@ impl Context {
                 }
             }
         }
+    }
+
+    fn parse_use_decl<'a>(
+        &mut self,
+        use_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        if tokens.is_empty() {
+            self.error(use_span, "expected path after `use`");
+            return Err(());
+        }
+
+        let (use_tree, rest) = self.parse_use_tree(use_span, tokens)?;
+
+        let use_decl = Rc::new(MetaExpr::UseDecl(Rc::new(UseDecl {
+            span: use_span,
+            tree: use_tree,
+        })));
+
+        Ok((use_decl, rest, None))
+    }
+
+    fn parse_use_group_items(
+        &mut self,
+        parent_span: Span,
+        tokens: &[TokenTree],
+    ) -> Result<Vec<UseTree>> {
+        let mut items = Vec::new();
+        let mut rest = tokens;
+
+        while !rest.is_empty() {
+            let (item, new_rest) = self.parse_use_tree(parent_span, rest)?;
+            items.push(item);
+            rest = new_rest;
+
+            if let Some(TokenTree::Punct(p)) = rest.first() {
+                if p.as_char() == ',' {
+                    rest = &rest[1..];
+                    // Allow trailing comma
+                    if rest.is_empty() {
+                        break;
+                    }
+                    continue;
+                }
+            }
+
+            if !rest.is_empty() {
+                self.error(
+                    rest.first().unwrap().span(),
+                    "expected `,` between use items",
+                );
+                return Err(());
+            }
+        }
+
+        Ok(items)
+    }
+
+    fn parse_use_path<'a>(
+        &mut self,
+        parent_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(UsePath, &'a [TokenTree])> {
+        let mut segments = Vec::new();
+        let mut leading_double_colon = false;
+        let mut rest = tokens;
+
+        // Check for leading ::
+        if let Some(TokenTree::Punct(p1)) = rest.first() {
+            if let Some(TokenTree::Punct(p2)) = rest.get(1) {
+                if p1.as_char() == ':' && p2.as_char() == ':' {
+                    leading_double_colon = true;
+                    rest = &rest[2..];
+                }
+            }
+        }
+
+        // Parse path segments
+        while !rest.is_empty() {
+            if let Some(TokenTree::Ident(ident)) = rest.first() {
+                let name = ident.to_string();
+                let segment = match &*name {
+                    "self" => UseSegment::SelfKeyword,
+                    "super" => UseSegment::SuperKeyword,
+                    "crate" => UseSegment::CrateKeyword,
+                    _ => UseSegment::Ident(Rc::from(name)),
+                };
+                segments.push(segment);
+                rest = &rest[1..];
+
+                // Check for trailing ::
+                if let Some(TokenTree::Punct(p1)) = rest.first() {
+                    if let Some(TokenTree::Punct(p2)) = rest.get(1) {
+                        if p1.as_char() == ':' && p2.as_char() == ':' {
+                            rest = &rest[2..];
+                            continue;
+                        }
+                    }
+                }
+                // No more :: found, we're done with path segments
+                break;
+            } else {
+                self.error(
+                    rest.first().map(|t| t.span()).unwrap_or(parent_span),
+                    "expected identifier in use path",
+                );
+                return Err(());
+            }
+        }
+
+        if segments.is_empty() {
+            self.error(parent_span, "expected path in use declaration");
+            return Err(());
+        }
+
+        Ok((
+            UsePath {
+                leading_double_colon,
+                segments,
+            },
+            rest,
+        ))
+    }
+
+    fn parse_use_tree<'a>(
+        &mut self,
+        parent_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(UseTree, &'a [TokenTree])> {
+        let (path, rest) = self.parse_use_path(parent_span, tokens)?;
+
+        if let Some(TokenTree::Group(group)) = rest.first() {
+            if group.delimiter() == Delimiter::Brace {
+                // Group import: `path::{item1, item2}`
+                let group_tokens = group.stream().into_vec();
+                let items =
+                    self.parse_use_group_items(group.span(), &group_tokens)?;
+                return Ok((
+                    UseTree::Group {
+                        span: parent_span,
+                        path,
+                        items,
+                    },
+                    &rest[1..],
+                ));
+            }
+        }
+
+        if let Some(TokenTree::Ident(ident)) = rest.first() {
+            if ident.to_string() == "as" {
+                // Rename: `path as alias`
+                if rest.len() < 2 {
+                    self.error(ident.span(), "expected identifier after `as`");
+                    return Err(());
+                }
+                let Some((_, alias)) = parse_ident(&rest[1]) else {
+                    self.error(
+                        rest[1].span(),
+                        "expected identifier after `as`",
+                    );
+                    return Err(());
+                };
+
+                if path.segments.is_empty() {
+                    self.error(parent_span, "expected path before `as`");
+                    return Err(());
+                }
+
+                return Ok((
+                    UseTree::Rename {
+                        span: parent_span,
+                        path,
+                        alias,
+                    },
+                    &rest[2..],
+                ));
+            }
+        }
+
+        Ok((
+            UseTree::Path {
+                span: parent_span,
+                path,
+            },
+            rest,
+        ))
     }
 
     fn parse_let<'a>(

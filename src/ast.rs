@@ -106,6 +106,48 @@ pub struct Lambda {
 }
 
 #[derive(Debug)]
+pub enum UseSegment {
+    /// Regular identifier
+    Ident(Rc<str>),
+    /// `self`
+    SelfKeyword,
+    /// `super`
+    SuperKeyword,
+    /// `crate`
+    CrateKeyword,
+}
+
+#[derive(Debug)]
+pub struct UsePath {
+    pub leading_double_colon: bool,
+    pub segments: Vec<UseSegment>,
+}
+
+#[derive(Debug)]
+pub enum UseTree {
+    /// `some::path`
+    Path { span: Span, path: UsePath },
+    /// `some::path::{item1, item2}`
+    Group {
+        span: Span,
+        path: UsePath,
+        items: Vec<UseTree>,
+    },
+    /// `some::path as other_name`
+    Rename {
+        span: Span,
+        path: UsePath,
+        alias: Rc<str>,
+    },
+}
+
+#[derive(Debug)]
+pub struct UseDecl {
+    pub span: Span,
+    pub tree: UseTree,
+}
+
+#[derive(Debug)]
 pub struct ExpandPattern {
     pub span: Span,
     pub for_pattern: Pattern,
@@ -137,6 +179,7 @@ pub enum MetaExpr {
         pattern: Pattern,
         expr: Option<Rc<MetaExpr>>,
     },
+    UseDecl(Rc<UseDecl>),
     Call {
         span: Span,
         lhs: Rc<MetaExpr>,
@@ -294,6 +337,7 @@ pub struct Context {
     pub scopes: Vec<Scope>,
     pub errors: Vec<MetaError>,
     pub extern_decls: Vec<Rc<MetaExpr>>,
+    pub extern_uses: Vec<Rc<UseDecl>>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -615,6 +659,7 @@ impl MetaExpr {
             MetaExpr::Literal { span, .. } => span,
             MetaExpr::Ident { span, .. } => span,
             MetaExpr::LetBinding { span, .. } => span,
+            MetaExpr::UseDecl(use_decl) => &use_decl.span,
             MetaExpr::Call { span, .. } => span,
             MetaExpr::ExpandPattern(ep) => &ep.span,
             MetaExpr::FnDecl(function) => &function.span,
@@ -641,6 +686,7 @@ impl MetaExpr {
             MetaExpr::Literal { .. } => "literal",
             MetaExpr::Ident { .. } => "identifier",
             MetaExpr::LetBinding { .. } => "let binding",
+            MetaExpr::UseDecl { .. } => "use declaration",
             MetaExpr::Call { .. } => "function call",
             MetaExpr::FnDecl { .. } => "function declaration",
             MetaExpr::Lambda { .. } => "lambda",
@@ -684,7 +730,8 @@ impl MetaExpr {
             | MetaExpr::Parenthesized { .. }
             | MetaExpr::Break { .. }
             | MetaExpr::Continue { .. }
-            | MetaExpr::LetBinding { .. } => false,
+            | MetaExpr::LetBinding { .. }
+            | MetaExpr::UseDecl { .. } => false,
         }
     }
 }
