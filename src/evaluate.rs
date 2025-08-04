@@ -705,6 +705,403 @@ impl Context {
         };
         self.insert_builtin_fn(name, Some(1), list_fn);
     }
+
+    fn append_group_to_stream(
+        tgt: &mut Vec<TokenTree>,
+        delim: Delimiter,
+        span: Span,
+        mut map_inner: impl FnMut(&mut Vec<TokenTree>) -> Result<()>,
+    ) -> Result<()> {
+        let mut inner = Vec::new();
+        map_inner(&mut inner)?;
+        let mut group = Group::new(delim, TokenStream::from_iter(inner));
+        group.set_span(span);
+        tgt.push(TokenTree::Group(group));
+        Ok(())
+    }
+
+    fn append_comma_separated_list_to_stream<T>(
+        tgt: &mut Vec<TokenTree>,
+        delim: Delimiter,
+        span: Span,
+        elements: impl IntoIterator<Item = T>,
+        mut map_inner: impl FnMut(&mut Vec<TokenTree>, T) -> Result<()>,
+    ) -> Result<()> {
+        let mut inner = Vec::new();
+        for (i, e) in elements.into_iter().enumerate() {
+            if i > 0 {
+                inner.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
+            }
+            map_inner(&mut inner, e)?;
+        }
+        let mut group = Group::new(delim, TokenStream::from_iter(inner));
+        group.set_span(span);
+        tgt.push(TokenTree::Group(group));
+        Ok(())
+    }
+
+    fn append_quoted_pattern_to_stream(
+        tgt: &mut Vec<TokenTree>,
+        pat: &Pattern,
+    ) -> Result<()> {
+        match pat {
+            Pattern::Ident(binding) => {
+                if binding.super_bound {
+                    tgt.push(TokenTree::Ident(Ident::new(
+                        "super",
+                        Span::call_site(),
+                    )));
+                }
+
+                if binding.mutable {
+                    tgt.push(TokenTree::Ident(Ident::new(
+                        "mut",
+                        Span::call_site(),
+                    )));
+                }
+
+                tgt.push(TokenTree::Ident(Ident::new(
+                    &binding.name,
+                    binding.span,
+                )));
+
+                Ok(())
+            }
+            Pattern::Tuple { span, elems } => {
+                Self::append_comma_separated_list_to_stream(
+                    tgt,
+                    Delimiter::Parenthesis,
+                    *span,
+                    elems,
+                    Self::append_quoted_pattern_to_stream,
+                )
+            }
+            Pattern::List { span, elems } => {
+                Self::append_comma_separated_list_to_stream(
+                    tgt,
+                    Delimiter::Bracket,
+                    *span,
+                    elems,
+                    Self::append_quoted_pattern_to_stream,
+                )
+            }
+        }
+    }
+
+    fn append_quoted_block_to_stream(
+        &mut self,
+        tgt: &mut Vec<TokenTree>,
+        span: Span,
+        stmts: &[Rc<MetaExpr>],
+    ) -> Result<()> {
+        let mut block = Vec::new();
+        for (i, stmt) in stmts.iter().enumerate() {
+            if i > 0 {
+                block.push(TokenTree::Punct(Punct::new(';', Spacing::Alone)));
+            }
+            self.append_quoted_expression_to_stream(&mut block, stmt)?;
+        }
+
+        let mut group =
+            Group::new(Delimiter::Brace, TokenStream::from_iter(block));
+        group.set_span(span);
+        tgt.push(TokenTree::Group(group));
+        Ok(())
+    }
+
+    fn append_lambda_params_to_stream(
+        tgt: &mut Vec<TokenTree>,
+        params: &[Pattern],
+    ) -> Result<()> {
+        tgt.push(TokenTree::Punct(Punct::new('|', Spacing::Alone)));
+        for (i, p) in params.iter().enumerate() {
+            if i > 0 {
+                tgt.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
+            }
+            Self::append_quoted_pattern_to_stream(tgt, p)?;
+        }
+        tgt.push(TokenTree::Punct(Punct::new('|', Spacing::Alone)));
+        Ok(())
+    }
+
+    fn append_quoted_expression_to_stream(
+        &mut self,
+        tgt: &mut Vec<TokenTree>,
+        expr: &MetaExpr,
+    ) -> Result<()> {
+        match expr {
+            MetaExpr::Break { span, expr } => {
+                tgt.push(TokenTree::Ident(Ident::new("break", *span)));
+                if let Some(expr) = expr {
+                    self.append_quoted_expression_to_stream(tgt, expr)?;
+                }
+            }
+            MetaExpr::Continue { span } => {
+                tgt.push(TokenTree::Ident(Ident::new("continue", *span)));
+            }
+            MetaExpr::Literal { span, value } => {
+                self.append_value_to_stream(tgt, *span, value)?;
+            }
+            MetaExpr::Ident { span, name } => {
+                tgt.push(TokenTree::Ident(Ident::new(name, *span)));
+            }
+            MetaExpr::LetBinding {
+                span,
+                pattern,
+                expr,
+            } => {
+                tgt.push(TokenTree::Ident(Ident::new("let", *span)));
+                Self::append_quoted_pattern_to_stream(tgt, pattern)?;
+
+                if let Some(expr) = expr {
+                    // TODO: should we store a span for this?
+                    tgt.push(TokenTree::Punct(Punct::new(
+                        '=',
+                        Spacing::Alone,
+                    )));
+
+                    self.append_quoted_expression_to_stream(tgt, expr)?;
+                }
+            }
+            MetaExpr::Call { span, lhs, args } => {
+                self.append_quoted_expression_to_stream(tgt, lhs)?;
+                Self::append_comma_separated_list_to_stream(
+                    tgt,
+                    Delimiter::Parenthesis,
+                    *span,
+                    args,
+                    |tgt, e| self.append_quoted_expression_to_stream(tgt, e),
+                )?;
+            }
+            MetaExpr::FnDecl(function) => {
+                tgt.push(TokenTree::Ident(Ident::new("fn", function.span)));
+                tgt.push(TokenTree::Ident(Ident::new(
+                    &function.name,
+                    function.span,
+                )));
+                Self::append_comma_separated_list_to_stream(
+                    tgt,
+                    Delimiter::Parenthesis,
+                    function.span,
+                    &function.params,
+                    |tgt, param| {
+                        Self::append_quoted_pattern_to_stream(tgt, param)
+                    },
+                )?;
+
+                self.append_quoted_block_to_stream(
+                    tgt,
+                    function.span,
+                    &function.body,
+                )?;
+            }
+            MetaExpr::Lambda(lambda) => {
+                Self::append_lambda_params_to_stream(tgt, &lambda.params)?;
+                self.append_quoted_expression_to_stream(tgt, &lambda.body)?;
+            }
+            MetaExpr::RawOutputGroup {
+                span,
+                delimiter,
+                contents,
+            } => {
+                Self::append_group_to_stream(
+                    tgt,
+                    *delimiter,
+                    *span,
+                    |inner| {
+                        for e in contents {
+                            self.append_quoted_expression_to_stream(inner, e)?;
+                        }
+                        Ok(())
+                    },
+                )?;
+            }
+            MetaExpr::IfExpr {
+                span,
+                condition,
+                body,
+                else_expr,
+            } => {
+                tgt.push(TokenTree::Ident(Ident::new("if", *span)));
+                self.append_quoted_expression_to_stream(tgt, condition)?;
+                self.append_quoted_block_to_stream(tgt, *span, body)?;
+                if let Some(else_expr) = else_expr {
+                    tgt.push(TokenTree::Ident(Ident::new("else", *span)));
+                    self.append_quoted_expression_to_stream(tgt, else_expr)?;
+                }
+            }
+            MetaExpr::For {
+                span,
+                pattern,
+                variants_expr,
+                body,
+            } => {
+                tgt.push(TokenTree::Ident(Ident::new("for", *span)));
+                Self::append_quoted_pattern_to_stream(tgt, pattern)?;
+                tgt.push(TokenTree::Ident(Ident::new("in", *span)));
+                self.append_quoted_expression_to_stream(tgt, variants_expr)?;
+                self.append_quoted_block_to_stream(tgt, *span, body)?;
+            }
+            MetaExpr::Loop { span, body } => {
+                tgt.push(TokenTree::Ident(Ident::new("loop", *span)));
+                self.append_quoted_block_to_stream(tgt, *span, body)?;
+            }
+            MetaExpr::While {
+                condition,
+                span,
+                body,
+            } => {
+                tgt.push(TokenTree::Ident(Ident::new("while", *span)));
+                self.append_quoted_expression_to_stream(tgt, condition)?;
+                self.append_quoted_block_to_stream(tgt, *span, body)?;
+            }
+            MetaExpr::WhileLet {
+                pattern,
+                expr,
+                span,
+                body,
+            } => {
+                tgt.push(TokenTree::Ident(Ident::new("while", *span)));
+                tgt.push(TokenTree::Ident(Ident::new("let", *span)));
+                Self::append_quoted_pattern_to_stream(tgt, pattern)?;
+                tgt.push(TokenTree::Punct(Punct::new('=', Spacing::Alone)));
+                self.append_quoted_expression_to_stream(tgt, expr)?;
+                self.append_quoted_block_to_stream(tgt, *span, body)?;
+            }
+            MetaExpr::Parenthesized { span, expr } => {
+                Self::append_group_to_stream(
+                    tgt,
+                    Delimiter::Parenthesis,
+                    *span,
+                    |inner| {
+                        self.append_quoted_expression_to_stream(inner, expr)
+                    },
+                )?;
+            }
+            MetaExpr::ExpandPattern(expand_pattern) => {
+                tgt.push(TokenTree::Punct(Punct::new('#', Spacing::Alone)));
+                Self::append_group_to_stream(
+                    tgt,
+                    Delimiter::Bracket,
+                    expand_pattern.span,
+                    |tgt| {
+                        tgt.push(TokenTree::Ident(Ident::new(
+                            "expand_pattern",
+                            expand_pattern.span,
+                        )));
+                        Self::append_group_to_stream(
+                            tgt,
+                            Delimiter::Parenthesis,
+                            expand_pattern.span,
+                            |tgt| {
+                                tgt.push(TokenTree::Ident(Ident::new(
+                                    "for",
+                                    expand_pattern.span,
+                                )));
+                                Self::append_quoted_pattern_to_stream(
+                                    tgt,
+                                    &expand_pattern.for_pattern,
+                                )?;
+                                tgt.push(TokenTree::Ident(Ident::new(
+                                    "in",
+                                    expand_pattern.span,
+                                )));
+                                self.append_quoted_expression_to_stream(
+                                    tgt,
+                                    &expand_pattern.for_expr,
+                                )?;
+                                Ok(())
+                            },
+                        )?;
+                        Ok(())
+                    },
+                )?;
+                for expr in &expand_pattern.match_arm_patterns {
+                    self.append_quoted_expression_to_stream(tgt, expr)?;
+                }
+                for expr in &expand_pattern.match_arm_guard {
+                    self.append_quoted_expression_to_stream(tgt, expr)?;
+                }
+                for expr in &expand_pattern.match_arm_body {
+                    self.append_quoted_expression_to_stream(tgt, expr)?;
+                }
+            }
+            MetaExpr::Scope { span, body } => {
+                self.append_quoted_block_to_stream(tgt, *span, body)?;
+            }
+            MetaExpr::List { span, exprs } => {
+                Self::append_comma_separated_list_to_stream(
+                    tgt,
+                    Delimiter::Bracket,
+                    *span,
+                    exprs,
+                    |tgt, e| self.append_quoted_expression_to_stream(tgt, e),
+                )?;
+            }
+            MetaExpr::Tuple { span, exprs } => {
+                Self::append_comma_separated_list_to_stream(
+                    tgt,
+                    Delimiter::Parenthesis,
+                    *span,
+                    exprs,
+                    |tgt, e| self.append_quoted_expression_to_stream(tgt, e),
+                )?;
+            }
+            MetaExpr::OpUnary {
+                kind,
+                span,
+                operand,
+            } => {
+                let symbol = kind.symbol();
+                for (i, c) in symbol.chars().enumerate() {
+                    let mut p = Punct::new(
+                        c,
+                        if i + 1 == symbol.len() {
+                            Spacing::Alone
+                        } else {
+                            Spacing::Joint
+                        },
+                    );
+                    p.set_span(*span);
+                    tgt.push(TokenTree::Punct(p));
+                }
+                self.append_quoted_expression_to_stream(tgt, operand)?;
+            }
+            MetaExpr::OpBinary {
+                kind,
+                span,
+                lhs,
+                rhs,
+            } => {
+                self.append_quoted_expression_to_stream(tgt, lhs)?;
+                let symbol = kind.symbol();
+                for (i, c) in symbol.chars().enumerate() {
+                    let mut p = Punct::new(
+                        c,
+                        if i + 1 == symbol.len() {
+                            Spacing::Alone
+                        } else {
+                            Spacing::Joint
+                        },
+                    );
+                    p.set_span(*span);
+                    tgt.push(TokenTree::Punct(p));
+                }
+                self.append_quoted_expression_to_stream(tgt, rhs)?;
+            }
+            MetaExpr::ListAccess { span, list, index } => {
+                self.append_quoted_expression_to_stream(tgt, list)?;
+                Self::append_group_to_stream(
+                    tgt,
+                    Delimiter::Bracket,
+                    *span,
+                    |tgt| self.append_quoted_expression_to_stream(tgt, index),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     fn append_value_to_stream(
         &mut self,
         tgt: &mut Vec<TokenTree>,
@@ -746,18 +1143,14 @@ impl Context {
                 tgt.push(TokenTree::Literal(lit));
             }
             MetaValue::Fn(f) => {
-                self.error(
-                    eval_span,
-                    format!(
-                        "cannot convert function to tokens (`{}`)",
-                        f.name
-                    ),
-                );
-                return Err(EvalError::Error);
+                Self::append_lambda_params_to_stream(tgt, &f.params)?;
+                self.append_quoted_block_to_stream(tgt, f.span, &f.body)?;
             }
-            MetaValue::Lambda(_) => {
-                self.error(eval_span, "cannot convert lambda to tokens");
-                return Err(EvalError::Error);
+            MetaValue::Lambda(lambda) => {
+                self.append_quoted_expression_to_stream(
+                    tgt,
+                    &MetaExpr::Lambda(lambda.clone()),
+                )?;
             }
             MetaValue::BuiltinFn(f) => {
                 self.error(

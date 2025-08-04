@@ -266,3 +266,14 @@ fn while_let() {
     };
     assert_eq!(res, [(1,), (2,)]);
 }
+
+#[test]
+fn func_to_tokens() {
+    let double_me = eval! {
+        fn double_me(x) {
+            x * 2
+        }
+        double_me
+    };
+    assert_eq!(42, double_me(21));
+}

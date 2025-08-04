@@ -1,4 +1,4 @@
-use metamatch::{eval, metamatch};
+use metamatch::metamatch;
 
 #[derive(Debug, PartialEq)]
 enum DynVec {
@@ -206,4 +206,43 @@ fn expand_chars() {
         _ => 69,
     });
     assert_eq!(v, 42);
+}
+
+#[test]
+fn fn_call_in_expand() {
+    let lhs = DynVec::F32(vec![]);
+    let rhs = DynVec::F32(vec![]);
+
+    let equal = metamatch::eval! {
+        let INT_VARIANTS = [I32, I64];
+
+        let FLOAT_VARIANTS = [F32, F64];
+
+        fn CONCAT(a, b) {
+            let len_a = a.len();
+            let res = 0..(len_a + b.len());
+            for i in 0..len_a {
+                res[i] = a[i];
+            }
+            for i in 0..b.len() {
+                res[len_a + i] = b[i];
+            }
+            res
+        }
+
+        quote!{
+            metamatch!(match (lhs, rhs) {
+                #[expand(for T in INT_VARIANTS)]
+                (DynVec::T(lhs), DynVec::T(rhs)) => lhs == rhs,
+
+                #[expand(for T in FLOAT_VARIANTS)]
+                (DynVec::T(lhs), DynVec::T(rhs)) => lhs == rhs,
+
+                #[expand(for T in (CONCAT)(INT_VARIANTS, FLOAT_VARIANTS))]
+                (DynVec::T(_), _) => false,
+            })
+        }
+    };
+
+    assert!(equal);
 }
