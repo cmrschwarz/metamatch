@@ -162,6 +162,37 @@ All `str -> str` functions also work `token -> token`.
 Just like Rust macros, you can use any of `{}`, `[]`, and `()`
 interchangably for these macro invocations.
 
+## Shared Data between Macros
+Metamatch supports `extern` function and `let` declarations to share
+state between macro invocations.
+
+```rust
+metamatch::eval! {
+    extern let MY_CONST = 21;
+    extern fn double_me (x) {
+        x * 2
+    };
+}
+
+
+let res = metamatch::eval! {
+    // import extern symbols from other macros
+    use {MY_CONST, double_me};
+
+    double_me(MY_CONST)
+};
+assert_eq!(res, 42);
+```
+
+Extern symbols desugar into a declarative macro (`macro_rules!`).
+
+The therefore follow the same scoping rules as declarative macros do
+(definitions must come lexically before uses).
+
+You can use `pub extern` to have a `#[macro_export]`
+attribute generated for an extern symbol.
+
+
 ## License
 [MIT](https://github.com/cmrschwarz/metamatch/blob/main/LICENSE-MIT)
 or [Apache Version 2.0](https://github.com/cmrschwarz/metamatch/blob/main/LICENSE-APACHE),

@@ -6,7 +6,7 @@ use super::{
         BinaryOpKind, Binding, BindingParameter, Context, ExpandPattern,
         Function, Lambda, MetaError, MetaExpr, MetaValue, Pattern, Scope,
         ScopeKind, TrailingBlockKind, UnaryOpKind, UseDecl, UsePath,
-        UseReplacement, UseSegment, UseTree,
+        UseReplacement, UseSegment, UseTree, Visibility,
     },
     macro_impls::IntoVec,
 };
@@ -634,7 +634,7 @@ impl Context {
                         return self.parse_let(
                             span,
                             &tokens[1..],
-                            false,
+                            Visibility::Regular,
                             allow_trailing_block,
                         );
                     }
@@ -676,7 +676,7 @@ impl Context {
                         return self.parse_fn(
                             span,
                             &tokens[1..],
-                            false,
+                            Visibility::Regular,
                             allow_trailing_block,
                         );
                     }
@@ -690,51 +690,42 @@ impl Context {
                         }
                         return self.parse_use_decl(span, &tokens[1..]);
                     }
-                    "extern" => {
+                    "pub" => {
                         if min_prec != 0 {
                             self.error(
                                 ident.span(),
-                                "`extern` cannot occur within expression",
+                                "`put cannot occur within expression",
                             );
                             return Err(());
                         }
-
-                        if !self.is_top_level_scope() {
+                        let mut followed_by_extern = false;
+                        if let Some(TokenTree::Ident(next)) = tokens.get(1) {
+                            followed_by_extern = next.to_string() == "extern";
+                        };
+                        if !followed_by_extern {
                             self.error(
                                 ident.span(),
-                                "`extern` can only occur at the top level",
+                                "`pub` must be followed by `extern`",
                             );
                         }
-
-                        let mut is_fn = false;
-                        let mut is_let = false;
-
-                        if let Some(TokenTree::Ident(next)) = tokens.get(1) {
-                            let s = next.to_string();
-                            is_fn = s == "fn";
-                            is_let = s == "let";
-                        };
-                        if is_fn {
-                            return self.parse_fn(
-                                span,
-                                &tokens[2..],
-                                true,
-                                allow_trailing_block,
-                            );
-                        }
-                        if is_let {
-                            return self.parse_let(
-                                span,
-                                &tokens[2..],
-                                true,
-                                allow_trailing_block,
-                            );
-                        }
-                        self.error(
-                            ident.span(),
-                            "`extern` must be followed by `let` or `fn`",
+                        return self.parse_extern_decl(
+                            &tokens[2..],
+                            allow_trailing_block,
+                            Visibility::PubExtern,
+                            min_prec,
+                            ident,
+                            span,
                         );
-                        return Err(());
+                    }
+                    "extern" => {
+                        return self.parse_extern_decl(
+                            &tokens[1..],
+                            allow_trailing_block,
+                            Visibility::Extern,
+                            min_prec,
+                            ident,
+                            span,
+                        );
                     }
                     "if" => {
                         return self.parse_if(
@@ -853,6 +844,57 @@ impl Context {
                 ))
             }
         }
+    }
+
+    fn parse_extern_decl<'a>(
+        &mut self,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
+        visibility: Visibility,
+        min_prec: u8,
+        ident: &proc_macro::Ident,
+        span: Span,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        if min_prec != 0 {
+            self.error(
+                ident.span(),
+                "`extern` cannot occur within expression",
+            );
+            return Err(());
+        }
+        if !self.is_top_level_scope() {
+            self.error(
+                ident.span(),
+                "`extern` can only occur at the top level",
+            );
+        }
+        let mut is_fn = false;
+        let mut is_let = false;
+        if let Some(TokenTree::Ident(next)) = tokens.first() {
+            let s = next.to_string();
+            is_fn = s == "fn";
+            is_let = s == "let";
+        };
+
+        if is_fn {
+            return self.parse_fn(
+                span,
+                &tokens[1..],
+                visibility,
+                allow_trailing_block,
+            );
+        }
+        if is_let {
+            return self.parse_let(
+                span,
+                &tokens[1..],
+                visibility,
+                allow_trailing_block,
+            );
+        }
+        self.error(ident.span(), "`extern` must be followed by `let` or `fn`");
+        Err(())
     }
 
     pub fn error(&mut self, span: Span, message: impl Into<String>) {
@@ -1125,7 +1167,7 @@ impl Context {
         &mut self,
         let_span: Span,
         tokens: &'a [TokenTree],
-        is_extern: bool,
+        visibility: Visibility,
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
@@ -1139,12 +1181,12 @@ impl Context {
         if rest.is_empty() && allow_trailing_block {
             self.insert_dummy_bindings_for_pattern(&pattern);
             let let_expr = Rc::new(MetaExpr::LetBinding {
-                is_extern,
+                visibility,
                 span: let_span,
                 pattern,
                 expr: None,
             });
-            if is_extern {
+            if visibility.is_extern() {
                 self.extern_decls.push(let_expr.clone());
             }
             return Ok((let_expr, &[], Some(TrailingBlockKind::Let)));
@@ -1177,12 +1219,12 @@ impl Context {
         self.insert_dummy_bindings_for_pattern(&pattern);
 
         let let_expr = Rc::new(MetaExpr::LetBinding {
-            is_extern,
+            visibility,
             span: let_span,
             pattern,
             expr: Some(expr),
         });
-        if is_extern {
+        if visibility.is_extern() {
             self.extern_decls.push(let_expr.clone());
         }
         Ok((let_expr, rest, None))
@@ -1332,7 +1374,7 @@ impl Context {
         &mut self,
         fn_span: Span,
         tokens: &'a [TokenTree],
-        is_extern: bool,
+        visibility: Visibility,
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
@@ -1431,14 +1473,14 @@ impl Context {
         };
 
         let fn_decl = Rc::new(MetaExpr::FnDecl(Rc::new(Function {
-            is_extern,
+            visibility,
             span: name_span,
             name: name.clone(),
             params,
             body,
         })));
 
-        if is_extern {
+        if visibility.is_extern() {
             self.extern_decls.push(fn_decl.clone());
         }
 

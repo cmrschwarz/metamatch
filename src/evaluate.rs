@@ -12,7 +12,7 @@ use proc_macro::{
 use super::ast::{
     BinaryOpKind, Binding, BuiltinFn, Context, EvalError, Function, Lambda,
     MetaExpr, MetaValue, Pattern, Scope, ScopeKind, UnaryOpKind, UsePath,
-    UseSegment, UseTree,
+    UseSegment, UseTree, Visibility,
 };
 
 type Result<T> = std::result::Result<T, EvalError>;
@@ -539,6 +539,23 @@ fn append_pattern(tgt: &mut Vec<TokenTree>, pat: &Pattern) -> Result<()> {
     }
 }
 
+fn append_visibility(
+    tgt: &mut Vec<TokenTree>,
+    visibility: Visibility,
+    span: Span,
+) {
+    match visibility {
+        Visibility::Extern => {
+            append_ident(tgt, "extern", span);
+        }
+        Visibility::PubExtern => {
+            append_ident(tgt, "pub", span);
+            append_ident(tgt, "extern", span);
+        }
+        Visibility::Regular => (),
+    }
+}
+
 fn append_quoted_use_tree_binding(tgt: &mut Vec<TokenTree>, tree: &UseTree) {
     match tree {
         UseTree::Path {
@@ -945,7 +962,7 @@ impl Context {
                 append_ident(tgt, name, *span);
             }
             MetaExpr::LetBinding {
-                is_extern,
+                visibility,
                 span,
                 pattern,
                 expr,
@@ -953,9 +970,7 @@ impl Context {
                 // we need this to allow function quotes to
                 // know which identifiers are bound to external vars
                 self.insert_dummy_bindings_for_pattern(pattern);
-                if *is_extern {
-                    append_ident(tgt, "extern", *span);
-                }
+                append_visibility(tgt, *visibility, *span);
                 append_ident(tgt, "let", *span);
                 append_pattern(tgt, pattern)?;
 
@@ -980,9 +995,7 @@ impl Context {
                 )?;
             }
             MetaExpr::FnDecl(function) => {
-                if function.is_extern {
-                    append_ident(tgt, "extern", function.span);
-                }
+                append_visibility(tgt, function.visibility, function.span);
                 append_ident(tgt, "fn", function.span);
                 append_ident(tgt, &function.name, function.span);
                 append_comma_separated_list(
@@ -1340,13 +1353,22 @@ impl Context {
     fn expand_extern_decl(
         &mut self,
         tgt: &mut Vec<TokenTree>,
+        vis: Visibility,
         ident: &str,
         ident_span: Span,
         decl_span: Span,
         mut append_value: impl FnMut(&mut Self, &mut Vec<TokenTree>) -> Result<()>,
     ) -> Result<()> {
+        if vis.is_pub() {
+            append_punct(tgt, '#', Spacing::Alone, decl_span);
+            append_group(tgt, Delimiter::Bracket, decl_span, |tgt| {
+                append_ident(tgt, "macro_export", decl_span);
+                Ok(())
+            })?;
+        }
+
         append_ident(tgt, "macro_rules", decl_span);
-        tgt.push(TokenTree::Punct(Punct::new('!', Spacing::Alone)));
+        append_punct(tgt, '!', Spacing::Alone, decl_span);
         append_ident(tgt, ident, ident_span);
 
         // ($alias: ident, ($($chain: tt)*), [ $($prefix:tt)* ] $($rest: tt)* )
@@ -1472,7 +1494,7 @@ impl Context {
             let decl_span = decl.span();
             match &*decl {
                 MetaExpr::LetBinding {
-                    is_extern: _,
+                    visibility,
                     span: _,
                     pattern,
                     expr,
@@ -1484,6 +1506,7 @@ impl Context {
                     for (name, binding) in scope.bindings {
                         self.expand_extern_decl(
                             tgt,
+                            *visibility,
                             &name,
                             binding.span,
                             decl_span,
@@ -1500,6 +1523,7 @@ impl Context {
                 MetaExpr::FnDecl(func) => {
                     self.expand_extern_decl(
                         tgt,
+                        func.visibility,
                         &func.name,
                         func.span,
                         func.span,
@@ -1702,7 +1726,7 @@ impl Context {
                 )))))
             }
             MetaExpr::LetBinding {
-                is_extern: _,
+                visibility: _,
                 span: _,
                 pattern,
                 expr,

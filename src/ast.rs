@@ -93,7 +93,7 @@ pub enum Pattern {
 #[derive(Debug)]
 pub struct Function {
     pub span: Span,
-    pub is_extern: bool,
+    pub visibility: Visibility,
     pub name: Rc<str>,
     pub params: Vec<Pattern>,
     pub body: Vec<Rc<MetaExpr>>,
@@ -104,6 +104,13 @@ pub struct Lambda {
     pub span: Span,
     pub params: Vec<Pattern>,
     pub body: Rc<MetaExpr>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Visibility {
+    Extern,
+    PubExtern,
+    Regular,
 }
 
 #[derive(Debug, Clone)]
@@ -189,7 +196,7 @@ pub enum MetaExpr {
         name: Rc<str>,
     },
     LetBinding {
-        is_extern: bool,
+        visibility: Visibility,
         span: Span,
         pattern: Pattern,
         expr: Option<Rc<MetaExpr>>,
@@ -779,5 +786,15 @@ impl Display for UseSegment {
             UseSegment::SuperKeyword => "super",
             UseSegment::CrateKeyword => "crate",
         })
+    }
+}
+
+impl Visibility {
+    pub fn is_extern(&self) -> bool {
+        matches!(self, Visibility::Extern | Visibility::PubExtern)
+    }
+
+    pub fn is_pub(&self) -> bool {
+        matches!(self, Visibility::PubExtern)
     }
 }

@@ -301,14 +301,14 @@ fn extern_decl() {
 #[test]
 fn extern_func_decl() {
     eval! {
-        extern fn double_me(x) {
+        extern fn double(x) {
             x * 2
         }
     };
 
     let res = eval! {
-        use double_me;
-        double_me(21);
+        use double;
+        double(21);
     };
 
     assert_eq!(res, 42);
@@ -342,15 +342,15 @@ fn func_decl_using_extern_var_internally() {
     }
 
     eval! {
-        extern fn double_me(x) {
+        extern fn double_me_2(x) {
             use two;
             x * two
         }
     }
 
     let res = eval! {
-        use double_me;
-        double_me(1)
+        use double_me_2;
+        double_me_2(1)
     };
 
     assert_eq!(res, 2);
