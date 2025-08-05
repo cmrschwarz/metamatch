@@ -1,5 +1,0 @@
-error: `fn` cannot occur within expression
- --> tests/ui/fn_decl_in_parentheses.rs:4:10
-  |
-4 |         (fn foo() {}) + 3
-  |          ^^

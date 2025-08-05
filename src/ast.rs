@@ -11,7 +11,14 @@ pub struct MetaError {
     pub message: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub struct ExprBlock {
+    pub span: Span,
+    pub stmts: Vec<Rc<MetaExpr>>,
+    pub trailing_semi: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct BindingParameter {
     pub span: Span,
     pub name: Rc<str>,
@@ -83,7 +90,7 @@ pub enum MetaValue {
     Tuple(Vec<Rc<MetaValue>>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Pattern {
     Ident(BindingParameter),
     Tuple { span: Span, elems: Vec<Pattern> },
@@ -93,10 +100,10 @@ pub enum Pattern {
 #[derive(Debug)]
 pub struct Function {
     pub span: Span,
-    pub is_extern: bool,
+    pub visibility: Visibility,
     pub name: Rc<str>,
     pub params: Vec<Pattern>,
-    pub body: Vec<Rc<MetaExpr>>,
+    pub body: ExprBlock,
 }
 
 #[derive(Debug)]
@@ -104,6 +111,13 @@ pub struct Lambda {
     pub span: Span,
     pub params: Vec<Pattern>,
     pub body: Rc<MetaExpr>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Visibility {
+    Extern,
+    PubExtern,
+    Regular,
 }
 
 #[derive(Debug, Clone)]
@@ -189,7 +203,7 @@ pub enum MetaExpr {
         name: Rc<str>,
     },
     LetBinding {
-        is_extern: bool,
+        visibility: Visibility,
         span: Span,
         pattern: Pattern,
         expr: Option<Rc<MetaExpr>>,
@@ -210,29 +224,29 @@ pub enum MetaExpr {
     IfExpr {
         span: Span,
         condition: Rc<MetaExpr>,
-        body: Vec<Rc<MetaExpr>>,
+        body: ExprBlock,
         else_expr: Option<Rc<MetaExpr>>,
     },
     For {
         span: Span,
         pattern: Pattern,
         variants_expr: Rc<MetaExpr>,
-        body: Vec<Rc<MetaExpr>>,
+        body: ExprBlock,
     },
     Loop {
         span: Span,
-        body: Vec<Rc<MetaExpr>>,
+        body: ExprBlock,
     },
     While {
         condition: Rc<MetaExpr>,
         span: Span,
-        body: Vec<Rc<MetaExpr>>,
+        body: ExprBlock,
     },
     WhileLet {
         pattern: Pattern,
         expr: Rc<MetaExpr>,
         span: Span,
-        body: Vec<Rc<MetaExpr>>,
+        body: ExprBlock,
     },
     Parenthesized {
         span: Span,
@@ -240,10 +254,7 @@ pub enum MetaExpr {
     },
     // boxed cause large
     ExpandPattern(Box<ExpandPattern>),
-    Scope {
-        span: Span,
-        body: Vec<Rc<MetaExpr>>,
-    },
+    Block(ExprBlock),
     List {
         span: Span,
         exprs: Vec<Rc<MetaExpr>>,
@@ -347,12 +358,25 @@ pub struct Scope {
     pub bindings: HashMap<Rc<str>, Binding>,
 }
 
+pub enum ExternDecl {
+    Fn {
+        decl: Rc<Function>,
+        quoted: Vec<TokenTree>,
+    },
+    Let {
+        span: Span,
+        visibility: Visibility,
+        bindings: Pattern,
+        values: Rc<MetaValue>,
+    },
+}
+
 pub struct Context {
     pub empty_token_list: Rc<MetaValue>,
     pub empty_token_list_expr: Rc<MetaExpr>,
     pub scopes: Vec<Scope>,
     pub errors: Vec<MetaError>,
-    pub extern_decls: Vec<Rc<MetaExpr>>,
+    pub extern_decls: Vec<ExternDecl>,
     pub extern_uses: Vec<Rc<UseReplacement>>,
 }
 
@@ -465,6 +489,16 @@ impl Kind {
 impl Display for Kind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.to_str())
+    }
+}
+
+impl Default for ExprBlock {
+    fn default() -> Self {
+        Self {
+            span: Span::call_site(),
+            stmts: Default::default(),
+            trailing_semi: Default::default(),
+        }
     }
 }
 
@@ -686,7 +720,7 @@ impl MetaExpr {
             MetaExpr::IfExpr { span, .. } => span,
             MetaExpr::For { span, .. } => span,
             MetaExpr::Loop { span, .. } => span,
-            MetaExpr::Scope { span, .. } => span,
+            MetaExpr::Block(block) => &block.span,
             MetaExpr::List { span, .. } => span,
             MetaExpr::Tuple { span, .. } => span,
             MetaExpr::OpUnary { span, .. } => span,
@@ -715,7 +749,7 @@ impl MetaExpr {
             MetaExpr::While { .. } => "while loop",
             MetaExpr::WhileLet { .. } => "while loop",
             MetaExpr::ExpandPattern { .. } => "expand pattern",
-            MetaExpr::Scope { .. } => "scope",
+            MetaExpr::Block { .. } => "scope",
             MetaExpr::List { .. } => "list",
             MetaExpr::Tuple { .. } => "tuple",
             MetaExpr::OpUnary { .. } => "unary operator",
@@ -739,7 +773,7 @@ impl MetaExpr {
             | MetaExpr::Lambda(..)
             | MetaExpr::RawOutputGroup { .. }
             | MetaExpr::ExpandPattern(..)
-            | MetaExpr::Scope { .. }
+            | MetaExpr::Block { .. }
             | MetaExpr::List { .. }
             | MetaExpr::Tuple { .. }
             | MetaExpr::OpUnary { .. }
@@ -779,5 +813,15 @@ impl Display for UseSegment {
             UseSegment::SuperKeyword => "super",
             UseSegment::CrateKeyword => "crate",
         })
+    }
+}
+
+impl Visibility {
+    pub fn is_extern(&self) -> bool {
+        matches!(self, Visibility::Extern | Visibility::PubExtern)
+    }
+
+    pub fn is_pub(&self) -> bool {
+        matches!(self, Visibility::PubExtern)
     }
 }

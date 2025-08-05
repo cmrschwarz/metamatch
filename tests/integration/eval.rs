@@ -301,14 +301,14 @@ fn extern_decl() {
 #[test]
 fn extern_func_decl() {
     eval! {
-        extern fn double_me(x) {
+        extern fn double(x) {
             x * 2
         }
     };
 
     let res = eval! {
-        use double_me;
-        double_me(21);
+        use double;
+        double(21);
     };
 
     assert_eq!(res, 42);
@@ -342,16 +342,56 @@ fn func_decl_using_extern_var_internally() {
     }
 
     eval! {
-        extern fn double_me(x) {
+        extern fn double_me_2(x) {
             use two;
             x * two
         }
     }
 
     let res = eval! {
-        use double_me;
-        double_me(1)
+        use double_me_2;
+        double_me_2(1)
     };
 
     assert_eq!(res, 2);
+}
+
+#[test]
+fn use_as_expression_simple() {
+    eval! {
+        extern let my_value = 42;
+    };
+
+    let result = ::metamatch::eval! {
+        use my_value;
+        my_value
+    };
+
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn use_as_expression_direct() {
+    eval! {
+        extern let my_value = 42;
+    };
+
+    let result = eval! {
+        use my_value
+    };
+
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn use_as_expression_in_arithmetic() {
+    eval! {
+        extern let my_value = 10;
+    };
+
+    let result = eval! {
+        (use my_value) + 5
+    };
+
+    assert_eq!(result, 15);
 }

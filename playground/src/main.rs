@@ -143,17 +143,3 @@ fn main() {
 
     println!("{}", pretty_print_token_stream(result));
 }
-
-struct NodeIdx(u32);
-
-#[metamatch::replicate(
-    let traits = [Add, Sub, Mul, Div, Rem];
-    let funcs = traits.map(lowercase);
-    for (TRAIT, FUNC) in zip(traits, funcs)
-)]
-impl std::ops::TRAIT for NodeIdx {
-    type Output = Self;
-    fn FUNC(self, rhs: Self) -> Self {
-        NodeIdx(self.0.FUNC(rhs.0))
-    }
-}

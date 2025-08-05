@@ -4,9 +4,9 @@ use std::{collections::HashMap, fmt::Debug, rc::Rc};
 use super::{
     ast::{
         BinaryOpKind, Binding, BindingParameter, Context, ExpandPattern,
-        Function, Lambda, MetaError, MetaExpr, MetaValue, Pattern, Scope,
-        ScopeKind, TrailingBlockKind, UnaryOpKind, UseDecl, UsePath,
-        UseReplacement, UseSegment, UseTree,
+        ExprBlock, Function, Lambda, MetaError, MetaExpr, MetaValue, Pattern,
+        Scope, ScopeKind, TrailingBlockKind, UnaryOpKind, UseDecl, UsePath,
+        UseReplacement, UseSegment, UseTree, Visibility,
     },
     macro_impls::IntoVec,
 };
@@ -601,16 +601,13 @@ impl Context {
                     }
                     Delimiter::Brace => {
                         self.push_dummy_scope(ScopeKind::Eval);
-                        let expr_block = self.parse_body_deny_trailing(
+                        let expr_block = self.parse_expr_block_deny_trailing(
                             group.span(),
                             &group_tokens,
                         );
                         self.pop_scope();
                         Ok((
-                            Rc::new(MetaExpr::Scope {
-                                span: group.span(),
-                                body: expr_block,
-                            }),
+                            Rc::new(MetaExpr::Block(expr_block)),
                             &tokens[1..],
                             None,
                         ))
@@ -634,7 +631,7 @@ impl Context {
                         return self.parse_let(
                             span,
                             &tokens[1..],
-                            false,
+                            Visibility::Regular,
                             allow_trailing_block,
                         );
                     }
@@ -666,75 +663,52 @@ impl Context {
                         );
                     }
                     "fn" => {
-                        if min_prec != 0 {
-                            self.error(
-                                ident.span(),
-                                "`fn` cannot occur within expression",
-                            );
-                            return Err(());
-                        }
                         return self.parse_fn(
                             span,
                             &tokens[1..],
-                            false,
+                            Visibility::Regular,
                             allow_trailing_block,
                         );
                     }
                     "use" => {
-                        if min_prec != 0 {
-                            self.error(
-                                ident.span(),
-                                "`use` cannot occur within expression",
-                            );
-                            return Err(());
-                        }
                         return self.parse_use_decl(span, &tokens[1..]);
                     }
-                    "extern" => {
+                    "pub" => {
                         if min_prec != 0 {
                             self.error(
                                 ident.span(),
-                                "`extern` cannot occur within expression",
+                                "`put cannot occur within expression",
                             );
                             return Err(());
                         }
-
-                        if !self.is_top_level_scope() {
+                        let mut followed_by_extern = false;
+                        if let Some(TokenTree::Ident(next)) = tokens.get(1) {
+                            followed_by_extern = next.to_string() == "extern";
+                        };
+                        if !followed_by_extern {
                             self.error(
                                 ident.span(),
-                                "`extern` can only occur at the top level",
+                                "`pub` must be followed by `extern`",
                             );
                         }
-
-                        let mut is_fn = false;
-                        let mut is_let = false;
-
-                        if let Some(TokenTree::Ident(next)) = tokens.get(1) {
-                            let s = next.to_string();
-                            is_fn = s == "fn";
-                            is_let = s == "let";
-                        };
-                        if is_fn {
-                            return self.parse_fn(
-                                span,
-                                &tokens[2..],
-                                true,
-                                allow_trailing_block,
-                            );
-                        }
-                        if is_let {
-                            return self.parse_let(
-                                span,
-                                &tokens[2..],
-                                true,
-                                allow_trailing_block,
-                            );
-                        }
-                        self.error(
-                            ident.span(),
-                            "`extern` must be followed by `let` or `fn`",
+                        return self.parse_extern_decl(
+                            &tokens[2..],
+                            allow_trailing_block,
+                            Visibility::PubExtern,
+                            min_prec,
+                            ident,
+                            span,
                         );
-                        return Err(());
+                    }
+                    "extern" => {
+                        return self.parse_extern_decl(
+                            &tokens[1..],
+                            allow_trailing_block,
+                            Visibility::Extern,
+                            min_prec,
+                            ident,
+                            span,
+                        );
                     }
                     "if" => {
                         return self.parse_if(
@@ -853,6 +827,57 @@ impl Context {
                 ))
             }
         }
+    }
+
+    fn parse_extern_decl<'a>(
+        &mut self,
+        tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
+        visibility: Visibility,
+        min_prec: u8,
+        ident: &proc_macro::Ident,
+        span: Span,
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        if min_prec != 0 {
+            self.error(
+                ident.span(),
+                "`extern` cannot occur within expression",
+            );
+            return Err(());
+        }
+        if !self.is_top_level_scope() {
+            self.error(
+                ident.span(),
+                "`extern` can only occur at the top level",
+            );
+        }
+        let mut is_fn = false;
+        let mut is_let = false;
+        if let Some(TokenTree::Ident(next)) = tokens.first() {
+            let s = next.to_string();
+            is_fn = s == "fn";
+            is_let = s == "let";
+        };
+
+        if is_fn {
+            return self.parse_fn(
+                span,
+                &tokens[1..],
+                visibility,
+                allow_trailing_block,
+            );
+        }
+        if is_let {
+            return self.parse_let(
+                span,
+                &tokens[1..],
+                visibility,
+                allow_trailing_block,
+            );
+        }
+        self.error(ident.span(), "`extern` must be followed by `let` or `fn`");
+        Err(())
     }
 
     pub fn error(&mut self, span: Span, message: impl Into<String>) {
@@ -1125,7 +1150,7 @@ impl Context {
         &mut self,
         let_span: Span,
         tokens: &'a [TokenTree],
-        is_extern: bool,
+        visibility: Visibility,
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
@@ -1139,14 +1164,11 @@ impl Context {
         if rest.is_empty() && allow_trailing_block {
             self.insert_dummy_bindings_for_pattern(&pattern);
             let let_expr = Rc::new(MetaExpr::LetBinding {
-                is_extern,
+                visibility,
                 span: let_span,
                 pattern,
                 expr: None,
             });
-            if is_extern {
-                self.extern_decls.push(let_expr.clone());
-            }
             return Ok((let_expr, &[], Some(TrailingBlockKind::Let)));
         }
 
@@ -1177,14 +1199,11 @@ impl Context {
         self.insert_dummy_bindings_for_pattern(&pattern);
 
         let let_expr = Rc::new(MetaExpr::LetBinding {
-            is_extern,
+            visibility,
             span: let_span,
             pattern,
             expr: Some(expr),
         });
-        if is_extern {
-            self.extern_decls.push(let_expr.clone());
-        }
         Ok((let_expr, rest, None))
     }
 
@@ -1229,10 +1248,12 @@ impl Context {
         self.pop_scope();
 
         Ok((
-            Rc::new(MetaExpr::Scope {
+            Rc::new(MetaExpr::Block(ExprBlock {
                 span: raw_span,
-                body: contents,
-            }),
+                stmts: contents,
+                trailing_semi: false, /* quote! blocks don't have trailing
+                                       * semicolons */
+            })),
             &tokens[1..],
             None,
         ))
@@ -1261,10 +1282,11 @@ impl Context {
             }
             self.push_dummy_scope(ScopeKind::Raw);
             return Ok((
-                Rc::new(MetaExpr::Scope {
+                Rc::new(MetaExpr::Block(ExprBlock {
                     span: raw_span,
-                    body: Vec::new(),
-                }),
+                    stmts: Vec::new(),
+                    trailing_semi: false,
+                })),
                 &[],
                 Some(TrailingBlockKind::Raw),
             ));
@@ -1319,10 +1341,11 @@ impl Context {
         self.push_dummy_scope(ScopeKind::Eval);
 
         Ok((
-            Rc::new(MetaExpr::Scope {
+            Rc::new(MetaExpr::Block(ExprBlock {
                 span: raw_span,
-                body: Vec::new(),
-            }),
+                stmts: Vec::new(),
+                trailing_semi: false,
+            })),
             &[],
             Some(TrailingBlockKind::Eval),
         ))
@@ -1332,7 +1355,7 @@ impl Context {
         &mut self,
         fn_span: Span,
         tokens: &'a [TokenTree],
-        is_extern: bool,
+        visibility: Visibility,
         allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
@@ -1405,7 +1428,15 @@ impl Context {
 
                 return Err(());
             }
-            (Vec::new(), rest, Some(TrailingBlockKind::Fn))
+            (
+                ExprBlock {
+                    span: name_span,
+                    stmts: Vec::new(),
+                    trailing_semi: true,
+                },
+                rest,
+                Some(TrailingBlockKind::Fn),
+            )
         } else {
             let TokenTree::Group(body_group) = &rest[0] else {
                 self.error(tokens[0].span(), "expected function body");
@@ -1423,7 +1454,8 @@ impl Context {
             }
 
             let body_tokens = body_group.stream().into_vec();
-            let body = self.parse_body_deny_trailing(name_span, &body_tokens);
+            let body =
+                self.parse_expr_block_deny_trailing(name_span, &body_tokens);
 
             self.pop_scope();
 
@@ -1431,16 +1463,12 @@ impl Context {
         };
 
         let fn_decl = Rc::new(MetaExpr::FnDecl(Rc::new(Function {
-            is_extern,
+            visibility,
             span: name_span,
             name: name.clone(),
             params,
             body,
         })));
-
-        if is_extern {
-            self.extern_decls.push(fn_decl.clone());
-        }
 
         Ok((fn_decl, rest, trailing_block))
     }
@@ -1555,7 +1583,11 @@ impl Context {
 
         let (body, final_rest, trailing_block);
         if rest.is_empty() && allow_trailing_block {
-            body = Vec::new();
+            body = ExprBlock {
+                span: for_span,
+                stmts: Vec::new(),
+                trailing_semi: true,
+            };
             final_rest = rest;
             trailing_block = Some(TrailingBlockKind::For);
         } else {
@@ -1578,8 +1610,10 @@ impl Context {
 
             let body_tokens = body_group.stream().into_vec();
 
-            body =
-                self.parse_body_deny_trailing(body_group.span(), &body_tokens);
+            body = self.parse_expr_block_deny_trailing(
+                body_group.span(),
+                &body_tokens,
+            );
 
             self.pop_scope();
             final_rest = &rest[1..];
@@ -1633,7 +1667,11 @@ impl Context {
 
         let (body, final_rest, trailing_block);
         if rest.is_empty() && allow_trailing_block {
-            body = Vec::new();
+            body = ExprBlock {
+                span: while_span,
+                stmts: Vec::new(),
+                trailing_semi: true,
+            };
             final_rest = rest;
             trailing_block = Some(TrailingBlockKind::While);
         } else {
@@ -1656,8 +1694,10 @@ impl Context {
 
             let body_tokens = body_group.stream().into_vec();
 
-            body =
-                self.parse_body_deny_trailing(body_group.span(), &body_tokens);
+            body = self.parse_expr_block_deny_trailing(
+                body_group.span(),
+                &body_tokens,
+            );
 
             self.pop_scope();
             final_rest = &rest[1..];
@@ -1700,7 +1740,11 @@ impl Context {
 
         let (body, final_rest, trailing_block);
         if rest.is_empty() && allow_trailing_block {
-            body = Vec::new();
+            body = ExprBlock {
+                span: while_span,
+                stmts: Vec::new(),
+                trailing_semi: true,
+            };
             final_rest = rest;
             trailing_block = Some(TrailingBlockKind::While);
         } else {
@@ -1723,8 +1767,10 @@ impl Context {
 
             let body_tokens = body_group.stream().into_vec();
 
-            body =
-                self.parse_body_deny_trailing(body_group.span(), &body_tokens);
+            body = self.parse_expr_block_deny_trailing(
+                body_group.span(),
+                &body_tokens,
+            );
 
             self.pop_scope();
             final_rest = &rest[1..];
@@ -1752,7 +1798,11 @@ impl Context {
         self.push_dummy_scope(ScopeKind::Eval);
         let (body, rest, trailing_block);
         if tokens.is_empty() && allow_trailing_block {
-            body = Vec::new();
+            body = ExprBlock {
+                span: loop_span,
+                stmts: Vec::new(),
+                trailing_semi: true,
+            };
             rest = tokens;
             trailing_block = Some(TrailingBlockKind::Loop);
         } else {
@@ -1775,8 +1825,10 @@ impl Context {
 
             let body_tokens = body_group.stream().into_vec();
 
-            body =
-                self.parse_body_deny_trailing(body_group.span(), &body_tokens);
+            body = self.parse_expr_block_deny_trailing(
+                body_group.span(),
+                &body_tokens,
+            );
 
             self.pop_scope();
             rest = &tokens[1..];
@@ -1856,7 +1908,11 @@ impl Context {
                 Rc::new(MetaExpr::IfExpr {
                     span: if_span,
                     condition,
-                    body: Vec::new(),
+                    body: ExprBlock {
+                        span: if_span,
+                        stmts: Vec::new(),
+                        trailing_semi: true,
+                    },
                     else_expr: None,
                 }),
                 rest,
@@ -1883,8 +1939,8 @@ impl Context {
 
         let body_tokens = body_group.stream().into_vec();
 
-        let body =
-            self.parse_body_deny_trailing(body_group.span(), &body_tokens);
+        let body = self
+            .parse_expr_block_deny_trailing(body_group.span(), &body_tokens);
 
         self.pop_scope();
 
@@ -1941,11 +1997,12 @@ impl Context {
             };
             let block_content = block.stream().into_vec();
             rest = &rest[2..];
-            else_expr = Some(Rc::new(MetaExpr::Scope {
-                span: block.span(),
-                body: self
-                    .parse_body_deny_trailing(block.span(), &block_content),
-            }));
+            else_expr = Some(Rc::new(MetaExpr::Block(
+                self.parse_expr_block_deny_trailing(
+                    block.span(),
+                    &block_content,
+                ),
+            )));
             trailing_block = None;
         }
 
@@ -2191,11 +2248,11 @@ impl Context {
         Ok(exprs)
     }
 
-    pub fn parse_body_deny_trailing(
+    pub fn parse_expr_block_deny_trailing(
         &mut self,
         parent_span: Span,
         tokens: &[TokenTree],
-    ) -> Vec<Rc<MetaExpr>> {
+    ) -> ExprBlock {
         self.parse_body(parent_span, tokens, false).0
     }
 
@@ -2203,21 +2260,18 @@ impl Context {
     // we return all the exprs that we were able to parse
     pub fn parse_body<'a>(
         &mut self,
-        parent_span: Span,
+        span: Span,
         tokens: &'a [TokenTree],
         allow_trailing_block: bool,
-    ) -> (
-        Vec<Rc<MetaExpr>>,
-        &'a [TokenTree],
-        Option<TrailingBlockKind>,
-    ) {
-        let mut exprs = Vec::new();
+    ) -> (ExprBlock, &'a [TokenTree], Option<TrailingBlockKind>) {
+        let mut stmts = Vec::new();
         let mut rest = tokens;
         let mut pending_trailing_semi_error = None;
+        let mut has_trailing_semi = true;
 
         while !rest.is_empty() {
             let Ok((expr, new_rest, trailing_block)) =
-                self.parse_expr(parent_span, rest, allow_trailing_block, 0)
+                self.parse_expr(span, rest, allow_trailing_block, 0)
             else {
                 break;
             };
@@ -2235,17 +2289,28 @@ impl Context {
 
             rest = new_rest;
             let may_drop_semi = expr.may_drop_semicolon();
-            exprs.push(expr);
+            stmts.push(expr);
 
             if trailing_block.is_some() {
-                return (exprs, rest, trailing_block);
+                return (
+                    ExprBlock {
+                        span,
+                        stmts,
+                        trailing_semi: false,
+                    },
+                    rest,
+                    trailing_block,
+                );
             }
+
+            has_trailing_semi = may_drop_semi;
 
             if let Some(first) = rest.first() {
                 let mut is_semi = false;
                 if let TokenTree::Punct(p) = first {
                     if p.as_char() == ';' {
                         is_semi = true;
+                        has_trailing_semi = true;
                     }
                 }
                 if !is_semi {
@@ -2257,7 +2322,15 @@ impl Context {
                 }
             }
         }
-        (exprs, &[], None)
+        (
+            ExprBlock {
+                span,
+                stmts,
+                trailing_semi: has_trailing_semi,
+            },
+            &[],
+            None,
+        )
     }
 
     pub fn close_expr_after_trailing_body(
@@ -2272,12 +2345,24 @@ impl Context {
         let expr = exprs.last_mut().unwrap();
         let expr = Rc::get_mut(expr).unwrap();
 
+        // Convert the contents to an ExprBlock
+        // For trailing blocks, assume no trailing semicolon (expression
+        // context)
+        let expr_block = ExprBlock {
+            span: contents
+                .first()
+                .map(|e| e.span())
+                .unwrap_or_else(Span::call_site),
+            stmts: contents,
+            trailing_semi: true,
+        };
+
         match kind {
             TrailingBlockKind::For => {
                 let MetaExpr::For { body, .. } = expr else {
                     unreachable!()
                 };
-                *body = contents;
+                *body = expr_block;
             }
             TrailingBlockKind::While => {
                 let body = match expr {
@@ -2285,34 +2370,31 @@ impl Context {
                     MetaExpr::WhileLet { body, .. } => body,
                     _ => unreachable!(),
                 };
-                *body = contents;
+                *body = expr_block;
             }
             TrailingBlockKind::Loop => {
                 let MetaExpr::Loop { body, .. } = expr else {
                     unreachable!()
                 };
-                *body = contents;
+                *body = expr_block;
             }
             TrailingBlockKind::If => {
                 let MetaExpr::IfExpr { body, .. } = expr else {
                     unreachable!()
                 };
-                *body = contents;
+                *body = expr_block;
             }
             TrailingBlockKind::Let => {
                 let MetaExpr::LetBinding {
                     expr: let_expr,
-                    span,
+                    span: _,
                     ..
                 } = expr
                 else {
                     unreachable!()
                 };
                 // TODO: this span is wrong but Span::join is not stable...
-                *let_expr = Some(Rc::new(MetaExpr::Scope {
-                    span: *span,
-                    body: contents,
-                }))
+                *let_expr = Some(Rc::new(MetaExpr::Block(expr_block.clone())))
             }
             TrailingBlockKind::Fn => {
                 let MetaExpr::FnDecl(fd) = expr else {
@@ -2321,16 +2403,16 @@ impl Context {
                 // even if this function is recursive,
                 // we don't lookup identifiers until evaluation
                 // so during parsing this rc will always have a refcount of one
-                Rc::get_mut(fd).unwrap().body = contents;
+                Rc::get_mut(fd).unwrap().body = expr_block;
             }
             TrailingBlockKind::Else => unreachable!(),
             TrailingBlockKind::Eval
             | TrailingBlockKind::Template
             | TrailingBlockKind::Raw => {
-                let MetaExpr::Scope { body, .. } = expr else {
+                let MetaExpr::Block(body) = expr else {
                     unreachable!()
                 };
-                *body = contents;
+                *body = expr_block;
             }
         }
     }
@@ -2443,7 +2525,7 @@ impl Context {
 
         let error_count_before_body = self.errors.len();
 
-        let (mut exprs, rest, trailing_block) =
+        let (mut block, rest, trailing_block) =
             self.parse_body(Span::call_site(), &expand_inner, true);
 
         let errors_in_body = error_count_before_body != self.errors.len();
@@ -2463,7 +2545,11 @@ impl Context {
         let Some(trailing_block) = trailing_block else {
             if !errors_in_body {
                 self.error(
-                    exprs.last().map(|e| e.span()).unwrap_or(group.span()),
+                    block
+                        .stmts
+                        .last()
+                        .map(|e| e.span())
+                        .unwrap_or(group.span()),
                     "expand ignores the attribute body",
                 );
             }
@@ -2490,7 +2576,7 @@ impl Context {
                     &parent_rest[0..match_arm_ends.body_end],
                 );
                 self.close_expr_after_trailing_body(
-                    &mut exprs,
+                    &mut block.stmts,
                     trailing_block,
                     contents?,
                 );
@@ -2525,11 +2611,11 @@ impl Context {
                     pattern: for_pattern,
                     variants_expr: for_expr,
                     body: _,
-                } = Rc::into_inner(exprs.pop().unwrap()).unwrap()
+                } = Rc::into_inner(block.stmts.pop().unwrap()).unwrap()
                 else {
                     unreachable!()
                 };
-                exprs.push(Rc::new(MetaExpr::ExpandPattern(Box::new(
+                block.stmts.push(Rc::new(MetaExpr::ExpandPattern(Box::new(
                     ExpandPattern {
                         span: group.span(),
                         for_pattern,
@@ -2543,10 +2629,7 @@ impl Context {
         };
 
         Ok((
-            Rc::new(MetaExpr::Scope {
-                span: group.span(),
-                body: exprs,
-            }),
+            Rc::new(MetaExpr::Block(block)),
             &parent_rest[match_arm_ends.body_end..],
         ))
     }
@@ -2771,7 +2854,7 @@ impl Context {
         let (template_exprs, rest, trailing_block) =
             self.parse_body(group.span(), template_inner_tokens, true);
         debug_assert!(rest.is_empty());
-        exprs.extend(template_exprs);
+        exprs.extend(template_exprs.stmts);
         let Some(trailing_block) = trailing_block else {
             return Ok(TemplateInRawParseResult::ExprsAdded);
         };
@@ -2802,7 +2885,7 @@ impl Context {
             self.close_expr_after_trailing_body(
                 exprs,
                 trailing_block_kind,
-                contents,
+                contents.stmts,
             );
             *block_continuation += tokens_consumed;
             *raw_token_list_start = *block_continuation;
@@ -2888,10 +2971,11 @@ impl Context {
                     }
                     *block_continuation += offset + 1;
                     *raw_token_list_start = *block_continuation;
-                    Rc::new(MetaExpr::Scope {
+                    Rc::new(MetaExpr::Block(ExprBlock {
                         span,
-                        body: contents,
-                    })
+                        stmts: contents,
+                        trailing_semi: false,
+                    }))
                 } else {
                     let if_expr = exprs.pop().unwrap();
                     let res = self.handle_template_in_raw_block(
@@ -2926,7 +3010,11 @@ impl Context {
                 else {
                     unreachable!()
                 };
-                *body = contents;
+                *body = ExprBlock {
+                    span: body.span,
+                    stmts: contents,
+                    trailing_semi: false,
+                };
                 *else_expr = Some(else_expr_new);
 
                 Ok(TemplateInRawParseResult::ExprsAdded)
