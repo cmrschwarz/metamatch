@@ -297,3 +297,19 @@ fn extern_decl() {
 
     assert_eq!(res, [1, 2, 3, 4, 5, 6]);
 }
+
+#[test]
+fn extern_func_decl() {
+    eval! {
+        extern fn double_me(x) {
+            x * 2
+        }
+    };
+
+    let res = eval! {
+        use double_me;
+        double_me(21);
+    };
+
+    assert_eq!(res, 42);
+}

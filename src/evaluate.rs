@@ -1001,6 +1001,9 @@ impl Context {
                 )?;
             }
             MetaExpr::FnDecl(function) => {
+                if function.is_extern {
+                    append_ident(tgt, "extern", function.span);
+                }
                 append_ident(tgt, "fn", function.span);
                 append_ident(tgt, &function.name, function.span);
                 append_comma_separated_list(
@@ -1358,7 +1361,7 @@ impl Context {
         ident: &str,
         ident_span: Span,
         decl_span: Span,
-        value: &MetaValue,
+        mut append_value: impl FnMut(&mut Self, &mut Vec<TokenTree>) -> Result<()>,
     ) -> Result<()> {
         append_ident(tgt, "macro_rules", decl_span);
         tgt.push(TokenTree::Punct(Punct::new('!', Spacing::Alone)));
@@ -1459,7 +1462,7 @@ impl Context {
                     append_punct(tgt, '$', Spacing::Alone, decl_span);
                     append_ident(tgt, "alias", decl_span);
                     append_punct(tgt, '=', Spacing::Alone, decl_span);
-                    self.append_value_to_stream(tgt, decl_span, value)?;
+                    append_value(self, tgt)?;
                     append_punct(tgt, ';', Spacing::Alone, decl_span);
 
                     // $($rest)*
@@ -1502,11 +1505,30 @@ impl Context {
                             &name,
                             binding.span,
                             decl_span,
-                            &binding.value,
+                            |this, tgt| {
+                                this.append_value_to_stream(
+                                    tgt,
+                                    decl_span,
+                                    &binding.value,
+                                )
+                            },
                         )?;
                     }
                 }
-                MetaExpr::FnDecl(_fn) => todo!(),
+                MetaExpr::FnDecl(func) => {
+                    self.expand_extern_decl(
+                        tgt,
+                        &func.name,
+                        func.span,
+                        func.span,
+                        |this, tgt| {
+                            append_lambda_params(tgt, &func.params)?;
+                            this.append_quoted_block(
+                                tgt, func.span, &func.body,
+                            )
+                        },
+                    )?;
+                }
                 _ => unreachable!("extern decl must be `let` or `fn`"),
             };
         }

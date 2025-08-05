@@ -93,6 +93,7 @@ pub enum Pattern {
 #[derive(Debug)]
 pub struct Function {
     pub span: Span,
+    pub is_extern: bool,
     pub name: Rc<str>,
     pub params: Vec<Pattern>,
     pub body: Vec<Rc<MetaExpr>>,

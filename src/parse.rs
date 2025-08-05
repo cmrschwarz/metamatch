@@ -1369,6 +1369,7 @@ impl Context {
         };
 
         let fn_decl = Rc::new(MetaExpr::FnDecl(Rc::new(Function {
+            is_extern,
             span: name_span,
             name: name.clone(),
             params,
