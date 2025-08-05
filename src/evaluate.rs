@@ -1364,7 +1364,7 @@ impl Context {
         tgt.push(TokenTree::Punct(Punct::new('!', Spacing::Alone)));
         append_ident(tgt, ident, ident_span);
 
-        // ($alias: ident, $chain: path, [ $($prefix:tt)* ] $($rest: tt)* )
+        // ($alias: ident, ($($chain: tt)*), [ $($prefix:tt)* ] $($rest: tt)* )
         append_group(tgt, Delimiter::Brace, decl_span, |tgt| {
             append_group(tgt, Delimiter::Parenthesis, decl_span, |tgt| {
                 // $alias: ident,
@@ -1374,11 +1374,24 @@ impl Context {
                 append_ident(tgt, "ident", decl_span);
                 append_punct(tgt, ',', Spacing::Alone, decl_span);
 
-                // $chain: path,
-                append_punct(tgt, '$', Spacing::Alone, decl_span);
-                append_ident(tgt, "chain", decl_span);
-                append_punct(tgt, ':', Spacing::Alone, decl_span);
-                append_ident(tgt, "path", decl_span);
+                // ($($chain: tt)*),
+                append_group(tgt, Delimiter::Parenthesis, decl_span, |tgt| {
+                    append_punct(tgt, '$', Spacing::Alone, decl_span);
+                    append_group(
+                        tgt,
+                        Delimiter::Parenthesis,
+                        decl_span,
+                        |tgt| {
+                            append_punct(tgt, '$', Spacing::Alone, decl_span);
+                            append_ident(tgt, "chain", decl_span);
+                            append_punct(tgt, ':', Spacing::Alone, decl_span);
+                            append_ident(tgt, "tt", decl_span);
+                            Ok(())
+                        },
+                    )?;
+                    append_punct(tgt, '*', Spacing::Alone, decl_span);
+                    Ok(())
+                })?;
                 append_punct(tgt, ',', Spacing::Alone, decl_span);
 
                 // [ $($prefix:tt)* ],
@@ -1417,9 +1430,15 @@ impl Context {
             append_punct(tgt, '=', Spacing::Joint, decl_span);
             append_punct(tgt, '>', Spacing::Alone, decl_span);
             append_group(tgt, Delimiter::Brace, decl_span, |tgt| {
+                // $($chain)*
                 append_punct(tgt, '$', Spacing::Alone, decl_span);
-                append_ident(tgt, "chain", decl_span);
-                append_punct(tgt, '!', Spacing::Alone, decl_span);
+                append_group(tgt, Delimiter::Parenthesis, decl_span, |tgt| {
+                    append_punct(tgt, '$', Spacing::Alone, decl_span);
+                    append_ident(tgt, "chain", decl_span);
+                    Ok(())
+                })?;
+                append_punct(tgt, '*', Spacing::Alone, decl_span);
+
                 append_group(tgt, Delimiter::Brace, decl_span, |tgt| {
                     // $($prefix)*
                     append_punct(tgt, '$', Spacing::Alone, decl_span);
@@ -1541,10 +1560,26 @@ impl Context {
                         );
                         append_double_colon(&mut chain_target, last_span);
                         append_ident(&mut chain_target, "eval", last_span);
+                        append_punct(
+                            &mut chain_target,
+                            '!',
+                            Spacing::Alone,
+                            last_span,
+                        );
                     } else {
                         append_ident(inner, &binding_name, last_span);
                         append_punct(inner, ',', Spacing::Alone, last_span);
-                        inner.extend_from_slice(&chain_target);
+
+                        append_group(
+                            inner,
+                            Delimiter::Parenthesis,
+                            last_span,
+                            |tgt| {
+                                tgt.extend_from_slice(&chain_target);
+                                Ok(())
+                            },
+                        )?;
+
                         append_punct(inner, ',', Spacing::Alone, last_span);
                         chain_target = std::mem::take(&mut macro_path);
                         inner.append(&mut prev_prefix);
@@ -1555,16 +1590,21 @@ impl Context {
                 },
             );
             append_use_path(&mut macro_path, last_span, &rep.target_path);
+            append_punct(&mut macro_path, '!', Spacing::Alone, last_span);
             binding_name = std::mem::take(&mut rep.binding);
         }
 
         tgt.extend_from_slice(&macro_path);
-        append_punct(tgt, '!', Spacing::Alone, last_span);
 
         _ = append_group(tgt, Delimiter::Brace, last_span, |inner| {
             append_ident(inner, &binding_name, last_span);
             append_punct(inner, ',', Spacing::Alone, last_span);
-            inner.append(&mut chain_target);
+
+            append_group(inner, Delimiter::Parenthesis, last_span, |tgt| {
+                tgt.extend_from_slice(&chain_target);
+                Ok(())
+            })?;
+
             append_punct(inner, ',', Spacing::Alone, last_span);
             inner.append(&mut prefix);
             append_punct(inner, ',', Spacing::Alone, last_span);

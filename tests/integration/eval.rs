@@ -285,13 +285,14 @@ fn extern_decl() {
         extern let bar = [4, 5, 6];
     };
 
-    let res = foo! {
-        __metamatch_extern_use_1,
-        ::metamatch::eval,
-        [],
-        let super __metamatch_extern_use_2 = [4,5,6];
-        let (foo,bar) = (__metamatch_extern_use_1,__metamatch_extern_use_2);
-        foo+bar
+    eval! {
+        use {foo, bar};
+        extern let baz = foo + bar;
+    };
+
+    let res = eval! {
+        use baz;
+        baz
     };
 
     assert_eq!(res, [1, 2, 3, 4, 5, 6]);
