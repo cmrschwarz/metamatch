@@ -621,40 +621,6 @@ fn append_use_path(tgt: &mut Vec<TokenTree>, span: Span, path: &UsePath) {
     }
 }
 
-fn append_use_tree(tgt: &mut Vec<TokenTree>, tree: &UseTree) {
-    match tree {
-        UseTree::Path {
-            span,
-            path,
-            replacement,
-        } => {
-            append_use_path(tgt, *span, path);
-        }
-        UseTree::Group { span, path, items } => {
-            append_use_path(tgt, *span, path);
-            let _ = append_group(tgt, Delimiter::Brace, *span, |tgt| {
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        append_punct(tgt, ',', Spacing::Alone, *span);
-                    }
-                    append_use_tree(tgt, item);
-                }
-                Ok(())
-            });
-        }
-        UseTree::Rename {
-            span,
-            path,
-            alias,
-            replacement,
-        } => {
-            append_use_path(tgt, *span, path);
-            append_ident(tgt, "as", *span);
-            append_ident(tgt, alias, *span);
-        }
-    }
-}
-
 fn append_ident(tgt: &mut Vec<TokenTree>, name: impl AsRef<str>, span: Span) {
     tgt.push(TokenTree::Ident(Ident::new(name.as_ref(), span)));
 }
@@ -1104,7 +1070,7 @@ impl Context {
                 append_ident(tgt, "in", *span);
                 self.append_quoted_expression(tgt, variants_expr)?;
                 self.push_dummy_scope(ScopeKind::Eval);
-                self.insert_dummy_bindings_for_pattern(&pattern);
+                self.insert_dummy_bindings_for_pattern(pattern);
                 self.append_quoted_block(tgt, *span, body, false)?;
                 self.pop_scope();
             }
