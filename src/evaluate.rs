@@ -62,7 +62,6 @@ impl<'a> Iterable<'a> {
             | MetaValue::Float { .. }
             | MetaValue::Bool { .. }
             | MetaValue::Fn(_)
-            | MetaValue::ExternSymbol(_)
             | MetaValue::Lambda(_)
             | MetaValue::BuiltinFn(_) => {
                 return None;
@@ -105,7 +104,6 @@ impl<'a> Callable<'a> {
             | MetaValue::Bool { .. }
             | MetaValue::String { .. }
             | MetaValue::List(_)
-            | MetaValue::ExternSymbol(_)
             | MetaValue::Tuple(_) => return None,
         };
         Some(res)
@@ -256,7 +254,6 @@ fn builtin_fn_len(
         | MetaValue::Char { .. }
         | MetaValue::Float { .. }
         | MetaValue::Fn(_)
-        | MetaValue::ExternSymbol(_)
         | MetaValue::Lambda(_)
         | MetaValue::BuiltinFn(_) => {
             ctx.error(
@@ -310,7 +307,6 @@ fn builtin_fn_chars(
         | MetaValue::Char { .. }
         | MetaValue::Float { .. }
         | MetaValue::Fn(_)
-        | MetaValue::ExternSymbol(_)
         | MetaValue::Lambda(_)
         | MetaValue::BuiltinFn(_) => {
             ctx.error(
@@ -368,7 +364,6 @@ fn builtin_fn_bytes(
         | MetaValue::Float { .. }
         | MetaValue::Fn(_)
         | MetaValue::Lambda(_)
-        | MetaValue::ExternSymbol(_)
         | MetaValue::BuiltinFn(_) => {
             ctx.error(
                 callsite,
@@ -452,7 +447,6 @@ fn value_to_str(v: &MetaValue) -> Option<Rc<str>> {
 
         MetaValue::Fn(..)
         | MetaValue::Lambda(..)
-        | MetaValue::ExternSymbol(..)
         | MetaValue::BuiltinFn(..) => None,
     }
 }
@@ -899,13 +893,7 @@ impl Context {
             UseTree::Path {
                 replacement, span, ..
             } => {
-                self.insert_binding(
-                    *span,
-                    replacement.name.clone(),
-                    false,
-                    false,
-                    Rc::new(MetaValue::ExternSymbol(replacement.clone())),
-                );
+                self.insert_dummy_binding(replacement.name.clone(), false);
                 append_ident(tgt, &replacement.name, *span);
             }
             UseTree::Group { span, items, .. } => {
@@ -923,13 +911,7 @@ impl Context {
             UseTree::Rename {
                 replacement, span, ..
             } => {
-                self.insert_binding(
-                    *span,
-                    replacement.name.clone(),
-                    false,
-                    false,
-                    Rc::new(MetaValue::ExternSymbol(replacement.clone())),
-                );
+                self.insert_dummy_binding(replacement.name.clone(), false);
                 append_ident(tgt, &replacement.name, *span);
             }
         }
@@ -1286,9 +1268,6 @@ impl Context {
                     tgt,
                     &MetaExpr::Lambda(lambda.clone()),
                 )?;
-            }
-            MetaValue::ExternSymbol(s) => {
-                append_ident(tgt, &s.binding, s.span);
             }
             MetaValue::BuiltinFn(f) => {
                 append_ident(tgt, &f.name, eval_span);
@@ -2143,7 +2122,6 @@ impl Context {
                 | MetaValue::String { .. }
                 | MetaValue::Fn(..)
                 | MetaValue::Lambda(..)
-                | MetaValue::ExternSymbol(..)
                 | MetaValue::BuiltinFn(..)
                 | MetaValue::List(..)
                 | MetaValue::Tuple(..) => {
@@ -2179,7 +2157,6 @@ impl Context {
                 | MetaValue::Char { .. }
                 | MetaValue::Fn(..)
                 | MetaValue::Lambda(..)
-                | MetaValue::ExternSymbol(..)
                 | MetaValue::BuiltinFn(..)
                 | MetaValue::List(..)
                 | MetaValue::Tuple(..) => {

@@ -79,7 +79,6 @@ pub enum MetaValue {
     Fn(Rc<Function>),
     Lambda(Rc<Lambda>),
     BuiltinFn(Rc<BuiltinFn>),
-    ExternSymbol(Rc<UseReplacement>),
     List(RefCell<Vec<Rc<MetaValue>>>),
     Tuple(Vec<Rc<MetaValue>>),
 }
@@ -407,7 +406,6 @@ pub enum Kind {
 impl MetaValue {
     pub fn kind(&self) -> Kind {
         match self {
-            MetaValue::ExternSymbol(_) => Kind::ExternSymbol,
             MetaValue::Token(_) => Kind::Token,
             MetaValue::Tokens(_) => Kind::Tokens,
             MetaValue::Int { .. } => Kind::Int,
@@ -435,7 +433,6 @@ impl MetaValue {
             MetaValue::String { span, .. } => *span,
             MetaValue::Fn(function) => Some(function.span),
             MetaValue::Lambda(lambda) => Some(lambda.span),
-            MetaValue::ExternSymbol(s) => Some(s.span),
             MetaValue::BuiltinFn(_) => None,
             MetaValue::List(_) => None,
             MetaValue::Tuple(_) => None,
