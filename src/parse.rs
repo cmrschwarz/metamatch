@@ -1,12 +1,12 @@
 use proc_macro::{Delimiter, Group, Spacing, Span, TokenTree};
-use std::{cell::RefCell, collections::HashMap, fmt::Debug, rc::Rc};
+use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 use super::{
     ast::{
         BinaryOpKind, Binding, BindingParameter, Context, ExpandPattern,
         Function, Lambda, MetaError, MetaExpr, MetaValue, Pattern, Scope,
         ScopeKind, TrailingBlockKind, UnaryOpKind, UseDecl, UsePath,
-        UseSegment, UseTree,
+        UseReplacement, UseSegment, UseTree,
     },
     macro_impls::IntoVec,
 };
@@ -291,6 +291,19 @@ fn delimiter_chars(d: Delimiter) -> (char, char) {
         Delimiter::Brace => ('{', '}'),
         Delimiter::Bracket => ('[', ']'),
         Delimiter::None => (' ', ' '),
+    }
+}
+
+fn merge_use_path(parent: &UsePath, child: &UsePath) -> UsePath {
+    UsePath {
+        leading_double_colon: parent.leading_double_colon
+            || (parent.segments.is_empty() && child.leading_double_colon),
+        segments: parent
+            .segments
+            .iter()
+            .chain(child.segments.iter())
+            .cloned()
+            .collect(),
     }
 }
 
@@ -849,7 +862,7 @@ impl Context {
         });
     }
 
-    fn insert_dummy_binding(&mut self, name: Rc<str>, super_bound: bool) {
+    pub fn insert_dummy_binding(&mut self, name: Rc<str>, super_bound: bool) {
         // dummy binding during parsing so raw blocks can detect identifiers
         self.scopes.last_mut().unwrap().bindings.insert(
             name.clone(),
@@ -862,7 +875,7 @@ impl Context {
         );
     }
 
-    fn insert_dummy_bindings_for_pattern(&mut self, pattern: &Pattern) {
+    pub fn insert_dummy_bindings_for_pattern(&mut self, pattern: &Pattern) {
         match pattern {
             Pattern::Ident(i) => {
                 self.insert_dummy_binding(i.name.clone(), i.super_bound)
@@ -891,21 +904,27 @@ impl Context {
             return Err(());
         }
 
-        let (use_tree, rest) = self.parse_use_tree(use_span, tokens)?;
+        let root_path = UsePath {
+            leading_double_colon: false,
+            segments: Vec::new(),
+        };
 
-        let use_decl = Rc::new(UseDecl {
-            span: use_span,
-            tree: use_tree,
-            replacements: RefCell::new(None),
-        });
+        let (use_tree, rest) =
+            self.parse_use_tree(&root_path, use_span, tokens)?;
 
-        self.extern_uses.push(use_decl.clone());
-
-        Ok((Rc::new(MetaExpr::UseDecl(use_decl)), rest, None))
+        Ok((
+            Rc::new(MetaExpr::UseDecl(Rc::new(UseDecl {
+                span: use_span,
+                tree: use_tree,
+            }))),
+            rest,
+            None,
+        ))
     }
 
     fn parse_use_group_items(
         &mut self,
+        parent_path: &UsePath,
         parent_span: Span,
         tokens: &[TokenTree],
     ) -> Result<Vec<UseTree>> {
@@ -913,7 +932,8 @@ impl Context {
         let mut rest = tokens;
 
         while !rest.is_empty() {
-            let (item, new_rest) = self.parse_use_tree(parent_span, rest)?;
+            let (item, new_rest) =
+                self.parse_use_tree(parent_path, parent_span, rest)?;
             items.push(item);
             rest = new_rest;
 
@@ -997,6 +1017,7 @@ impl Context {
 
     fn parse_use_tree<'a>(
         &mut self,
+        parent_path: &UsePath,
         parent_span: Span,
         tokens: &'a [TokenTree],
     ) -> Result<(UseTree, &'a [TokenTree])> {
@@ -1006,8 +1027,14 @@ impl Context {
             if group.delimiter() == Delimiter::Brace {
                 // Group import: `path::{item1, item2}`
                 let group_tokens = group.stream().into_vec();
-                let items =
-                    self.parse_use_group_items(group.span(), &group_tokens)?;
+
+                let full_path = merge_use_path(parent_path, &path);
+
+                let items = self.parse_use_group_items(
+                    &full_path,
+                    group.span(),
+                    &group_tokens,
+                )?;
                 return Ok((
                     UseTree::Group {
                         span: parent_span,
@@ -1042,21 +1069,56 @@ impl Context {
                 return Ok((
                     UseTree::Rename {
                         span: parent_span,
-                        path,
                         alias,
+                        replacement: self.add_use_replacement(
+                            parent_path,
+                            parent_span,
+                            &path,
+                        ),
+                        path,
                     },
                     &rest[2..],
                 ));
             }
         }
 
+        if let Some(name) = path.segments.last() {
+            self.insert_dummy_binding(Rc::from(name.to_string()), false);
+        } else {
+            self.error(parent_span, "use path must have at least one segment");
+        }
+
         Ok((
             UseTree::Path {
                 span: parent_span,
+                replacement: self.add_use_replacement(
+                    parent_path,
+                    parent_span,
+                    &path,
+                ),
                 path,
             },
             rest,
         ))
+    }
+
+    fn add_use_replacement(
+        &mut self,
+        parent_path: &UsePath,
+        parent_span: Span,
+        path: &UsePath,
+    ) -> Rc<UseReplacement> {
+        let repl = Rc::new(UseReplacement {
+            target_path: merge_use_path(parent_path, path),
+            name: Rc::from(path.segments.last().unwrap().to_string()),
+            span: parent_span,
+            binding: Rc::from(format!(
+                "__metamatch_extern_use_{}",
+                self.extern_uses.len() + 1
+            )),
+        });
+        self.extern_uses.push(repl.clone());
+        repl
     }
 
     fn parse_let<'a>(

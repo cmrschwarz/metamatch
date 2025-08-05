@@ -79,6 +79,7 @@ pub enum MetaValue {
     Fn(Rc<Function>),
     Lambda(Rc<Lambda>),
     BuiltinFn(Rc<BuiltinFn>),
+    ExternSymbol(Rc<UseReplacement>),
     List(RefCell<Vec<Rc<MetaValue>>>),
     Tuple(Vec<Rc<MetaValue>>),
 }
@@ -127,15 +128,19 @@ pub struct UsePath {
 #[derive(Clone, Debug)]
 pub struct UseReplacement {
     pub target_path: UsePath,
-    pub name: String,
+    pub name: Rc<str>,
     pub span: Span,
-    pub binding: String,
+    pub binding: Rc<str>,
 }
 
 #[derive(Debug)]
 pub enum UseTree {
     /// `some::path`
-    Path { span: Span, path: UsePath },
+    Path {
+        span: Span,
+        path: UsePath,
+        replacement: Rc<UseReplacement>,
+    },
     /// `some::path::{item1, item2}`
     Group {
         span: Span,
@@ -147,6 +152,7 @@ pub enum UseTree {
         span: Span,
         path: UsePath,
         alias: Rc<str>,
+        replacement: Rc<UseReplacement>,
     },
 }
 
@@ -154,7 +160,6 @@ pub enum UseTree {
 pub struct UseDecl {
     pub span: Span,
     pub tree: UseTree,
-    pub replacements: RefCell<Option<Vec<UseReplacement>>>,
 }
 
 #[derive(Debug)]
@@ -332,6 +337,7 @@ pub enum ScopeKind {
     Quote,
     Eval,
     Metamatch,
+    Lambda,
     // not `eval`, but used during execution of the program
     Evaluation,
 }
@@ -348,7 +354,7 @@ pub struct Context {
     pub scopes: Vec<Scope>,
     pub errors: Vec<MetaError>,
     pub extern_decls: Vec<Rc<MetaExpr>>,
-    pub extern_uses: Vec<Rc<UseDecl>>,
+    pub extern_uses: Vec<Rc<UseReplacement>>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -392,6 +398,7 @@ pub enum Kind {
     Tokens,
 
     Fn,
+    ExternSymbol,
 
     List,
     Tuple,
@@ -400,6 +407,7 @@ pub enum Kind {
 impl MetaValue {
     pub fn kind(&self) -> Kind {
         match self {
+            MetaValue::ExternSymbol(_) => Kind::ExternSymbol,
             MetaValue::Token(_) => Kind::Token,
             MetaValue::Tokens(_) => Kind::Tokens,
             MetaValue::Int { .. } => Kind::Int,
@@ -427,6 +435,7 @@ impl MetaValue {
             MetaValue::String { span, .. } => *span,
             MetaValue::Fn(function) => Some(function.span),
             MetaValue::Lambda(lambda) => Some(lambda.span),
+            MetaValue::ExternSymbol(s) => Some(s.span),
             MetaValue::BuiltinFn(_) => None,
             MetaValue::List(_) => None,
             MetaValue::Tuple(_) => None,
@@ -441,6 +450,7 @@ impl MetaValue {
 impl Kind {
     fn to_str(self) -> &'static str {
         match self {
+            Kind::ExternSymbol => "extern_symbol",
             Kind::Int => "int",
             Kind::Float => "float",
             Kind::Bool => "bool",
