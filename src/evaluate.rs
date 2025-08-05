@@ -969,10 +969,14 @@ impl Context {
                 append_ident(tgt, name, *span);
             }
             MetaExpr::LetBinding {
+                is_extern,
                 span,
                 pattern,
                 expr,
             } => {
+                if *is_extern {
+                    append_ident(tgt, "extern", *span);
+                }
                 append_ident(tgt, "let", *span);
                 append_pattern(tgt, pattern)?;
 
@@ -1433,7 +1437,6 @@ impl Context {
 
                     // let super $alias = ..;
                     append_ident(tgt, "let", decl_span);
-                    append_ident(tgt, "super", decl_span);
                     append_punct(tgt, '$', Spacing::Alone, decl_span);
                     append_ident(tgt, "alias", decl_span);
                     append_punct(tgt, '=', Spacing::Alone, decl_span);
@@ -1465,6 +1468,7 @@ impl Context {
             let decl_span = decl.span();
             match &*decl {
                 MetaExpr::LetBinding {
+                    is_extern: _,
                     span: _,
                     pattern,
                     expr,
@@ -1666,6 +1670,7 @@ impl Context {
                 )))))
             }
             MetaExpr::LetBinding {
+                is_extern: _,
                 span: _,
                 pattern,
                 expr,

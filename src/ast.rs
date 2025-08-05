@@ -184,6 +184,7 @@ pub enum MetaExpr {
         name: Rc<str>,
     },
     LetBinding {
+        is_extern: bool,
         span: Span,
         pattern: Pattern,
         expr: Option<Rc<MetaExpr>>,

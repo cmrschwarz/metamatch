@@ -942,7 +942,6 @@ impl Context {
 
     fn parse_use_path<'a>(
         &mut self,
-        parent_span: Span,
         tokens: &'a [TokenTree],
     ) -> Result<(UsePath, &'a [TokenTree])> {
         let mut segments = Vec::new();
@@ -960,41 +959,31 @@ impl Context {
         }
 
         // Parse path segments
-        while !rest.is_empty() {
-            if let Some(TokenTree::Ident(ident)) = rest.first() {
-                let name = ident.to_string();
-                let segment = match &*name {
-                    "self" => UseSegment::SelfKeyword,
-                    "super" => UseSegment::SuperKeyword,
-                    "crate" => UseSegment::CrateKeyword,
-                    _ => UseSegment::Ident(Rc::from(name)),
-                };
-                segments.push(segment);
-                rest = &rest[1..];
+        while let Some(TokenTree::Ident(ident)) = rest.first() {
+            let name = ident.to_string();
+            let segment = match &*name {
+                "self" => UseSegment::SelfKeyword,
+                "super" => UseSegment::SuperKeyword,
+                "crate" => UseSegment::CrateKeyword,
+                // don't interpret rename as path
+                "as" => break,
+                _ => UseSegment::Ident(Rc::from(name)),
+            };
+            segments.push(segment);
+            rest = &rest[1..];
 
-                // Check for trailing ::
-                if let Some(TokenTree::Punct(p1)) = rest.first() {
-                    if let Some(TokenTree::Punct(p2)) = rest.get(1) {
-                        if p1.as_char() == ':' && p2.as_char() == ':' {
-                            rest = &rest[2..];
-                            continue;
-                        }
+            // Check for trailing ::
+            if let Some(TokenTree::Punct(p1)) = rest.first() {
+                if let Some(TokenTree::Punct(p2)) = rest.get(1) {
+                    if p1.as_char() == ':' && p2.as_char() == ':' {
+                        rest = &rest[2..];
+                        continue;
                     }
                 }
-                // No more :: found, we're done with path segments
-                break;
-            } else {
-                self.error(
-                    rest.first().map(|t| t.span()).unwrap_or(parent_span),
-                    "expected identifier in use path",
-                );
-                return Err(());
             }
-        }
 
-        if segments.is_empty() {
-            self.error(parent_span, "expected path in use declaration");
-            return Err(());
+            // No more :: found, we're done with path segments
+            break;
         }
 
         Ok((
@@ -1011,7 +1000,7 @@ impl Context {
         parent_span: Span,
         tokens: &'a [TokenTree],
     ) -> Result<(UseTree, &'a [TokenTree])> {
-        let (path, rest) = self.parse_use_path(parent_span, tokens)?;
+        let (path, rest) = self.parse_use_path(tokens)?;
 
         if let Some(TokenTree::Group(group)) = rest.first() {
             if group.delimiter() == Delimiter::Brace {
@@ -1088,6 +1077,7 @@ impl Context {
         if rest.is_empty() && allow_trailing_block {
             self.insert_dummy_bindings_for_pattern(&pattern);
             let let_expr = Rc::new(MetaExpr::LetBinding {
+                is_extern,
                 span: let_span,
                 pattern,
                 expr: None,
@@ -1125,6 +1115,7 @@ impl Context {
         self.insert_dummy_bindings_for_pattern(&pattern);
 
         let let_expr = Rc::new(MetaExpr::LetBinding {
+            is_extern,
             span: let_span,
             pattern,
             expr: Some(expr),

@@ -282,12 +282,17 @@ fn func_to_tokens() {
 fn extern_decl() {
     eval! {
         extern let foo = [1, 2, 3];
-        extern let bar = [1, 2, 3];
+        extern let bar = [4, 5, 6];
     };
 
-    eval! {
-        use foo;
-        use bar;
-        foo + bar
-    }
+    let res = foo! {
+        __metamatch_extern_use_1,
+        ::metamatch::eval,
+        [],
+        let super __metamatch_extern_use_2 = [4,5,6];
+        let (foo,bar) = (__metamatch_extern_use_1,__metamatch_extern_use_2);
+        foo+bar
+    };
+
+    assert_eq!(res, [1, 2, 3, 4, 5, 6]);
 }
