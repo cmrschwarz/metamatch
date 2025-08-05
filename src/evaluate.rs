@@ -954,11 +954,13 @@ impl Context {
                 self.append_value_to_stream(tgt, *span, value)?;
             }
             MetaExpr::Ident { span, name } => {
-                if let Some(val) = self.lookup_as_external_identifier(name) {
-                    self.append_value_to_stream(tgt, *span, &val)?;
-                } else {
-                    append_ident(tgt, name, *span);
+                if self.errors.is_empty() && self.extern_uses.is_empty() {
+                    if let Some(val) = self.lookup_as_external_identifier(name)
+                    {
+                        return self.append_value_to_stream(tgt, *span, &val);
+                    }
                 }
+                append_ident(tgt, name, *span);
             }
             MetaExpr::LetBinding {
                 is_extern,
