@@ -687,7 +687,11 @@ impl Context {
                             );
                         }
                         "use" => {
-                            return self.parse_use_decl(span, &tokens[1..]);
+                            return self.parse_use_decl(
+                                span,
+                                &tokens[1..],
+                                allow_trailing_block,
+                            );
                         }
                         "pub" => {
                             if min_prec != 0 {
@@ -802,11 +806,19 @@ impl Context {
                     }
                 }
 
-                Ok((
-                    Rc::new(MetaExpr::Ident { span, name, raw }),
-                    &tokens[1..],
-                    None,
-                ))
+                let ident_expr = Rc::new(MetaExpr::Ident { span, name, raw });
+
+                if tokens.len() == 1 && allow_trailing_block {
+                    self.push_dummy_scope(ScopeKind::Eval);
+                    let let_expr = Rc::new(MetaExpr::Call {
+                        span,
+                        lhs: ident_expr,
+                        args: Vec::new(),
+                    });
+                    return Ok((let_expr, &[], Some(TrailingBlockKind::Call)));
+                }
+
+                Ok((ident_expr, &tokens[1..], None))
             }
 
             TokenTree::Literal(lit) => Ok((
@@ -954,6 +966,7 @@ impl Context {
         &mut self,
         use_span: Span,
         tokens: &'a [TokenTree],
+        allow_trailing_block: bool,
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
         if tokens.is_empty() {
@@ -969,14 +982,24 @@ impl Context {
         let (use_tree, rest) =
             self.parse_use_tree(&root_path, use_span, tokens)?;
 
-        Ok((
-            Rc::new(MetaExpr::UseDecl(Rc::new(UseDecl {
+        let is_single_path = matches!(use_tree, UseTree::Path { .. });
+
+        let use_decl = Rc::new(MetaExpr::UseDecl(Rc::new(UseDecl {
+            span: use_span,
+            tree: use_tree,
+        })));
+
+        if rest.is_empty() && allow_trailing_block && is_single_path {
+            self.push_dummy_scope(ScopeKind::Eval);
+            let let_expr = Rc::new(MetaExpr::Call {
                 span: use_span,
-                tree: use_tree,
-            }))),
-            rest,
-            None,
-        ))
+                lhs: use_decl,
+                args: Vec::new(),
+            });
+            return Ok((let_expr, &[], Some(TrailingBlockKind::Call)));
+        }
+
+        Ok((use_decl, rest, None))
     }
 
     fn parse_use_group_items(
@@ -1513,6 +1536,10 @@ impl Context {
                     return Err(());
                 }
             }
+        }
+
+        for pat in &params {
+            self.insert_dummy_bindings_for_pattern(pat);
         }
 
         let rest = &tokens[2..];
@@ -2438,7 +2465,7 @@ impl Context {
         &mut self,
         exprs: &mut [Rc<MetaExpr>],
         kind: TrailingBlockKind,
-        contents: Vec<Rc<MetaExpr>>,
+        mut contents: Vec<Rc<MetaExpr>>,
     ) {
         // This function assumes that we successfully parsed an syntactical
         // element with a trailing block before this.
@@ -2446,14 +2473,16 @@ impl Context {
         let expr = exprs.last_mut().unwrap();
         let expr = Rc::get_mut(expr).unwrap();
 
-        // Convert the contents to an ExprBlock
-        // For trailing blocks, assume no trailing semicolon (expression
-        // context)
+        if kind == TrailingBlockKind::Call {
+            let MetaExpr::Call { args, .. } = expr else {
+                unreachable!()
+            };
+            args.append(&mut contents);
+            return;
+        }
+
         let expr_block = ExprBlock {
-            span: contents
-                .first()
-                .map(|e| e.span())
-                .unwrap_or_else(Span::call_site),
+            span: Span::call_site(), // TODO
             stmts: contents,
             trailing_semi: true,
         };
@@ -2495,7 +2524,7 @@ impl Context {
                     unreachable!()
                 };
                 // TODO: this span is wrong but Span::join is not stable...
-                *let_expr = Some(Rc::new(MetaExpr::Block(expr_block.clone())))
+                *let_expr = Some(Rc::new(MetaExpr::Block(expr_block)))
             }
             TrailingBlockKind::Fn => {
                 let MetaExpr::FnDecl(fd) = expr else {
@@ -2514,6 +2543,9 @@ impl Context {
                     unreachable!()
                 };
                 *body = expr_block;
+            }
+            TrailingBlockKind::Call => {
+                unreachable!()
             }
         }
     }

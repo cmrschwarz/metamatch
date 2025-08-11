@@ -100,3 +100,38 @@ fn empty_raw_block_preserved() {
 
     assert_eq!(foo_mut(&mut 1) + bar(&2), 3);
 }
+
+#[test]
+fn replicate_applies_fn() {
+    #![allow(clippy::needless_lifetimes, clippy::unnecessary_mut_passed)]
+
+    #[replicate{
+        fn foo(super x) {
+            quote!(x);
+        }
+        foo
+    }]
+    fn foo_mut<'a>(x: &'a mut i32) -> i32 {
+        *x
+    }
+
+    assert_eq!(foo_mut(&mut 1), 1);
+}
+
+#[test]
+fn replicate_applies_extern_fn() {
+    #![allow(clippy::needless_lifetimes, clippy::unnecessary_mut_passed)]
+
+    metamatch::eval! {
+        extern fn non_mut(x) {
+            x
+        }
+    }
+
+    #[replicate(use non_mut)]
+    fn foo_mut<'a>(x: &'a mut i32) -> i32 {
+        *x
+    }
+
+    assert_eq!(foo_mut(&mut 1), 1);
+}

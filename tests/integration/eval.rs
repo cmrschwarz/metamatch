@@ -406,6 +406,17 @@ fn use_as_expression_in_arithmetic() {
 }
 
 #[test]
+fn superbound_fn_param() {
+    let res = eval! {
+        fn foo(super x) {
+            quote!(x)
+        }
+        foo(42)
+    };
+    assert_eq!(res, 42);
+}
+
+#[test]
 fn raw_idents() {
     let res = eval! {let r#mut = 1; mut};
     let res_2 = eval! {let super r#mut = 1; quote!(mut)};
@@ -413,7 +424,7 @@ fn raw_idents() {
 }
 
 #[test]
-fn emptyy_raw_block_reserved() {
+fn empty_raw_block_reserved() {
     #![allow(clippy::needless_lifetimes, clippy::unnecessary_mut_passed)]
 
     metamatch::eval! {

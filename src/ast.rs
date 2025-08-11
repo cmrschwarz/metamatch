@@ -404,6 +404,7 @@ pub enum TrailingBlockKind {
     Eval,
     Raw,
     Fn,
+    Call,
 }
 
 impl Default for MetaValue {
@@ -817,6 +818,7 @@ impl TrailingBlockKind {
             TrailingBlockKind::Eval => "eval",
             TrailingBlockKind::Template => "quote",
             TrailingBlockKind::Raw => "raw",
+            TrailingBlockKind::Call => "",
         }
     }
 }
