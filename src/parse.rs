@@ -1,4 +1,4 @@
-use proc_macro::{Delimiter, Group, Spacing, Span, TokenTree};
+use proc_macro::{Delimiter, Group, Ident, Spacing, Span, TokenTree};
 use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 use super::{
@@ -210,7 +210,7 @@ fn as_unary_operator(p: &proc_macro::Punct) -> Option<UnaryOpKind> {
     }
 }
 
-fn has_template_angle_backets(tokens: &[TokenTree]) -> bool {
+fn has_angle_backets(tokens: &[TokenTree]) -> bool {
     let Some(TokenTree::Punct(p)) = tokens.first() else {
         return false;
     };
@@ -232,11 +232,13 @@ fn append_token_list(
     tokens: &[TokenTree],
     start: usize,
     end: usize,
+    from_raw_block: bool,
 ) {
     if start < end {
         exprs.push(Rc::new(MetaExpr::Literal {
             span: tokens[start].span(),
             value: Rc::new(MetaValue::Tokens(tokens[start..end].to_vec())),
+            from_raw_block,
         }));
     }
 }
@@ -277,9 +279,35 @@ fn parse_literal(token: &TokenTree) -> Rc<MetaValue> {
     Rc::new(MetaValue::Token(token.clone()))
 }
 
-fn parse_ident(token: &TokenTree) -> Option<(Span, Rc<str>)> {
+fn ident_to_string(ident: &Ident) -> (Rc<str>, bool) {
+    let mut s = ident.to_string();
+    let mut raw = false;
+    if s.starts_with("r#") {
+        s.drain(0..2);
+        raw = true;
+    }
+    (Rc::from(s), raw)
+}
+
+pub fn is_keyword(v: &str) -> bool {
+    match v {
+        // Based on https://doc.rust-lang.org/1.80.0/reference/keywords.html
+        "abstract" | "as" | "async" | "await" | "become" | "box" | "break"
+        | "const" | "continue" | "crate" | "do" | "dyn" | "else" | "enum"
+        | "extern" | "false" | "final" | "fn" | "for" | "if" | "impl"
+        | "in" | "let" | "loop" | "macro" | "match" | "mod" | "move"
+        | "mut" | "override" | "priv" | "pub" | "ref" | "return" | "Self"
+        | "self" | "static" | "struct" | "super" | "trait" | "true"
+        | "try" | "type" | "typeof" | "unsafe" | "unsized" | "use"
+        | "virtual" | "where" | "while" | "yield" => true,
+        _ => false,
+    }
+}
+
+fn parse_ident(token: &TokenTree) -> Option<(Span, Rc<str>, bool)> {
     if let TokenTree::Ident(ident) = token {
-        Some((ident.span(), Rc::from(ident.to_string())))
+        let (name, raw) = ident_to_string(ident);
+        Some((ident.span(), name, raw))
     } else {
         None
     }
@@ -314,6 +342,7 @@ impl Default for Context {
             empty_token_list_expr: Rc::new(MetaExpr::Literal {
                 span: Span::call_site(),
                 value: empty_token_list.clone(),
+                from_raw_block: false,
             }),
             empty_token_list,
             scopes: vec![Scope {
@@ -402,7 +431,7 @@ impl Context {
                 // List Access
                 if g.delimiter() == Delimiter::Bracket {
                     let inner = g.stream().into_vec();
-                    if has_template_angle_backets(&inner) {
+                    if has_angle_backets(&inner) {
                         return Ok((lhs, rest, trailing));
                     }
                     rest = &rest[1..];
@@ -452,11 +481,13 @@ impl Context {
                                 &params,
                             )?;
                             fn_args.insert(0, lhs);
+                            let (name, raw) = ident_to_string(func_name);
                             lhs = Rc::new(MetaExpr::Call {
                                 span: func_name.span(),
                                 lhs: Rc::from(MetaExpr::Ident {
                                     span: func_name.span(),
-                                    name: Rc::from(func_name.to_string()),
+                                    name,
+                                    raw,
                                 }),
                                 args: fn_args,
                             });
@@ -560,7 +591,7 @@ impl Context {
                     Delimiter::Bracket => {
                         let rest = &tokens[1..];
                         let (expr, rest, trailing_block_tag) =
-                            if has_template_angle_backets(&group_tokens) {
+                            if has_angle_backets(&group_tokens) {
                                 self.parse_template_tag_in_expr(
                                     group,
                                     &group_tokens,
@@ -618,138 +649,142 @@ impl Context {
 
             TokenTree::Ident(ident) => {
                 let span = ident.span();
-                let name = Rc::from(ident.to_string());
-
-                match &*name {
-                    "let" => {
-                        if min_prec != 0 {
-                            self.error(
-                                ident.span(),
-                                "`let` cannot occur within expression",
-                            );
-                            return Err(());
-                        }
-                        return self.parse_let(
-                            span,
-                            &tokens[1..],
-                            Visibility::Regular,
-                            allow_trailing_block,
-                        );
-                    }
-                    "for" => {
-                        return self.parse_for(
-                            span,
-                            &tokens[1..],
-                            allow_trailing_block,
-                        );
-                    }
-                    "while" => {
-                        return self.parse_while(
-                            span,
-                            &tokens[1..],
-                            allow_trailing_block,
-                        );
-                    }
-                    "break" => {
-                        return self.parse_break(span, &tokens[1..]);
-                    }
-                    "continue" => {
-                        return self.parse_continue(span, &tokens[1..]);
-                    }
-                    "loop" => {
-                        return self.parse_loop(
-                            span,
-                            &tokens[1..],
-                            allow_trailing_block,
-                        );
-                    }
-                    "fn" => {
-                        return self.parse_fn(
-                            span,
-                            &tokens[1..],
-                            Visibility::Regular,
-                            allow_trailing_block,
-                        );
-                    }
-                    "use" => {
-                        return self.parse_use_decl(span, &tokens[1..]);
-                    }
-                    "pub" => {
-                        if min_prec != 0 {
-                            self.error(
-                                ident.span(),
-                                "`put cannot occur within expression",
-                            );
-                            return Err(());
-                        }
-                        let mut followed_by_extern = false;
-                        if let Some(TokenTree::Ident(next)) = tokens.get(1) {
-                            followed_by_extern = next.to_string() == "extern";
-                        };
-                        if !followed_by_extern {
-                            self.error(
-                                ident.span(),
-                                "`pub` must be followed by `extern`",
-                            );
-                        }
-                        return self.parse_extern_decl(
-                            &tokens[2..],
-                            allow_trailing_block,
-                            Visibility::PubExtern,
-                            min_prec,
-                            ident,
-                            span,
-                        );
-                    }
-                    "extern" => {
-                        return self.parse_extern_decl(
-                            &tokens[1..],
-                            allow_trailing_block,
-                            Visibility::Extern,
-                            min_prec,
-                            ident,
-                            span,
-                        );
-                    }
-                    "if" => {
-                        return self.parse_if(
-                            span,
-                            &tokens[1..],
-                            allow_trailing_block,
-                        );
-                    }
-                    "quote" => {
-                        return self.parse_quote_expr(span, &tokens[1..])
-                    }
-                    "raw" => {
-                        return self.parse_raw_expr(
-                            span,
-                            &tokens[1..],
-                            allow_trailing_block,
-                        )
-                    }
-                    "eval" => {
-                        return self.parse_eval_expr(
-                            span,
-                            &tokens[1..],
-                            allow_trailing_block,
-                        )
-                    }
-                    "true" | "false" => {
-                        let val = &*name == "true";
-                        return Ok((
-                            Rc::new(MetaExpr::Literal {
+                let (name, raw) = ident_to_string(ident);
+                if !raw {
+                    match &*name {
+                        "let" => {
+                            if min_prec != 0 {
+                                self.error(
+                                    ident.span(),
+                                    "`let` cannot occur within expression",
+                                );
+                                return Err(());
+                            }
+                            return self.parse_let(
                                 span,
-                                value: Rc::new(MetaValue::Bool {
-                                    value: val,
-                                    span: Some(ident.span()),
+                                &tokens[1..],
+                                Visibility::Regular,
+                                allow_trailing_block,
+                            );
+                        }
+                        "for" => {
+                            return self.parse_for(
+                                span,
+                                &tokens[1..],
+                                allow_trailing_block,
+                            );
+                        }
+                        "while" => {
+                            return self.parse_while(
+                                span,
+                                &tokens[1..],
+                                allow_trailing_block,
+                            );
+                        }
+                        "break" => {
+                            return self.parse_break(span, &tokens[1..]);
+                        }
+                        "continue" => {
+                            return self.parse_continue(span, &tokens[1..]);
+                        }
+                        "loop" => {
+                            return self.parse_loop(
+                                span,
+                                &tokens[1..],
+                                allow_trailing_block,
+                            );
+                        }
+                        "fn" => {
+                            return self.parse_fn(
+                                span,
+                                &tokens[1..],
+                                Visibility::Regular,
+                                allow_trailing_block,
+                            );
+                        }
+                        "use" => {
+                            return self.parse_use_decl(span, &tokens[1..]);
+                        }
+                        "pub" => {
+                            if min_prec != 0 {
+                                self.error(
+                                    ident.span(),
+                                    "`put cannot occur within expression",
+                                );
+                                return Err(());
+                            }
+                            let mut followed_by_extern = false;
+                            if let Some(TokenTree::Ident(next)) = tokens.get(1)
+                            {
+                                followed_by_extern =
+                                    next.to_string() == "extern";
+                            };
+                            if !followed_by_extern {
+                                self.error(
+                                    ident.span(),
+                                    "`pub` must be followed by `extern`",
+                                );
+                            }
+                            return self.parse_extern_decl(
+                                &tokens[2..],
+                                allow_trailing_block,
+                                Visibility::PubExtern,
+                                min_prec,
+                                ident,
+                                span,
+                            );
+                        }
+                        "extern" => {
+                            return self.parse_extern_decl(
+                                &tokens[1..],
+                                allow_trailing_block,
+                                Visibility::Extern,
+                                min_prec,
+                                ident,
+                                span,
+                            );
+                        }
+                        "if" => {
+                            return self.parse_if(
+                                span,
+                                &tokens[1..],
+                                allow_trailing_block,
+                            );
+                        }
+                        "quote" => {
+                            return self.parse_quote_expr(span, &tokens[1..])
+                        }
+                        "raw" => {
+                            return self.parse_raw_expr(
+                                span,
+                                &tokens[1..],
+                                allow_trailing_block,
+                            )
+                        }
+                        "eval" => {
+                            return self.parse_eval_expr(
+                                span,
+                                &tokens[1..],
+                                allow_trailing_block,
+                            )
+                        }
+                        "true" | "false" => {
+                            let val = &*name == "true";
+                            return Ok((
+                                Rc::new(MetaExpr::Literal {
+                                    span,
+                                    value: Rc::new(MetaValue::Bool {
+                                        value: val,
+                                        span: Some(ident.span()),
+                                    }),
+                                    from_raw_block: false,
                                 }),
-                            }),
-                            &tokens[1..],
-                            None,
-                        ));
+                                &tokens[1..],
+                                None,
+                            ));
+                        }
+                        _ => (),
                     }
-                    _ => (),
                 }
 
                 // Check if it's a function call
@@ -769,6 +804,7 @@ impl Context {
                                     lhs: Rc::new(MetaExpr::Ident {
                                         span: ident.span(),
                                         name,
+                                        raw,
                                     }),
                                     args: fn_args,
                                 }),
@@ -780,7 +816,7 @@ impl Context {
                 }
 
                 Ok((
-                    Rc::new(MetaExpr::Ident { span, name }),
+                    Rc::new(MetaExpr::Ident { span, name, raw }),
                     &tokens[1..],
                     None,
                 ))
@@ -790,6 +826,7 @@ impl Context {
                 Rc::new(MetaExpr::Literal {
                     span: lit.span(),
                     value: parse_literal(&tokens[0]),
+                    from_raw_block: false,
                 }),
                 &tokens[1..],
                 None,
@@ -822,6 +859,7 @@ impl Context {
                     Rc::new(MetaExpr::Literal {
                         span: p.span(),
                         value: Rc::new(MetaValue::Token(tokens[0].clone())),
+                        from_raw_block: false,
                     }),
                     &tokens[1..],
                     None,
@@ -888,12 +926,18 @@ impl Context {
         });
     }
 
-    pub fn insert_dummy_binding(&mut self, name: Rc<str>, super_bound: bool) {
+    pub fn insert_dummy_binding(
+        &mut self,
+        name: Rc<str>,
+        raw: bool,
+        super_bound: bool,
+    ) {
         // dummy binding during parsing so raw blocks can detect identifiers
         self.scopes.last_mut().unwrap().bindings.insert(
             name.clone(),
             Binding {
                 span: Span::call_site(),
+                raw,
                 super_bound,
                 value: self.empty_token_list.clone(),
                 mutable: false,
@@ -904,7 +948,7 @@ impl Context {
     pub fn insert_dummy_bindings_for_pattern(&mut self, pattern: &Pattern) {
         match pattern {
             Pattern::Ident(i) => {
-                self.insert_dummy_binding(i.name.clone(), i.super_bound)
+                self.insert_dummy_binding(i.name.clone(), i.raw, i.super_bound)
             }
             Pattern::Tuple { span: _, elems } => {
                 for pat in elems {
@@ -1006,14 +1050,14 @@ impl Context {
 
         // Parse path segments
         while let Some(TokenTree::Ident(ident)) = rest.first() {
-            let name = ident.to_string();
-            let segment = match &*name {
-                "self" => UseSegment::SelfKeyword,
-                "super" => UseSegment::SuperKeyword,
-                "crate" => UseSegment::CrateKeyword,
+            let (name, raw) = ident_to_string(ident);
+            let segment = match (&*name, raw) {
+                ("self", false) => UseSegment::SelfKeyword,
+                ("super", false) => UseSegment::SuperKeyword,
+                ("crate", false) => UseSegment::CrateKeyword,
                 // don't interpret rename as path
-                "as" => break,
-                _ => UseSegment::Ident(Rc::from(name)),
+                ("as", false) if !raw => break,
+                _ => UseSegment::Ident { name, raw },
             };
             segments.push(segment);
             rest = &rest[1..];
@@ -1079,7 +1123,7 @@ impl Context {
                     self.error(ident.span(), "expected identifier after `as`");
                     return Err(());
                 }
-                let Some((_, alias)) = parse_ident(&rest[1]) else {
+                let Some((_, alias, false)) = parse_ident(&rest[1]) else {
                     self.error(
                         rest[1].span(),
                         "expected identifier after `as`",
@@ -1108,8 +1152,9 @@ impl Context {
             }
         }
 
-        if let Some(name) = path.segments.last() {
-            self.insert_dummy_binding(Rc::from(name.to_string()), false);
+        if let Some(seg) = path.segments.last() {
+            let (name, raw) = seg.to_str();
+            self.insert_dummy_binding(name, raw, false);
         } else {
             self.error(parent_span, "use path must have at least one segment");
         }
@@ -1134,9 +1179,11 @@ impl Context {
         parent_span: Span,
         path: &UsePath,
     ) -> Rc<UseReplacement> {
+        let (name, raw) = path.segments.last().unwrap().to_str();
         let repl = Rc::new(UseReplacement {
             target_path: merge_use_path(parent_path, path),
-            name: Rc::from(path.segments.last().unwrap().to_string()),
+            name,
+            raw,
             span: parent_span,
             binding: Rc::from(format!(
                 "__metamatch_extern_use_{}",
@@ -1319,6 +1366,7 @@ impl Context {
                 Rc::new(MetaExpr::Literal {
                     span: raw_block_contents[0].span(),
                     value: parse_literal(&raw_block_contents[0]),
+                    from_raw_block: true,
                 }),
                 &tokens[1..],
                 None,
@@ -1329,6 +1377,7 @@ impl Context {
             Rc::new(MetaExpr::Literal {
                 span: group.span(),
                 value: Rc::new(MetaValue::Tokens(raw_block_contents)),
+                from_raw_block: true,
             }),
             &tokens[1..],
             None,
@@ -1375,12 +1424,13 @@ impl Context {
             self.error(fn_span, "expected identifier after `fn`");
         }
 
-        let (name_span, name) = parse_ident(&tokens[0]).ok_or_else(|| {
-            self.error(tokens[0].span(), "expected function name");
-        })?;
+        let (name_span, name, name_raw) =
+            parse_ident(&tokens[0]).ok_or_else(|| {
+                self.error(tokens[0].span(), "expected function name");
+            })?;
 
         let superbound = starts_with_uppercase(&name);
-        self.insert_dummy_binding(name.clone(), superbound);
+        self.insert_dummy_binding(name.clone(), name_raw, superbound);
 
         let Some(TokenTree::Group(param_group)) = tokens.get(1) else {
             self.error(tokens[1].span(), "expected parameter list");
@@ -1477,7 +1527,8 @@ impl Context {
         let fn_decl = Rc::new(MetaExpr::FnDecl(Rc::new(Function {
             visibility,
             span: name_span,
-            name: name.clone(),
+            name,
+            raw: name_raw,
             params,
             body,
         })));
@@ -2106,14 +2157,14 @@ impl Context {
         }
         match &tokens[0] {
             TokenTree::Ident(ident) => {
-                let mut name = ident.to_string();
+                let (mut name, mut raw) = ident_to_string(ident);
                 let mut rest = &tokens[1..];
                 let mut span = ident.span();
                 let mut mutable = false;
                 let mut super_bound = false;
-                if &*name == "super" {
+                if !raw && &*name == "super" {
                     if let Some(TokenTree::Ident(ident)) = rest.first() {
-                        name = ident.to_string();
+                        (name, raw) = ident_to_string(ident);
                         span = ident.span();
                         rest = &rest[1..];
                         super_bound = true;
@@ -2125,9 +2176,9 @@ impl Context {
                         return Err(());
                     }
                 }
-                if &*name == "mut" {
+                if !raw && &*name == "mut" {
                     if let Some(TokenTree::Ident(ident)) = rest.first() {
-                        name = ident.to_string();
+                        (name, raw) = ident_to_string(ident);
                         span = ident.span();
                         rest = &rest[1..];
                         mutable = true;
@@ -2139,7 +2190,7 @@ impl Context {
                         return Err(());
                     }
                 }
-                if &*name == "super" {
+                if !raw && &*name == "super" {
                     self.error(span, "`super` must come before `mut`");
                     return Err(());
                 }
@@ -2148,9 +2199,10 @@ impl Context {
                 Ok((
                     Pattern::Ident(BindingParameter {
                         span: ident.span(),
-                        name: Rc::from(name),
+                        name,
                         super_bound,
                         mutable,
+                        raw,
                     }),
                     rest,
                 ))
@@ -2301,7 +2353,7 @@ impl Context {
 
             rest = new_rest;
             let may_drop_semi = expr.may_drop_semicolon();
-            stmts.push(expr);
+            stmts.push(expr.clone());
 
             if trailing_block.is_some() {
                 return (
@@ -2327,6 +2379,7 @@ impl Context {
                 }
                 if !is_semi {
                     if !may_drop_semi {
+                        dbg!(expr);
                         pending_trailing_semi_error = Some(first.span());
                     }
                 } else {
@@ -2439,6 +2492,7 @@ impl Context {
                 Ok(vec![Rc::new(MetaExpr::Literal {
                     span: parent_span,
                     value: Rc::new(MetaValue::Tokens(tokens.to_vec())),
+                    from_raw_block: true,
                 })])
             }
             RawBodyParseResult::Complete(exprs) => Ok(exprs),
@@ -2675,17 +2729,19 @@ impl Context {
             }
             if scope_kind != ScopeKind::Raw {
                 if let TokenTree::Ident(ident) = t {
-                    let name = ident.to_string();
+                    let (name, raw) = ident_to_string(ident);
                     if self.lookup(&name, true).is_some() {
                         append_token_list(
                             &mut exprs,
                             tokens,
                             raw_token_list_start,
                             offset,
+                            false,
                         );
                         exprs.push(Rc::new(MetaExpr::Ident {
                             span: ident.span(),
-                            name: Rc::from(name),
+                            name,
+                            raw,
                         }));
                         raw_token_list_start = i;
                     }
@@ -2698,8 +2754,7 @@ impl Context {
 
             let group_tokens = group.stream().into_vec();
 
-            let is_template =
-                is_bracketed && has_template_angle_backets(&group_tokens);
+            let is_template = is_bracketed && has_angle_backets(&group_tokens);
 
             if scope_kind == ScopeKind::Metamatch
                 && last_hash + 1 == offset
@@ -2718,6 +2773,7 @@ impl Context {
                             tokens,
                             raw_token_list_start,
                             last_hash,
+                            false,
                         );
                         let (expr, rest) = self.parse_expand_attrib(
                             expand_kind,
@@ -2746,6 +2802,7 @@ impl Context {
                             tokens,
                             raw_token_list_start,
                             offset,
+                            false,
                         );
                         exprs.push(Rc::new(MetaExpr::RawOutputGroup {
                             span: group.span(),
@@ -2794,6 +2851,7 @@ impl Context {
                 value: Rc::new(MetaValue::Tokens(
                     tokens[raw_token_list_start..i].to_vec(),
                 )),
+                from_raw_block: true,
             }));
         }
         Ok(RawBodyParseResult::Complete(exprs))
@@ -2821,6 +2879,7 @@ impl Context {
                     block_tokens,
                     *raw_token_list_start,
                     offset_in_block,
+                    true,
                 );
                 return Ok(TemplateInRawParseResult::UnmatchedEnd {
                     span: group.span(),
@@ -2841,6 +2900,7 @@ impl Context {
                         block_tokens,
                         *raw_token_list_start,
                         offset_in_block,
+                        true,
                     );
                     return Ok(TemplateInRawParseResult::UnmatchedEnd {
                         span: group.span(),
@@ -2860,6 +2920,7 @@ impl Context {
             block_tokens,
             *raw_token_list_start,
             offset_in_block,
+            true,
         );
         *raw_token_list_start = *block_continuation;
 
@@ -2944,7 +3005,7 @@ impl Context {
                 };
                 let else_tag_tokens = else_tag.stream().into_vec();
                 debug_assert!(
-                    has_template_angle_backets(&else_tag_tokens)
+                    has_angle_backets(&else_tag_tokens)
                         && else_tag_tokens[1].to_string() == "else"
                 );
 

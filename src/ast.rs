@@ -22,6 +22,7 @@ pub struct ExprBlock {
 pub struct BindingParameter {
     pub span: Span,
     pub name: Rc<str>,
+    pub raw: bool,
     pub mutable: bool,
     pub super_bound: bool,
 }
@@ -102,6 +103,7 @@ pub struct Function {
     pub span: Span,
     pub visibility: Visibility,
     pub name: Rc<str>,
+    pub raw: bool,
     pub params: Vec<Pattern>,
     pub body: ExprBlock,
 }
@@ -123,7 +125,7 @@ pub enum Visibility {
 #[derive(Debug, Clone)]
 pub enum UseSegment {
     /// Regular identifier
-    Ident(Rc<str>),
+    Ident { name: Rc<str>, raw: bool },
     /// `self`
     SelfKeyword,
     /// `super`
@@ -142,6 +144,7 @@ pub struct UsePath {
 pub struct UseReplacement {
     pub target_path: UsePath,
     pub name: Rc<str>,
+    pub raw: bool,
     pub span: Span,
     pub binding: Rc<str>,
 }
@@ -197,10 +200,12 @@ pub enum MetaExpr {
     Literal {
         span: Span,
         value: Rc<MetaValue>,
+        from_raw_block: bool,
     },
     Ident {
         span: Span,
         name: Rc<str>,
+        raw: bool,
     },
     LetBinding {
         visibility: Visibility,
@@ -336,6 +341,7 @@ pub struct Binding {
     // super bound bindings are available in quoted contexts
     pub super_bound: bool,
     pub mutable: bool,
+    pub raw: bool,
     pub value: Rc<MetaValue>,
 }
 
@@ -766,13 +772,14 @@ impl MetaExpr {
             | MetaExpr::Loop { .. }
             | MetaExpr::While { .. }
             | MetaExpr::WhileLet { .. }
-            | MetaExpr::IfExpr { .. } => true,
+            | MetaExpr::IfExpr { .. }
+            | MetaExpr::RawOutputGroup { .. } => true,
 
-            MetaExpr::Literal { .. }
-            | MetaExpr::Ident { .. }
+            MetaExpr::Literal { from_raw_block, .. } => *from_raw_block,
+
+            MetaExpr::Ident { .. }
             | MetaExpr::Call { .. }
             | MetaExpr::Lambda(..)
-            | MetaExpr::RawOutputGroup { .. }
             | MetaExpr::ExpandPattern(..)
             | MetaExpr::Block { .. }
             | MetaExpr::List { .. }
@@ -806,14 +813,14 @@ impl TrailingBlockKind {
     }
 }
 
-impl Display for UseSegment {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            UseSegment::Ident(i) => i,
-            UseSegment::SelfKeyword => "self",
-            UseSegment::SuperKeyword => "super",
-            UseSegment::CrateKeyword => "crate",
-        })
+impl UseSegment {
+    pub fn to_str(&self) -> (Rc<str>, bool) {
+        match self {
+            UseSegment::Ident { raw, name } => (name.clone(), *raw),
+            UseSegment::SelfKeyword => ("self".into(), false),
+            UseSegment::SuperKeyword => ("super".into(), false),
+            UseSegment::CrateKeyword => ("crate".into(), false),
+        }
     }
 }
 

@@ -9,10 +9,13 @@ use proc_macro::{
     TokenTree,
 };
 
-use super::ast::{
-    BinaryOpKind, Binding, BuiltinFn, Context, EvalError, ExprBlock,
-    ExternDecl, Function, Lambda, MetaExpr, MetaValue, Pattern, Scope,
-    ScopeKind, UnaryOpKind, UsePath, UseSegment, UseTree, Visibility,
+use super::{
+    ast::{
+        BinaryOpKind, Binding, BuiltinFn, Context, EvalError, ExprBlock,
+        ExternDecl, Function, Lambda, MetaExpr, MetaValue, Pattern, Scope,
+        ScopeKind, UnaryOpKind, UsePath, UseSegment, UseTree, Visibility,
+    },
+    parse::is_keyword,
 };
 
 type Result<T> = std::result::Result<T, EvalError>;
@@ -452,6 +455,17 @@ fn value_to_str(v: &MetaValue) -> Option<Rc<str>> {
     }
 }
 
+pub fn string_to_ident(s: &str, raw: bool, span: Span) -> Option<Ident> {
+    std::panic::catch_unwind(|| {
+        if raw {
+            Ident::new_raw(s, span)
+        } else {
+            Ident::new(s, span)
+        }
+    })
+    .ok()
+}
+
 fn builtin_fn_ident(
     ctx: &mut Context,
     callsite: Span,
@@ -465,15 +479,15 @@ fn builtin_fn_ident(
         return Err(EvalError::Error);
     };
     let span = args[0].span();
-    // HACK //TODO: better impl of this
-    let Ok(ident) = std::panic::catch_unwind(|| Ident::new(&name, span))
-    else {
+
+    let Some(ident) = string_to_ident(&name, false, span) else {
         ctx.error(
             callsite,
-            format!("cast failed: invalid identifier `{name}`",),
+            format!("cast failed: invalid identifier `{name}`"),
         );
         return Err(EvalError::Error);
     };
+
     Ok(Rc::new(MetaValue::Token(TokenTree::Ident(ident))))
 }
 
@@ -510,16 +524,31 @@ fn append_group(
     Ok(())
 }
 
+fn append_raw(
+    tgt: &mut Vec<TokenTree>,
+    span: Span,
+    map_inner: impl FnMut(&mut Vec<TokenTree>) -> Result<()>,
+) -> Result<()> {
+    append_ident_str(tgt, "raw", span);
+    append_punct(tgt, '!', Spacing::Alone, span);
+    append_group(tgt, Delimiter::Brace, span, map_inner)
+}
+
 fn append_pattern(tgt: &mut Vec<TokenTree>, pat: &Pattern) -> Result<()> {
     match pat {
         Pattern::Ident(binding) => {
             if binding.super_bound {
-                append_ident(tgt, "super", Span::call_site());
+                append_ident_str(tgt, "super", Span::call_site());
             }
             if binding.mutable {
-                append_ident(tgt, "mut", Span::call_site());
+                append_ident_str(tgt, "mut", Span::call_site());
             }
-            append_ident(tgt, &binding.name, binding.span);
+            append_ident_str_dyn(
+                tgt,
+                &binding.name,
+                binding.raw,
+                binding.span,
+            );
 
             Ok(())
         }
@@ -547,11 +576,11 @@ fn append_visibility(
 ) {
     match visibility {
         Visibility::Extern => {
-            append_ident(tgt, "extern", span);
+            append_ident_str(tgt, "extern", span);
         }
         Visibility::PubExtern => {
-            append_ident(tgt, "pub", span);
-            append_ident(tgt, "extern", span);
+            append_ident_str(tgt, "pub", span);
+            append_ident_str(tgt, "extern", span);
         }
         Visibility::Regular => (),
     }
@@ -562,7 +591,12 @@ fn append_quoted_use_tree_binding(tgt: &mut Vec<TokenTree>, tree: &UseTree) {
         UseTree::Path {
             replacement, span, ..
         } => {
-            append_ident(tgt, &replacement.binding, *span);
+            append_ident_str_dyn(
+                tgt,
+                &replacement.binding,
+                replacement.raw,
+                *span,
+            );
         }
         UseTree::Group { span, items, .. } => {
             _ = append_comma_separated_list(
@@ -579,7 +613,12 @@ fn append_quoted_use_tree_binding(tgt: &mut Vec<TokenTree>, tree: &UseTree) {
         UseTree::Rename {
             replacement, span, ..
         } => {
-            append_ident(tgt, &replacement.binding, *span);
+            append_ident_str_dyn(
+                tgt,
+                &replacement.binding,
+                replacement.raw,
+                *span,
+            );
         }
     }
 }
@@ -619,23 +658,39 @@ fn append_lambda_params(
     Ok(())
 }
 
+fn append_ident_str(tgt: &mut Vec<TokenTree>, name: &'static str, span: Span) {
+    tgt.push(TokenTree::Ident(
+        string_to_ident(name, false, span).unwrap(),
+    ));
+}
+
+fn append_ident_str_dyn(
+    tgt: &mut Vec<TokenTree>,
+    name: &str,
+    raw: bool,
+    span: Span,
+) {
+    tgt.push(TokenTree::Ident(string_to_ident(name, raw, span).unwrap()));
+}
+
 fn append_use_path(tgt: &mut Vec<TokenTree>, span: Span, path: &UsePath) {
     for (i, seg) in path.segments.iter().enumerate() {
         if i > 0 || path.leading_double_colon {
             append_double_colon(tgt, span);
         }
         match seg {
-            UseSegment::Ident(ident) => append_ident(tgt, ident, span),
-            UseSegment::SelfKeyword => append_ident(tgt, "self", span),
-            UseSegment::SuperKeyword => append_ident(tgt, "super", span),
-            UseSegment::CrateKeyword => append_ident(tgt, "crate", span),
+            UseSegment::Ident { name, raw } => {
+                tgt.push(TokenTree::Ident(
+                    string_to_ident(name, *raw, span).unwrap(),
+                ));
+            }
+            UseSegment::SelfKeyword => append_ident_str(tgt, "self", span),
+            UseSegment::SuperKeyword => append_ident_str(tgt, "super", span),
+            UseSegment::CrateKeyword => append_ident_str(tgt, "crate", span),
         }
     }
 }
 
-fn append_ident(tgt: &mut Vec<TokenTree>, name: impl AsRef<str>, span: Span) {
-    tgt.push(TokenTree::Ident(Ident::new(name.as_ref(), span)));
-}
 fn append_double_colon(tgt: &mut Vec<TokenTree>, span: Span) {
     append_punct(tgt, ':', Spacing::Joint, span);
     append_punct(tgt, ':', Spacing::Alone, span);
@@ -696,6 +751,7 @@ impl Context {
                 self.insert_binding(
                     bind.span,
                     bind.name.clone(),
+                    bind.raw,
                     bind.mutable,
                     bind.super_bound,
                     val,
@@ -800,6 +856,7 @@ impl Context {
         self.insert_binding(
             Span::call_site(),
             name,
+            false,
             false,
             false,
             builtin_fn_v,
@@ -924,8 +981,17 @@ impl Context {
             UseTree::Path {
                 replacement, span, ..
             } => {
-                self.insert_dummy_binding(replacement.name.clone(), false);
-                append_ident(tgt, &replacement.name, *span);
+                self.insert_dummy_binding(
+                    replacement.name.clone(),
+                    replacement.raw,
+                    false,
+                );
+                append_ident_str_dyn(
+                    tgt,
+                    &replacement.name,
+                    replacement.raw,
+                    *span,
+                );
             }
             UseTree::Group { span, items, .. } => {
                 _ = append_comma_separated_list(
@@ -942,8 +1008,17 @@ impl Context {
             UseTree::Rename {
                 replacement, span, ..
             } => {
-                self.insert_dummy_binding(replacement.name.clone(), false);
-                append_ident(tgt, &replacement.name, *span);
+                self.insert_dummy_binding(
+                    replacement.name.clone(),
+                    replacement.raw,
+                    false,
+                );
+                append_ident_str_dyn(
+                    tgt,
+                    &replacement.name,
+                    replacement.raw,
+                    *span,
+                );
             }
         }
     }
@@ -957,8 +1032,8 @@ impl Context {
         if !suppress_vis {
             append_visibility(tgt, function.visibility, function.span);
         }
-        append_ident(tgt, "fn", function.span);
-        append_ident(tgt, &function.name, function.span);
+        append_ident_str(tgt, "fn", function.span);
+        append_ident_str_dyn(tgt, &function.name, function.raw, function.span);
         append_comma_separated_list(
             tgt,
             Delimiter::Parenthesis,
@@ -983,21 +1058,23 @@ impl Context {
     ) -> Result<()> {
         match expr {
             MetaExpr::Break { span, expr } => {
-                append_ident(tgt, "break", *span);
+                append_ident_str(tgt, "break", *span);
                 if let Some(expr) = expr {
                     self.append_quoted_expression(tgt, expr, true)?;
                 }
             }
             MetaExpr::Continue { span } => {
-                append_ident(tgt, "continue", *span);
+                append_ident_str(tgt, "continue", *span);
             }
-            MetaExpr::Literal { span, value } => {
+            MetaExpr::Literal {
+                span,
+                value,
+                from_raw_block: _,
+            } => {
                 if self.quote_for_rust {
                     return self.append_value_to_stream(tgt, *span, value);
                 }
-                append_ident(tgt, "raw", *span);
-                append_punct(tgt, '!', Spacing::Alone, *span);
-                append_group(tgt, Delimiter::Brace, *span, |tgt| {
+                append_raw(tgt, *span, |tgt| {
                     let q4r = self.quote_for_rust;
                     self.quote_for_rust = false;
                     self.append_value_to_stream(tgt, *span, value)?;
@@ -1005,14 +1082,21 @@ impl Context {
                     Ok(())
                 })?;
             }
-            MetaExpr::Ident { span, name } => {
+            MetaExpr::Ident { span, name, raw } => {
                 if self.errors.is_empty() && self.extern_uses.is_empty() {
                     if let Some(val) = self.lookup_as_external_identifier(name)
                     {
                         return self.append_value_to_stream(tgt, *span, &val);
                     }
                 }
-                append_ident(tgt, name, *span);
+                if !self.quote_for_rust && !*raw && is_keyword(name) {
+                    _ = append_raw(tgt, *span, |tgt| {
+                        append_ident_str_dyn(tgt, name, *raw, *span);
+                        Ok(())
+                    });
+                } else {
+                    append_ident_str_dyn(tgt, name, *raw, *span);
+                }
             }
             MetaExpr::LetBinding {
                 visibility,
@@ -1024,7 +1108,7 @@ impl Context {
                 // know which identifiers are bound to external vars
                 self.insert_dummy_bindings_for_pattern(pattern);
                 append_visibility(tgt, *visibility, *span);
-                append_ident(tgt, "let", *span);
+                append_ident_str(tgt, "let", *span);
                 append_pattern(tgt, pattern)?;
 
                 if let Some(expr) = expr {
@@ -1058,7 +1142,7 @@ impl Context {
                 if is_expression_context {
                     append_quoted_use_tree_binding(tgt, &use_decl.tree)
                 } else {
-                    append_ident(tgt, "let", use_decl.span);
+                    append_ident_str(tgt, "let", use_decl.span);
 
                     self.append_quoted_use_tree_pattern(tgt, &use_decl.tree);
 
@@ -1085,11 +1169,11 @@ impl Context {
                 body,
                 else_expr,
             } => {
-                append_ident(tgt, "if", *span);
+                append_ident_str(tgt, "if", *span);
                 self.append_quoted_expression(tgt, condition, true)?;
                 self.append_quoted_block(tgt, *span, body, true)?;
                 if let Some(else_expr) = else_expr {
-                    append_ident(tgt, "else", else_expr.span());
+                    append_ident_str(tgt, "else", else_expr.span());
                     self.append_quoted_expression(tgt, else_expr, true)?;
                 }
             }
@@ -1099,9 +1183,9 @@ impl Context {
                 variants_expr,
                 body,
             } => {
-                append_ident(tgt, "for", *span);
+                append_ident_str(tgt, "for", *span);
                 append_pattern(tgt, pattern)?;
-                append_ident(tgt, "in", *span);
+                append_ident_str(tgt, "in", *span);
                 self.append_quoted_expression(tgt, variants_expr, true)?;
                 self.push_dummy_scope(ScopeKind::Eval);
                 self.insert_dummy_bindings_for_pattern(pattern);
@@ -1109,7 +1193,7 @@ impl Context {
                 self.pop_scope();
             }
             MetaExpr::Loop { span, body } => {
-                append_ident(tgt, "loop", *span);
+                append_ident_str(tgt, "loop", *span);
                 self.append_quoted_block(tgt, *span, body, true)?;
             }
             MetaExpr::While {
@@ -1117,7 +1201,7 @@ impl Context {
                 span,
                 body,
             } => {
-                append_ident(tgt, "while", *span);
+                append_ident_str(tgt, "while", *span);
                 self.append_quoted_expression(tgt, condition, true)?;
                 self.append_quoted_block(tgt, *span, body, true)?;
             }
@@ -1127,8 +1211,8 @@ impl Context {
                 span,
                 body,
             } => {
-                append_ident(tgt, "while", *span);
-                append_ident(tgt, "let", *span);
+                append_ident_str(tgt, "while", *span);
+                append_ident_str(tgt, "let", *span);
                 append_pattern(tgt, pattern)?;
                 tgt.push(TokenTree::Punct(Punct::new('=', Spacing::Alone)));
                 self.append_quoted_expression(tgt, expr, true)?;
@@ -1149,7 +1233,7 @@ impl Context {
                     Delimiter::Bracket,
                     expand_pattern.span,
                     |tgt| {
-                        append_ident(
+                        append_ident_str(
                             tgt,
                             "expand_pattern",
                             expand_pattern.span,
@@ -1160,12 +1244,20 @@ impl Context {
                             Delimiter::Parenthesis,
                             expand_pattern.span,
                             |tgt| {
-                                append_ident(tgt, "for", expand_pattern.span);
+                                append_ident_str(
+                                    tgt,
+                                    "for",
+                                    expand_pattern.span,
+                                );
                                 append_pattern(
                                     tgt,
                                     &expand_pattern.for_pattern,
                                 )?;
-                                append_ident(tgt, "in", expand_pattern.span);
+                                append_ident_str(
+                                    tgt,
+                                    "in",
+                                    expand_pattern.span,
+                                );
                                 self.append_quoted_expression(
                                     tgt,
                                     &expand_pattern.for_expr,
@@ -1277,14 +1369,7 @@ impl Context {
             }
             MetaValue::Tokens(list) => {
                 if list.is_empty() && !self.quote_for_rust {
-                    append_ident(tgt, "raw", eval_span);
-                    append_punct(tgt, '!', Spacing::Alone, eval_span);
-                    _ = append_group(
-                        tgt,
-                        Delimiter::Parenthesis,
-                        eval_span,
-                        |_| Ok(()),
-                    );
+                    _ = append_raw(tgt, eval_span, |_tgt| Ok(()));
                 } else {
                     tgt.extend(list.iter().cloned());
                 }
@@ -1305,7 +1390,7 @@ impl Context {
                 tgt.push(TokenTree::Literal(lit));
             }
             MetaValue::Bool { value, span } => {
-                append_ident(
+                append_ident_str(
                     tgt,
                     if *value { "true" } else { "false" },
                     span.unwrap_or(eval_span),
@@ -1333,7 +1418,7 @@ impl Context {
                 )?;
             }
             MetaValue::BuiltinFn(f) => {
-                append_ident(tgt, &f.name, eval_span);
+                append_ident_str_dyn(tgt, &f.name, false, eval_span);
             }
             MetaValue::List(vals) => {
                 let mut list = Vec::new();
@@ -1400,11 +1485,13 @@ impl Context {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn expand_extern_decl(
         &mut self,
         tgt: &mut Vec<TokenTree>,
         vis: Visibility,
         ident: &str,
+        raw: bool,
         ident_span: Span,
         decl_span: Span,
         mut append_value: impl FnMut(&mut Self, &mut Vec<TokenTree>) -> Result<()>,
@@ -1412,23 +1499,23 @@ impl Context {
         if vis.is_pub() {
             append_punct(tgt, '#', Spacing::Alone, decl_span);
             append_group(tgt, Delimiter::Bracket, decl_span, |tgt| {
-                append_ident(tgt, "macro_export", decl_span);
+                append_ident_str(tgt, "macro_export", decl_span);
                 Ok(())
             })?;
         }
 
-        append_ident(tgt, "macro_rules", decl_span);
+        append_ident_str(tgt, "macro_rules", decl_span);
         append_punct(tgt, '!', Spacing::Alone, decl_span);
-        append_ident(tgt, ident, ident_span);
+        append_ident_str_dyn(tgt, ident, raw, ident_span);
 
         // ($alias: ident, ($($chain: tt)*), [ $($prefix:tt)* ] $($rest: tt)* )
         append_group(tgt, Delimiter::Brace, decl_span, |tgt| {
             append_group(tgt, Delimiter::Parenthesis, decl_span, |tgt| {
                 // $alias: ident,
                 append_punct(tgt, '$', Spacing::Alone, decl_span);
-                append_ident(tgt, "alias", decl_span);
+                append_ident_str(tgt, "alias", decl_span);
                 append_punct(tgt, ':', Spacing::Alone, decl_span);
-                append_ident(tgt, "ident", decl_span);
+                append_ident_str(tgt, "ident", decl_span);
                 append_punct(tgt, ',', Spacing::Alone, decl_span);
 
                 // ($($chain: tt)*),
@@ -1440,9 +1527,9 @@ impl Context {
                         decl_span,
                         |tgt| {
                             append_punct(tgt, '$', Spacing::Alone, decl_span);
-                            append_ident(tgt, "chain", decl_span);
+                            append_ident_str(tgt, "chain", decl_span);
                             append_punct(tgt, ':', Spacing::Alone, decl_span);
-                            append_ident(tgt, "tt", decl_span);
+                            append_ident_str(tgt, "tt", decl_span);
                             Ok(())
                         },
                     )?;
@@ -1460,9 +1547,9 @@ impl Context {
                         decl_span,
                         |tgt| {
                             append_punct(tgt, '$', Spacing::Alone, decl_span);
-                            append_ident(tgt, "prefix", decl_span);
+                            append_ident_str(tgt, "prefix", decl_span);
                             append_punct(tgt, ':', Spacing::Alone, decl_span);
-                            append_ident(tgt, "tt", decl_span);
+                            append_ident_str(tgt, "tt", decl_span);
                             Ok(())
                         },
                     )?;
@@ -1475,9 +1562,9 @@ impl Context {
                 append_punct(tgt, '$', Spacing::Alone, decl_span);
                 append_group(tgt, Delimiter::Parenthesis, decl_span, |tgt| {
                     append_punct(tgt, '$', Spacing::Alone, decl_span);
-                    append_ident(tgt, "rest", decl_span);
+                    append_ident_str(tgt, "rest", decl_span);
                     append_punct(tgt, ':', Spacing::Alone, decl_span);
-                    append_ident(tgt, "tt", decl_span);
+                    append_ident_str(tgt, "tt", decl_span);
                     Ok(())
                 })?;
                 append_punct(tgt, '*', Spacing::Alone, decl_span);
@@ -1491,7 +1578,7 @@ impl Context {
                 append_punct(tgt, '$', Spacing::Alone, decl_span);
                 append_group(tgt, Delimiter::Parenthesis, decl_span, |tgt| {
                     append_punct(tgt, '$', Spacing::Alone, decl_span);
-                    append_ident(tgt, "chain", decl_span);
+                    append_ident_str(tgt, "chain", decl_span);
                     Ok(())
                 })?;
                 append_punct(tgt, '*', Spacing::Alone, decl_span);
@@ -1505,16 +1592,16 @@ impl Context {
                         decl_span,
                         |tgt| {
                             append_punct(tgt, '$', Spacing::Alone, decl_span);
-                            append_ident(tgt, "prefix", decl_span);
+                            append_ident_str(tgt, "prefix", decl_span);
                             Ok(())
                         },
                     )?;
                     append_punct(tgt, '*', Spacing::Alone, decl_span);
 
                     // let super $alias = ..;
-                    append_ident(tgt, "let", decl_span);
+                    append_ident_str(tgt, "let", decl_span);
                     append_punct(tgt, '$', Spacing::Alone, decl_span);
-                    append_ident(tgt, "alias", decl_span);
+                    append_ident_str(tgt, "alias", decl_span);
                     append_punct(tgt, '=', Spacing::Alone, decl_span);
                     append_value(self, tgt)?;
                     append_punct(tgt, ';', Spacing::Alone, decl_span);
@@ -1527,7 +1614,7 @@ impl Context {
                         decl_span,
                         |tgt| {
                             append_punct(tgt, '$', Spacing::Alone, decl_span);
-                            append_ident(tgt, "rest", decl_span);
+                            append_ident_str(tgt, "rest", decl_span);
                             Ok(())
                         },
                     )?;
@@ -1556,6 +1643,7 @@ impl Context {
                         self.insert_binding(
                             binding.span,
                             name.clone(),
+                            binding.raw,
                             false,
                             false,
                             binding.value.clone(),
@@ -1565,6 +1653,7 @@ impl Context {
                             tgt,
                             visibility,
                             &name,
+                            binding.raw,
                             binding.span,
                             span,
                             |this, tgt| {
@@ -1586,6 +1675,7 @@ impl Context {
                         tgt,
                         decl.visibility,
                         &decl.name,
+                        decl.raw,
                         decl.span,
                         decl.span,
                         |_this, tgt| {
@@ -1606,6 +1696,7 @@ impl Context {
     ) {
         let mut macro_path: Vec<TokenTree> = Vec::new();
         let mut binding_name = Rc::from(String::new());
+        let mut binding_name_raw = false;
         let mut chain_target: Vec<TokenTree> = Vec::new();
         let mut prefix = Vec::new();
         let mut last_span = Span::call_site();
@@ -1621,13 +1712,13 @@ impl Context {
                     if prev_prefix.is_empty() {
                         debug_assert!(chain_target.is_empty());
                         append_double_colon(&mut chain_target, last_span);
-                        append_ident(
+                        append_ident_str(
                             &mut chain_target,
                             "metamatch",
                             last_span,
                         );
                         append_double_colon(&mut chain_target, last_span);
-                        append_ident(&mut chain_target, "eval", last_span);
+                        append_ident_str(&mut chain_target, "eval", last_span);
                         append_punct(
                             &mut chain_target,
                             '!',
@@ -1635,7 +1726,12 @@ impl Context {
                             last_span,
                         );
                     } else {
-                        append_ident(inner, &binding_name, last_span);
+                        append_ident_str_dyn(
+                            inner,
+                            &binding_name,
+                            binding_name_raw,
+                            last_span,
+                        );
                         append_punct(inner, ',', Spacing::Alone, last_span);
 
                         append_group(
@@ -1660,12 +1756,18 @@ impl Context {
             append_use_path(&mut macro_path, last_span, &rep.target_path);
             append_punct(&mut macro_path, '!', Spacing::Alone, last_span);
             binding_name = rep.binding.clone();
+            binding_name_raw = rep.raw;
         }
 
         tgt.extend_from_slice(&macro_path);
 
         _ = append_group(tgt, Delimiter::Brace, last_span, |inner| {
-            append_ident(inner, &binding_name, last_span);
+            append_ident_str_dyn(
+                inner,
+                &binding_name,
+                binding_name_raw,
+                last_span,
+            );
             append_punct(inner, ',', Spacing::Alone, last_span);
 
             append_group(inner, Delimiter::Parenthesis, last_span, |tgt| {
@@ -1805,8 +1907,12 @@ impl Context {
             MetaExpr::Parenthesized { span: _, expr } => {
                 self.eval(expr, is_expression_context)
             }
-            MetaExpr::Literal { span: _, value } => Ok(value.clone()),
-            MetaExpr::Ident { span, name } => {
+            MetaExpr::Literal {
+                span: _,
+                value,
+                from_raw_block: _,
+            } => Ok(value.clone()),
+            MetaExpr::Ident { span, name, raw: _ } => {
                 if let Some(expr) = self.lookup(name, false) {
                     return Ok(expr);
                 }
@@ -2049,6 +2155,7 @@ impl Context {
                 self.insert_binding(
                     f.span,
                     f.name.clone(),
+                    f.raw,
                     false,
                     false,
                     Rc::new(MetaValue::Fn(f.clone())),
@@ -2462,7 +2569,11 @@ impl Context {
             MetaExpr::Parenthesized { expr, span: _ } => {
                 self.assign_to_expr(op_base_version, span, expr, rhs)
             }
-            MetaExpr::Ident { span: _, name } => {
+            MetaExpr::Ident {
+                span: _,
+                name,
+                raw: _,
+            } => {
                 for scope_idx in 0..self.scopes.len() {
                     if let Some(binding) =
                         self.scopes[scope_idx].bindings.get(name)
@@ -2642,7 +2753,7 @@ impl Context {
         lhs: &MetaExpr,
         arg_exprs: &Vec<Rc<MetaExpr>>,
     ) -> Result<Rc<MetaValue>> {
-        let lhs = if let MetaExpr::Ident { span, name } = lhs {
+        let lhs = if let MetaExpr::Ident { span, name, raw: _ } = lhs {
             // We could just evaluate but we want a better error message
             // than "`token` is not callable".
             if let Some(val) = self.lookup(name, false) {
@@ -2678,6 +2789,7 @@ impl Context {
         &mut self,
         span: Span,
         name: Rc<str>,
+        raw: bool,
         mutable: bool,
         super_bound: bool,
         value: Rc<MetaValue>,
@@ -2687,6 +2799,7 @@ impl Context {
             mutable,
             super_bound,
             value,
+            raw,
         };
         self.scopes
             .last_mut()
@@ -2731,6 +2844,7 @@ impl Context {
                     self.insert_binding(
                         replacement.span,
                         replacement.binding.clone(),
+                        replacement.raw,
                         false,
                         false,
                         value,
@@ -2751,6 +2865,7 @@ impl Context {
                     self.insert_binding(
                         replacement.span,
                         replacement.binding.clone(),
+                        replacement.raw,
                         false,
                         false,
                         value,

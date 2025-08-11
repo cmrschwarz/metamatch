@@ -404,3 +404,10 @@ fn use_as_expression_in_arithmetic() {
 
     assert_eq!(result, 15);
 }
+
+#[test]
+fn raw_idents() {
+    let res = eval! {let r#mut = 1; mut};
+    let res_2 = eval! {let super r#mut = 1; quote!(mut)};
+    assert_eq!(res + res_2, 42)
+}

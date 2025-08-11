@@ -15,8 +15,8 @@ extern let my_fns = raw!();
         r#"
 macro_rules! my_fns {
     ($alias:ident, ($($chain:tt)*), [$($prefix:tt)*], $($rest:tt)*) => {
-        $($chain)* { $($prefix)* let $alias = raw!(); $($rest)* }
+        $($chain)* { $($prefix)* let $alias = raw! {}; $($rest)* }
     };
-}}"#,
+}"#,
     )
 }

@@ -93,9 +93,46 @@ fn empty_raw_block_preserved() {
         extern let my_fns = [(foo_mut, mut), (bar, raw!())];
     }
 
-    #[replicate(for (FN, MUT) in (use my_fns))]
-    fn FN<'a>(x: &'a i32) -> i32 {
+    #[replicate(for (FN, super r#mut) in (use my_fns))]
+    fn FN<'a>(x: &'a mut i32) -> i32 {
         *x
+    }
+
+    assert_eq!(foo_mut(&mut 1) + bar(&2), 3);
+}
+
+#[test]
+fn empty_raw_block_preserved_2() {
+    #![allow(clippy::needless_lifetimes, clippy::unnecessary_mut_passed)]
+
+    metamatch::eval! {
+        extern let my_fns = [(foo_mut, mut), (bar, raw!())];
+    }
+
+    ::metamatch::eval! {
+        let __metamatch_extern_use_1 = [(foo_mut,mut ),(bar,raw!{}
+        )];
+        for(super FN,super r#mut)in(__metamatch_extern_use_1){
+            raw!{
+                fn
+            };
+            FN;
+            raw!{
+                <'a>
+            };
+            (raw!{
+                x: &'a
+            }raw!{
+                mut
+             }raw!{
+                i32
+            });
+            raw!{
+                ->i32 {
+                    *x
+                }
+            };
+        }
     }
 
     assert_eq!(foo_mut(&mut 1) + bar(&2), 3);
