@@ -289,21 +289,6 @@ fn ident_to_string(ident: &Ident) -> (Rc<str>, bool) {
     (Rc::from(s), raw)
 }
 
-pub fn is_keyword(v: &str) -> bool {
-    match v {
-        // Based on https://doc.rust-lang.org/1.80.0/reference/keywords.html
-        "abstract" | "as" | "async" | "await" | "become" | "box" | "break"
-        | "const" | "continue" | "crate" | "do" | "dyn" | "else" | "enum"
-        | "extern" | "false" | "final" | "fn" | "for" | "if" | "impl"
-        | "in" | "let" | "loop" | "macro" | "match" | "mod" | "move"
-        | "mut" | "override" | "priv" | "pub" | "ref" | "return" | "Self"
-        | "self" | "static" | "struct" | "super" | "trait" | "true"
-        | "try" | "type" | "typeof" | "unsafe" | "unsized" | "use"
-        | "virtual" | "where" | "while" | "yield" => true,
-        _ => false,
-    }
-}
-
 fn parse_ident(token: &TokenTree) -> Option<(Span, Rc<str>, bool)> {
     if let TokenTree::Ident(ident) = token {
         let (name, raw) = ident_to_string(ident);
@@ -352,7 +337,6 @@ impl Default for Context {
             extern_decls: Vec::new(),
             extern_uses: Vec::new(),
             errors: Vec::new(),
-            quote_for_rust: true,
         };
         ctx.insert_builtins();
         ctx
@@ -760,6 +744,9 @@ impl Context {
                                 &tokens[1..],
                                 allow_trailing_block,
                             )
+                        }
+                        "group" => {
+                            return self.parse_group_expr(span, &tokens[1..])
                         }
                         "eval" => {
                             return self.parse_eval_expr(
@@ -1253,6 +1240,56 @@ impl Context {
             expr: Some(expr),
         });
         Ok((let_expr, rest, None))
+    }
+
+    fn parse_group_expr<'a>(
+        &mut self,
+        raw_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        let mut has_exclam = false;
+        if let Some(TokenTree::Punct(p)) = tokens.first() {
+            has_exclam = p.as_char() == '!';
+        }
+
+        if !has_exclam {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(raw_span),
+                "expected `!` after `group`",
+            );
+        }
+
+        let tokens = &tokens[usize::from(has_exclam)..];
+
+        self.push_dummy_scope(ScopeKind::Group);
+
+        let Some(TokenTree::Group(p)) = tokens.first() else {
+            if has_exclam {
+                self.error(
+                    tokens.first().map(|t| t.span()).unwrap_or(raw_span),
+                    "expected block after `quote!`",
+                );
+            }
+            return Err(());
+        };
+
+        let block_tokens = p.stream().into_vec();
+
+        let body =
+            self.parse_expr_block_deny_trailing(p.span(), &block_tokens);
+
+        self.pop_scope();
+
+        Ok((
+            Rc::new(MetaExpr::Group {
+                span: raw_span,
+                delimiter: p.delimiter(),
+                body,
+            }),
+            &tokens[1..],
+            None,
+        ))
     }
 
     fn parse_quote_expr<'a>(
@@ -2379,7 +2416,6 @@ impl Context {
                 }
                 if !is_semi {
                     if !may_drop_semi {
-                        dbg!(expr);
                         pending_trailing_semi_error = Some(first.span());
                     }
                 } else {

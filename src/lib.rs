@@ -8,6 +8,7 @@ mod ast;
 mod evaluate;
 mod macro_impls;
 mod parse;
+mod token_sink;
 
 /// Generate repetitive match arms for differently typed variants.
 ///

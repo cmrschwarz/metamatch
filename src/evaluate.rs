@@ -15,10 +15,10 @@ use super::{
         ExternDecl, Function, Lambda, MetaExpr, MetaValue, Pattern, Scope,
         ScopeKind, UnaryOpKind, UsePath, UseSegment, UseTree, Visibility,
     },
-    parse::is_keyword,
+    token_sink::TokenSink,
 };
 
-type Result<T> = std::result::Result<T, EvalError>;
+pub type Result<T> = std::result::Result<T, EvalError>;
 
 fn comma_token(span: Span) -> TokenTree {
     let mut punct = Punct::new(',', Spacing::Alone);
@@ -511,30 +511,15 @@ fn builtin_fn_str(
 }
 
 fn append_group(
-    tgt: &mut Vec<TokenTree>,
+    tgt: &mut TokenSink,
     delim: Delimiter,
     span: Span,
-    mut map_inner: impl FnMut(&mut Vec<TokenTree>) -> Result<()>,
+    map_inner: impl FnOnce(&mut TokenSink) -> Result<()>,
 ) -> Result<()> {
-    let mut inner = Vec::new();
-    map_inner(&mut inner)?;
-    let mut group = Group::new(delim, TokenStream::from_iter(inner));
-    group.set_span(span);
-    tgt.push(TokenTree::Group(group));
-    Ok(())
+    tgt.append_group(delim, span, map_inner)
 }
 
-fn append_raw(
-    tgt: &mut Vec<TokenTree>,
-    span: Span,
-    map_inner: impl FnMut(&mut Vec<TokenTree>) -> Result<()>,
-) -> Result<()> {
-    append_ident_str(tgt, "raw", span);
-    append_punct(tgt, '!', Spacing::Alone, span);
-    append_group(tgt, Delimiter::Brace, span, map_inner)
-}
-
-fn append_pattern(tgt: &mut Vec<TokenTree>, pat: &Pattern) -> Result<()> {
+fn append_pattern(tgt: &mut TokenSink, pat: &Pattern) -> Result<()> {
     match pat {
         Pattern::Ident(binding) => {
             if binding.super_bound {
@@ -569,11 +554,7 @@ fn append_pattern(tgt: &mut Vec<TokenTree>, pat: &Pattern) -> Result<()> {
     }
 }
 
-fn append_visibility(
-    tgt: &mut Vec<TokenTree>,
-    visibility: Visibility,
-    span: Span,
-) {
+fn append_visibility(tgt: &mut TokenSink, visibility: Visibility, span: Span) {
     match visibility {
         Visibility::Extern => {
             append_ident_str(tgt, "extern", span);
@@ -586,7 +567,7 @@ fn append_visibility(
     }
 }
 
-fn append_quoted_use_tree_binding(tgt: &mut Vec<TokenTree>, tree: &UseTree) {
+fn append_quoted_use_tree_binding(tgt: &mut TokenSink, tree: &UseTree) {
     match tree {
         UseTree::Path {
             replacement, span, ..
@@ -624,27 +605,25 @@ fn append_quoted_use_tree_binding(tgt: &mut Vec<TokenTree>, tree: &UseTree) {
 }
 
 fn append_comma_separated_list<T>(
-    tgt: &mut Vec<TokenTree>,
+    tgt: &mut TokenSink,
     delim: Delimiter,
     span: Span,
     elements: impl IntoIterator<Item = T>,
-    mut map_inner: impl FnMut(&mut Vec<TokenTree>, T) -> Result<()>,
+    mut map_inner: impl FnMut(&mut TokenSink, T) -> Result<()>,
 ) -> Result<()> {
-    let mut inner = Vec::new();
-    for (i, e) in elements.into_iter().enumerate() {
-        if i > 0 {
-            inner.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
+    tgt.append_group(delim, span, |tgt| {
+        for (i, e) in elements.into_iter().enumerate() {
+            if i > 0 {
+                tgt.push(TokenTree::Punct(Punct::new(',', Spacing::Alone)));
+            }
+            map_inner(tgt, e)?;
         }
-        map_inner(&mut inner, e)?;
-    }
-    let mut group = Group::new(delim, TokenStream::from_iter(inner));
-    group.set_span(span);
-    tgt.push(TokenTree::Group(group));
-    Ok(())
+        Ok(())
+    })
 }
 
 fn append_lambda_params(
-    tgt: &mut Vec<TokenTree>,
+    tgt: &mut TokenSink,
     params: &[Pattern],
 ) -> Result<()> {
     tgt.push(TokenTree::Punct(Punct::new('|', Spacing::Alone)));
@@ -658,14 +637,14 @@ fn append_lambda_params(
     Ok(())
 }
 
-fn append_ident_str(tgt: &mut Vec<TokenTree>, name: &'static str, span: Span) {
+pub fn append_ident_str(tgt: &mut TokenSink, name: &'static str, span: Span) {
     tgt.push(TokenTree::Ident(
         string_to_ident(name, false, span).unwrap(),
     ));
 }
 
 fn append_ident_str_dyn(
-    tgt: &mut Vec<TokenTree>,
+    tgt: &mut TokenSink,
     name: &str,
     raw: bool,
     span: Span,
@@ -673,7 +652,7 @@ fn append_ident_str_dyn(
     tgt.push(TokenTree::Ident(string_to_ident(name, raw, span).unwrap()));
 }
 
-fn append_use_path(tgt: &mut Vec<TokenTree>, span: Span, path: &UsePath) {
+fn append_use_path(tgt: &mut TokenSink, span: Span, path: &UsePath) {
     for (i, seg) in path.segments.iter().enumerate() {
         if i > 0 || path.leading_double_colon {
             append_double_colon(tgt, span);
@@ -691,12 +670,12 @@ fn append_use_path(tgt: &mut Vec<TokenTree>, span: Span, path: &UsePath) {
     }
 }
 
-fn append_double_colon(tgt: &mut Vec<TokenTree>, span: Span) {
+pub fn append_double_colon(tgt: &mut TokenSink, span: Span) {
     append_punct(tgt, ':', Spacing::Joint, span);
     append_punct(tgt, ':', Spacing::Alone, span);
 }
-fn append_punct(
-    tgt: &mut Vec<TokenTree>,
+pub fn append_punct(
+    tgt: &mut TokenSink,
     ch: char,
     spacing: Spacing,
     span: Span,
@@ -922,7 +901,7 @@ impl Context {
 
     fn append_quoted_stmt_list(
         &mut self,
-        tgt: &mut Vec<TokenTree>,
+        tgt: &mut TokenSink,
         stmts: &[Rc<MetaExpr>],
         trailing_semi: bool,
     ) -> Result<()> {
@@ -945,7 +924,7 @@ impl Context {
 
     fn append_quoted_block(
         &mut self,
-        tgt: &mut Vec<TokenTree>,
+        tgt: &mut TokenSink,
         span: Span,
         block: &ExprBlock,
         surround_with_eval_scope: bool,
@@ -954,27 +933,24 @@ impl Context {
             self.push_dummy_scope(ScopeKind::Eval);
         }
 
-        let mut res = Vec::new();
-        self.append_quoted_stmt_list(
-            &mut res,
-            &block.stmts,
-            block.trailing_semi,
-        )?;
+        let res = tgt.append_group(Delimiter::Brace, span, |tgt| {
+            self.append_quoted_stmt_list(
+                tgt,
+                &block.stmts,
+                block.trailing_semi,
+            )
+        });
 
         if surround_with_eval_scope {
             self.pop_scope();
         }
 
-        let mut group =
-            Group::new(Delimiter::Brace, TokenStream::from_iter(res));
-        group.set_span(span);
-        tgt.push(TokenTree::Group(group));
-        Ok(())
+        res
     }
 
     fn append_quoted_use_tree_pattern(
         &mut self,
-        tgt: &mut Vec<TokenTree>,
+        tgt: &mut TokenSink,
         tree: &UseTree,
     ) {
         match tree {
@@ -1025,7 +1001,7 @@ impl Context {
 
     fn append_quoted_fn_decl(
         &mut self,
-        tgt: &mut Vec<TokenTree>,
+        tgt: &mut TokenSink,
         function: &Function,
         suppress_vis: bool,
     ) -> Result<()> {
@@ -1052,7 +1028,7 @@ impl Context {
 
     fn append_quoted_expression(
         &mut self,
-        tgt: &mut Vec<TokenTree>,
+        tgt: &mut TokenSink,
         expr: &MetaExpr,
         is_expression_context: bool,
     ) -> Result<()> {
@@ -1071,16 +1047,19 @@ impl Context {
                 value,
                 from_raw_block: _,
             } => {
-                if self.quote_for_rust {
+                if tgt.quote_for_rust {
                     return self.append_value_to_stream(tgt, *span, value);
                 }
-                append_raw(tgt, *span, |tgt| {
-                    let q4r = self.quote_for_rust;
-                    self.quote_for_rust = false;
+
+                tgt.append_raw(|tgt| {
+                    let q4r = tgt.quote_for_rust;
+                    tgt.quote_for_rust = false;
                     self.append_value_to_stream(tgt, *span, value)?;
-                    self.quote_for_rust = q4r;
+                    tgt.quote_for_rust = q4r;
                     Ok(())
                 })?;
+                // make sure this gets outputed even if it is an empty raw!{}
+                tgt.force_raw_flush = true;
             }
             MetaExpr::Ident { span, name, raw } => {
                 if self.errors.is_empty() && self.extern_uses.is_empty() {
@@ -1089,14 +1068,16 @@ impl Context {
                         return self.append_value_to_stream(tgt, *span, &val);
                     }
                 }
-                if !self.quote_for_rust && !*raw && is_keyword(name) {
-                    _ = append_raw(tgt, *span, |tgt| {
+                append_ident_str_dyn(tgt, name, *raw, *span);
+                 /*
+                if !tgt.quote_for_rust && !*raw && is_keyword(name) {
+                    _ = tgt.append_raw(|tgt| {
                         append_ident_str_dyn(tgt, name, *raw, *span);
                         Ok(())
                     });
                 } else {
-                    append_ident_str_dyn(tgt, name, *raw, *span);
-                }
+
+                }*/
             }
             MetaExpr::LetBinding {
                 visibility,
@@ -1156,11 +1137,34 @@ impl Context {
                 delimiter,
                 contents,
             } => {
-                append_group(tgt, *delimiter, *span, |inner| {
-                    for e in contents {
-                        self.append_quoted_expression(inner, e, true)?;
-                    }
-                    Ok(())
+                if tgt.quote_for_rust {
+                    append_group(tgt, *delimiter, *span, |inner| {
+                        for e in contents {
+                            self.append_quoted_expression(inner, e, true)?;
+                        }
+                        Ok(())
+                    })?;
+                } else {
+                    append_ident_str(tgt, "group", *span);
+                    append_punct(tgt, '!', Spacing::Alone, *span);
+                    append_group(tgt, *delimiter, *span, |tgt| {
+                        self.append_quoted_stmt_list(tgt, contents, true)
+                    })?;
+                }
+            }
+            MetaExpr::Group {
+                span,
+                delimiter,
+                body,
+            } => {
+                append_ident_str(tgt, "group", *span);
+                append_punct(tgt, '!', Spacing::Alone, *span);
+                append_group(tgt, *delimiter, *span, |tgt| {
+                    self.append_quoted_stmt_list(
+                        tgt,
+                        &body.stmts,
+                        body.trailing_semi,
+                    )
                 })?;
             }
             MetaExpr::IfExpr {
@@ -1359,7 +1363,7 @@ impl Context {
 
     fn append_value_to_stream(
         &mut self,
-        tgt: &mut Vec<TokenTree>,
+        tgt: &mut TokenSink,
         eval_span: Span,
         value: &MetaValue,
     ) -> Result<()> {
@@ -1368,8 +1372,9 @@ impl Context {
                 tgt.push(t.clone());
             }
             MetaValue::Tokens(list) => {
-                if list.is_empty() && !self.quote_for_rust {
-                    _ = append_raw(tgt, eval_span, |_tgt| Ok(()));
+                if list.is_empty() && !tgt.quote_for_rust {
+                    _ = tgt.append_raw(|_tgt| Ok(()));
+                    tgt.force_raw_flush = true;
                 } else {
                     tgt.extend(list.iter().cloned());
                 }
@@ -1421,33 +1426,29 @@ impl Context {
                 append_ident_str_dyn(tgt, &f.name, false, eval_span);
             }
             MetaValue::List(vals) => {
-                let mut list = Vec::new();
-                for (i, e) in vals.borrow().iter().enumerate() {
-                    if i > 0 {
-                        list.push(comma_token(eval_span));
+                tgt.append_group(Delimiter::Bracket, eval_span, |tgt| {
+                    for (i, e) in vals.borrow().iter().enumerate() {
+                        if i > 0 {
+                            tgt.push(comma_token(eval_span));
+                        }
+                        self.append_value_to_stream(tgt, eval_span, e)?;
                     }
-                    self.append_value_to_stream(&mut list, eval_span, e)?;
-                }
-                tgt.push(TokenTree::Group(Group::new(
-                    Delimiter::Bracket,
-                    TokenStream::from_iter(list),
-                )));
+                    Ok(())
+                })?;
             }
             MetaValue::Tuple(vals) => {
-                let mut list = Vec::new();
-                for (i, e) in vals.iter().enumerate() {
-                    if i > 0 {
-                        list.push(comma_token(eval_span));
+                tgt.append_group(Delimiter::Parenthesis, eval_span, |tgt| {
+                    for (i, e) in vals.iter().enumerate() {
+                        if i > 0 {
+                            tgt.push(comma_token(eval_span));
+                        }
+                        self.append_value_to_stream(tgt, eval_span, e)?;
                     }
-                    self.append_value_to_stream(&mut list, eval_span, e)?;
-                }
-                if vals.len() == 1 {
-                    list.push(comma_token(eval_span));
-                }
-                tgt.push(TokenTree::Group(Group::new(
-                    Delimiter::Parenthesis,
-                    TokenStream::from_iter(list),
-                )));
+                    if vals.len() == 1 {
+                        tgt.push(comma_token(eval_span));
+                    }
+                    Ok(())
+                })?;
             }
         }
         Ok(())
@@ -1488,13 +1489,13 @@ impl Context {
     #[allow(clippy::too_many_arguments)]
     fn expand_extern_decl(
         &mut self,
-        tgt: &mut Vec<TokenTree>,
+        tgt: &mut TokenSink,
         vis: Visibility,
         ident: &str,
         raw: bool,
         ident_span: Span,
         decl_span: Span,
-        mut append_value: impl FnMut(&mut Self, &mut Vec<TokenTree>) -> Result<()>,
+        mut append_value: impl FnMut(&mut Self, &mut TokenSink) -> Result<()>,
     ) -> Result<()> {
         if vis.is_pub() {
             append_punct(tgt, '#', Spacing::Alone, decl_span);
@@ -1625,7 +1626,7 @@ impl Context {
         })
     }
 
-    fn expand_extern_decls(&mut self, tgt: &mut Vec<TokenTree>) -> Result<()> {
+    fn expand_extern_decls(&mut self, tgt: &mut TokenSink) -> Result<()> {
         for decl in std::mem::take(&mut self.extern_decls).into_iter() {
             match decl {
                 ExternDecl::Let {
@@ -1657,14 +1658,14 @@ impl Context {
                             binding.span,
                             span,
                             |this, tgt| {
-                                let q4r = this.quote_for_rust;
-                                this.quote_for_rust = false;
+                                let q4r = tgt.quote_for_rust;
+                                tgt.quote_for_rust = false;
                                 this.append_value_to_stream(
                                     tgt,
                                     span,
                                     &binding.value,
                                 )?;
-                                this.quote_for_rust = q4r;
+                                tgt.quote_for_rust = q4r;
                                 Ok(())
                             },
                         )?;
@@ -1679,7 +1680,7 @@ impl Context {
                         decl.span,
                         decl.span,
                         |_this, tgt| {
-                            tgt.append(&mut quoted);
+                            tgt.extend(std::mem::take(&mut quoted));
                             Ok(())
                         },
                     )?;
@@ -1691,19 +1692,19 @@ impl Context {
 
     pub fn expand_extern_uses(
         &mut self,
-        tgt: &mut Vec<TokenTree>,
+        tgt: &mut TokenSink,
         block: &ExprBlock,
     ) {
-        let mut macro_path: Vec<TokenTree> = Vec::new();
+        let mut macro_path = TokenSink::new(true);
         let mut binding_name = Rc::from(String::new());
         let mut binding_name_raw = false;
-        let mut chain_target: Vec<TokenTree> = Vec::new();
-        let mut prefix = Vec::new();
+        let mut chain_target = TokenSink::new(true);
+        let mut prefix = TokenSink::new(true);
         let mut last_span = Span::call_site();
 
         for rep in &self.extern_uses {
             last_span = rep.span;
-            let mut prev_prefix = std::mem::take(&mut prefix);
+            let mut prev_prefix = prefix.take();
             _ = append_group(
                 &mut prefix,
                 Delimiter::Bracket,
@@ -1739,14 +1740,14 @@ impl Context {
                             Delimiter::Parenthesis,
                             last_span,
                             |tgt| {
-                                tgt.extend_from_slice(&chain_target);
+                                tgt.extend(chain_target.take());
                                 Ok(())
                             },
                         )?;
 
                         append_punct(inner, ',', Spacing::Alone, last_span);
-                        chain_target = std::mem::take(&mut macro_path);
-                        inner.append(&mut prev_prefix);
+                        chain_target = macro_path.take_sink();
+                        inner.extend(prev_prefix.drain(..));
                         append_punct(inner, ',', Spacing::Alone, last_span);
                     }
 
@@ -1759,33 +1760,33 @@ impl Context {
             binding_name_raw = rep.raw;
         }
 
-        tgt.extend_from_slice(&macro_path);
+        tgt.extend(macro_path.into_vec());
 
-        _ = append_group(tgt, Delimiter::Brace, last_span, |inner| {
+        _ = append_group(tgt, Delimiter::Brace, last_span, |tgt| {
             append_ident_str_dyn(
-                inner,
+                tgt,
                 &binding_name,
                 binding_name_raw,
                 last_span,
             );
-            append_punct(inner, ',', Spacing::Alone, last_span);
+            append_punct(tgt, ',', Spacing::Alone, last_span);
 
-            append_group(inner, Delimiter::Parenthesis, last_span, |tgt| {
-                tgt.extend_from_slice(&chain_target);
+            append_group(tgt, Delimiter::Parenthesis, last_span, |tgt| {
+                tgt.extend_from_slice(&chain_target.into_vec());
                 Ok(())
             })?;
 
-            append_punct(inner, ',', Spacing::Alone, last_span);
-            inner.append(&mut prefix);
-            append_punct(inner, ',', Spacing::Alone, last_span);
-            let qfr = self.quote_for_rust;
-            self.quote_for_rust = false;
+            append_punct(tgt, ',', Spacing::Alone, last_span);
+            tgt.extend(prefix.take());
+            append_punct(tgt, ',', Spacing::Alone, last_span);
+            let qfr = tgt.quote_for_rust;
+            tgt.quote_for_rust = false;
             self.append_quoted_stmt_list(
-                inner,
+                tgt,
                 &block.stmts,
                 block.trailing_semi,
             )?;
-            self.quote_for_rust = qfr;
+            tgt.quote_for_rust = qfr;
             Ok(())
         });
     }
@@ -1802,14 +1803,14 @@ impl Context {
         }
 
         self.push_eval_scope();
-        let mut res_stream = Vec::new();
+        let mut res_stream = TokenSink::new(true);
 
         if !self.extern_uses.is_empty() {
             self.expand_extern_uses(&mut res_stream, block);
             if !self.errors.is_empty() {
                 return self.expand_errors();
             }
-            return TokenStream::from_iter(res_stream);
+            return TokenStream::from_iter(res_stream.into_vec());
         }
 
         _ = self.eval_stmt_list_to_stream(
@@ -1820,9 +1821,9 @@ impl Context {
         );
 
         if !self.extern_decls.is_empty() {
-            let mut extern_decls = Vec::new();
+            let mut extern_decls = TokenSink::new(false);
             _ = self.expand_extern_decls(&mut extern_decls);
-            extern_decls.append(&mut res_stream);
+            extern_decls.extend(res_stream.into_vec());
             res_stream = extern_decls;
         }
 
@@ -1832,12 +1833,12 @@ impl Context {
             return self.expand_errors();
         }
 
-        TokenStream::from_iter(res_stream)
+        TokenStream::from_iter(res_stream.into_vec())
     }
 
     fn eval_stmt_list_to_stream(
         &mut self,
-        tgt: &mut Vec<TokenTree>,
+        tgt: &mut TokenSink,
         eval_span: Span,
         stmts: &[Rc<MetaExpr>],
         trailing_semi: bool,
@@ -1851,7 +1852,7 @@ impl Context {
 
     fn eval_block_to_stream(
         &mut self,
-        tgt: &mut Vec<TokenTree>,
+        tgt: &mut TokenSink,
         eval_span: Span,
         block: &ExprBlock,
     ) -> Result<()> {
@@ -1868,7 +1869,7 @@ impl Context {
         eval_span: Span,
         block: &ExprBlock,
     ) -> Result<Rc<MetaValue>> {
-        let mut res = Vec::new();
+        let mut res = TokenSink::new(true);
         let mut last_expr = self.empty_token_list.clone();
         for (i, expr) in block.stmts.iter().enumerate() {
             let is_last = i == block.stmts.len() - 1;
@@ -1880,7 +1881,7 @@ impl Context {
             return Ok(last_expr);
         }
         self.append_value_to_stream(&mut res, eval_span, &last_expr)?;
-        Ok(Rc::new(MetaValue::Tokens(res)))
+        Ok(Rc::new(MetaValue::Tokens(res.into_vec())))
     }
 
     fn push_eval_scope(&mut self) {
@@ -1950,13 +1951,30 @@ impl Context {
                 delimiter,
                 contents,
             } => {
-                let mut res = Vec::new();
+                let mut res = TokenSink::new(true);
                 self.eval_stmt_list_to_stream(
                     &mut res, *span, contents, true,
                 )?;
                 Ok(Rc::new(MetaValue::Token(TokenTree::Group(Group::new(
                     *delimiter,
-                    TokenStream::from_iter(res),
+                    TokenStream::from_iter(res.into_vec()),
+                )))))
+            }
+            MetaExpr::Group {
+                span,
+                delimiter,
+                body,
+            } => {
+                let mut res = TokenSink::new(true);
+                self.eval_stmt_list_to_stream(
+                    &mut res,
+                    *span,
+                    &body.stmts,
+                    body.trailing_semi,
+                )?;
+                Ok(Rc::new(MetaValue::Token(TokenTree::Group(Group::new(
+                    *delimiter,
+                    TokenStream::from_iter(res.into_vec()),
                 )))))
             }
             MetaExpr::For {
@@ -1973,7 +1991,7 @@ impl Context {
                     );
                     return Err(EvalError::Error);
                 };
-                let mut res_tokens = Vec::new();
+                let mut res_tokens = TokenSink::new(true);
 
                 for elem in &*list_elems.borrow() {
                     self.push_eval_scope();
@@ -2007,10 +2025,10 @@ impl Context {
                         }
                     }
                 }
-                Ok(Rc::new(MetaValue::Tokens(res_tokens)))
+                Ok(Rc::new(MetaValue::Tokens(res_tokens.into_vec())))
             }
             MetaExpr::Loop { span, body } => {
-                let mut res = Vec::new();
+                let mut res = TokenSink::new(true);
                 loop {
                     self.push_eval_scope();
                     let v = self.eval_block_to_stream(&mut res, *span, body);
@@ -2035,14 +2053,14 @@ impl Context {
                         }
                     }
                 }
-                Ok(Rc::new(MetaValue::Tokens(res)))
+                Ok(Rc::new(MetaValue::Tokens(res.into_vec())))
             }
             MetaExpr::While {
                 condition,
                 span,
                 body,
             } => {
-                let mut res_tokens = Vec::new();
+                let mut res_tokens = TokenSink::new(true);
                 loop {
                     let condition_val = self.eval(condition, true)?;
                     let MetaValue::Bool {
@@ -2086,7 +2104,7 @@ impl Context {
                         }
                     }
                 }
-                Ok(Rc::new(MetaValue::Tokens(res_tokens)))
+                Ok(Rc::new(MetaValue::Tokens(res_tokens.into_vec())))
             }
             MetaExpr::WhileLet {
                 pattern,
@@ -2102,7 +2120,7 @@ impl Context {
                     );
                     return Err(EvalError::Error);
                 };
-                let mut res_tokens = Vec::new();
+                let mut res_tokens = TokenSink::new(true);
 
                 for elem in &*list_elems.borrow() {
                     self.push_eval_scope();
@@ -2143,7 +2161,7 @@ impl Context {
                         }
                     }
                 }
-                Ok(Rc::new(MetaValue::Tokens(res_tokens)))
+                Ok(Rc::new(MetaValue::Tokens(res_tokens.into_vec())))
             }
             MetaExpr::Block(block) => {
                 self.push_eval_scope();
@@ -2162,15 +2180,13 @@ impl Context {
                 );
 
                 if f.visibility.is_extern() {
-                    let mut quoted = Vec::new();
-                    let qfr = self.quote_for_rust;
-                    self.quote_for_rust = false;
-                    let res = self.append_quoted_fn_decl(&mut quoted, f, true);
-                    self.quote_for_rust = qfr;
-                    res?;
+                    let mut quoted = TokenSink::new(false);
+
+                    self.append_quoted_fn_decl(&mut quoted, f, true)?;
+
                     self.extern_decls.push(ExternDecl::Fn {
                         decl: f.clone(),
-                        quoted,
+                        quoted: quoted.into_vec(),
                     });
                 }
 
@@ -2244,7 +2260,7 @@ impl Context {
                     );
                     return Err(EvalError::Error);
                 };
-                let mut res_tokens = Vec::new();
+                let mut res_tokens = TokenSink::new(true);
                 for (i, elem) in list_elems.borrow().iter().enumerate() {
                     self.push_eval_scope();
                     if i != 0 {
@@ -2282,7 +2298,7 @@ impl Context {
                     &ep.match_arm_body,
                     true,
                 )?;
-                Ok(Rc::new(MetaValue::Tokens(res_tokens)))
+                Ok(Rc::new(MetaValue::Tokens(res_tokens.into_vec())))
             }
             MetaExpr::ListAccess {
                 span,
@@ -2619,6 +2635,7 @@ impl Context {
             | MetaExpr::FnDecl(..)
             | MetaExpr::Lambda(..)
             | MetaExpr::RawOutputGroup { .. }
+            | MetaExpr::Group { .. }
             | MetaExpr::IfExpr { .. }
             | MetaExpr::For { .. }
             | MetaExpr::Loop { .. }

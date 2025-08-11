@@ -409,5 +409,26 @@ fn use_as_expression_in_arithmetic() {
 fn raw_idents() {
     let res = eval! {let r#mut = 1; mut};
     let res_2 = eval! {let super r#mut = 1; quote!(mut)};
-    assert_eq!(res + res_2, 42)
+    assert_eq!(res + res_2, 2)
+}
+
+#[test]
+fn emptyy_raw_block_reserved() {
+    #![allow(clippy::needless_lifetimes, clippy::unnecessary_mut_passed)]
+
+    metamatch::eval! {
+        extern let my_fns = [(foo_mut, mut), (bar, raw!())];
+    }
+
+    metamatch::eval! {
+        for (FN, super r#mut) in (use my_fns) {
+            quote!{
+                fn FN<'a>(x: &'a mut i32) -> i32 {
+                    *x
+                }
+            }
+        }
+    }
+
+    assert_eq!(foo_mut(&mut 1) + bar(&2), 3);
 }

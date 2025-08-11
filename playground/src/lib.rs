@@ -21,6 +21,10 @@ mod metamatch_impl {
         use proc_macro2 as proc_macro;
         include!("../../src/evaluate.rs");
     }
+    pub mod token_sink {
+        use proc_macro2 as proc_macro;
+        include!("../../src/token_sink.rs");
+    }
     pub mod macro_impls {
         use proc_macro2 as proc_macro;
         include!("../../src/macro_impls.rs");

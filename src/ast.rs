@@ -260,6 +260,11 @@ pub enum MetaExpr {
     // boxed cause large
     ExpandPattern(Box<ExpandPattern>),
     Block(ExprBlock),
+    Group {
+        span: Span,
+        delimiter: Delimiter,
+        body: ExprBlock,
+    },
     List {
         span: Span,
         exprs: Vec<Rc<MetaExpr>>,
@@ -349,6 +354,7 @@ pub struct Binding {
 pub enum ScopeKind {
     Builtin,
     Raw,
+    Group,
     Template,
     Quote,
     Eval,
@@ -384,7 +390,6 @@ pub struct Context {
     pub errors: Vec<MetaError>,
     pub extern_decls: Vec<ExternDecl>,
     pub extern_uses: Vec<Rc<UseReplacement>>,
-    pub quote_for_rust: bool,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -736,6 +741,7 @@ impl MetaExpr {
             MetaExpr::Parenthesized { span, .. } => span,
             MetaExpr::While { span, .. } => span,
             MetaExpr::WhileLet { span, .. } => span,
+            MetaExpr::Group { span, .. } => span,
         }
     }
     pub fn kind_str(&self) -> &'static str {
@@ -750,6 +756,7 @@ impl MetaExpr {
             MetaExpr::FnDecl { .. } => "function declaration",
             MetaExpr::Lambda { .. } => "lambda",
             MetaExpr::RawOutputGroup { .. } => "token tree",
+            MetaExpr::Group { .. } => "group expression",
             MetaExpr::IfExpr { .. } => "if expression",
             MetaExpr::For { .. } => "for loop",
             MetaExpr::Loop { .. } => "loop",
@@ -773,7 +780,8 @@ impl MetaExpr {
             | MetaExpr::While { .. }
             | MetaExpr::WhileLet { .. }
             | MetaExpr::IfExpr { .. }
-            | MetaExpr::RawOutputGroup { .. } => true,
+            | MetaExpr::RawOutputGroup { .. }
+            | MetaExpr::Group { .. } => true,
 
             MetaExpr::Literal { from_raw_block, .. } => *from_raw_block,
 
