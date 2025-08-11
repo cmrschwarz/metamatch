@@ -992,7 +992,18 @@ impl Context {
                 append_ident(tgt, "continue", *span);
             }
             MetaExpr::Literal { span, value } => {
-                self.append_value_to_stream(tgt, *span, value)?;
+                if self.quote_for_rust {
+                    return self.append_value_to_stream(tgt, *span, value);
+                }
+                append_ident(tgt, "raw", *span);
+                append_punct(tgt, '!', Spacing::Alone, *span);
+                append_group(tgt, Delimiter::Brace, *span, |tgt| {
+                    let q4r = self.quote_for_rust;
+                    self.quote_for_rust = false;
+                    self.append_value_to_stream(tgt, *span, value)?;
+                    self.quote_for_rust = q4r;
+                    Ok(())
+                })?;
             }
             MetaExpr::Ident { span, name } => {
                 if self.errors.is_empty() && self.extern_uses.is_empty() {
@@ -1546,11 +1557,15 @@ impl Context {
                             binding.span,
                             span,
                             |this, tgt| {
+                                let q4r = this.quote_for_rust;
+                                this.quote_for_rust = false;
                                 this.append_value_to_stream(
                                     tgt,
                                     span,
                                     &binding.value,
-                                )
+                                )?;
+                                this.quote_for_rust = q4r;
+                                Ok(())
                             },
                         )?;
                     }
@@ -1650,11 +1665,14 @@ impl Context {
             append_punct(inner, ',', Spacing::Alone, last_span);
             inner.append(&mut prefix);
             append_punct(inner, ',', Spacing::Alone, last_span);
+            let qfr = self.quote_for_rust;
+            self.quote_for_rust = false;
             self.append_quoted_stmt_list(
                 inner,
                 &block.stmts,
                 block.trailing_semi,
             )?;
+            self.quote_for_rust = qfr;
             Ok(())
         });
     }
@@ -2027,7 +2045,11 @@ impl Context {
 
                 if f.visibility.is_extern() {
                     let mut quoted = Vec::new();
-                    self.append_quoted_fn_decl(&mut quoted, f, true)?;
+                    let qfr = self.quote_for_rust;
+                    self.quote_for_rust = false;
+                    let res = self.append_quoted_fn_decl(&mut quoted, f, true);
+                    self.quote_for_rust = qfr;
+                    res?;
                     self.extern_decls.push(ExternDecl::Fn {
                         decl: f.clone(),
                         quoted,

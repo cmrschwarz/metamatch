@@ -55,3 +55,17 @@ fn replicate_while_let() {
     }
     assert_eq!(f_5(), 15);
 }
+
+#[test]
+fn replicate_with_use() {
+    metamatch::eval! {
+        extern let FOO = [A, B, C];
+    }
+
+    #[replicate(for T in use FOO)]
+    struct T;
+
+    let _a = A;
+    let _b = B;
+    let _c = C;
+}

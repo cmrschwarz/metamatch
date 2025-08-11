@@ -378,6 +378,7 @@ pub struct Context {
     pub errors: Vec<MetaError>,
     pub extern_decls: Vec<ExternDecl>,
     pub extern_uses: Vec<Rc<UseReplacement>>,
+    pub quote_for_rust: bool,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]

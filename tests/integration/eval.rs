@@ -38,6 +38,15 @@ fn raw_expr() {
 }
 
 #[test]
+fn raw_keeps_token_tokens_ambiguous() {
+    let res = eval! {
+        4 * raw!(4);
+    };
+
+    assert_eq!(res, 16);
+}
+
+#[test]
 fn raw_expr_2() {
     const X: i64 = 5;
     let res = eval! {
@@ -394,4 +403,19 @@ fn use_as_expression_in_arithmetic() {
     };
 
     assert_eq!(result, 15);
+}
+
+#[test]
+fn raw_expand_not_evaluated() {
+    metamatch::eval! {
+        extern let my_fns = [foo, bar, baz];
+    }
+
+    #[allow(clippy::needless_lifetimes)]
+    #[metamatch::replicate(for FN in (use my_fns))]
+    fn FN<'a>(x: &'a i32) -> i32 {
+        *x
+    }
+
+    assert_eq!(foo(&1) + bar(&2) + baz(&3), 6);
 }

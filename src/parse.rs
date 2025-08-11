@@ -323,6 +323,7 @@ impl Default for Context {
             extern_decls: Vec::new(),
             extern_uses: Vec::new(),
             errors: Vec::new(),
+            quote_for_rust: true,
         };
         ctx.insert_builtins();
         ctx
@@ -1312,6 +1313,17 @@ impl Context {
         };
 
         let raw_block_contents = group.stream().into_vec();
+
+        if raw_block_contents.len() == 1 {
+            return Ok((
+                Rc::new(MetaExpr::Literal {
+                    span: raw_block_contents[0].span(),
+                    value: parse_literal(&raw_block_contents[0]),
+                }),
+                &tokens[1..],
+                None,
+            ));
+        }
 
         Ok((
             Rc::new(MetaExpr::Literal {
