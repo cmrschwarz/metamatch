@@ -1,77 +1,18 @@
-// Include the metamatch implementation files directly.
-// We do it this way to get the proc macros accessible as an
-// fn (TokenStream) -> TokenStream;
-// without messing with the cargo toml of the main crate.
-// This is convenient for debugging.
-mod metamatch_impl {
-    // NOTE: This file has a different MSRV so many of the lints become
-    // incorrect. We also already lint it when using it through metamatch
-    // directly.
-    #![allow(clippy::all, clippy::pedantic)]
+use std::io::Read;
 
-    pub mod ast {
-        use proc_macro2 as proc_macro;
-        include!("../../src/ast.rs");
-    }
-    pub mod parse {
-        use proc_macro2 as proc_macro;
-        include!("../../src/parse.rs");
-    }
-    pub mod evaluate {
-        use proc_macro2 as proc_macro;
-        include!("../../src/evaluate.rs");
-    }
-    pub mod macro_impls {
-        use proc_macro2 as proc_macro;
-        include!("../../src/macro_impls.rs");
-    }
-}
+use metamatch_playground::{
+    eval_strs_to_tt, pretty_print_token_stream, MacroKind,
+};
 
-use metamatch_impl::macro_impls::IntoVec;
-
-use clap::{Parser, ValueEnum};
-use proc_macro2::{Span, TokenStream};
-
-pub fn pretty_print_token_stream(input: TokenStream) -> String {
-    let input = input.to_string();
-
-    // add main function around it so its a valid file...
-    let code = format!("fn main() {{ {input}  }} ");
-
-    let stx = match syn::parse_str::<syn::File>(&code) {
-        Ok(stx) => stx,
-        Err(err) => {
-            return format!(
-            "// pretty printing failed: \"{err}\"\n// raw output:\n\n{input}"
-        )
-        }
-    };
-    let pretty = prettyplease::unparse(&stx);
-
-    // filter back out the main function wrapper...
-    let mut pretty = pretty
-        .lines()
-        .skip(1)
-        .map(|line| format!("{}\n", &line[4.min(line.len())..]))
-        .collect::<String>();
-    pretty.truncate(pretty.len().saturating_sub(2));
-
-    pretty
-}
-
-#[derive(Default, ValueEnum, Clone)]
-enum MacroKind {
-    #[default]
-    Template,
-    Eval,
-    Metamatch,
-    Replicate,
-}
+use clap::Parser;
 
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value = "false")]
     print_ast: bool,
+
+    #[arg(long, default_value = "false")]
+    body_stdin: bool,
 
     #[arg(value_enum)]
     macro_kind: Option<MacroKind>,
@@ -86,11 +27,11 @@ fn main() {
 
     let attrib = format!("{sandbox}/attrib.rs");
 
-    let body = format!("{sandbox}/body.rs");
+    let body_path = format!("{sandbox}/body.rs");
 
-    if !std::fs::exists(&body).unwrap() {
+    if !std::fs::exists(&body_path).unwrap() {
         std::fs::write(
-            &body,
+            &body_path,
             "// Macro body here.\n// This file is intentionally ignored by git.\n\n"
         ).unwrap();
     }
@@ -102,44 +43,28 @@ fn main() {
         ).unwrap();
     }
 
-    let body_str = std::fs::read_to_string(&body)
-        .expect("failed to stringify playground_body.rs");
-    let body_tt = syn::parse_str::<TokenStream>(&body_str)
-        .expect("failed to parse playground_body.rs");
-
-    let mut ctx = metamatch_impl::ast::Context::default();
-
-    let exprs = match kind {
-        MacroKind::Template => metamatch_impl::macro_impls::parse_template(
-            &mut ctx,
-            body_tt.into_vec(),
-        ),
-        MacroKind::Eval => metamatch_impl::macro_impls::parse_eval(
-            &mut ctx,
-            body_tt.into_vec(),
-        ),
-        MacroKind::Metamatch => metamatch_impl::macro_impls::parse_metamatch(
-            &mut ctx,
-            body_tt.into_vec(),
-        ),
-        MacroKind::Replicate => {
-            let attrib_str = std::fs::read_to_string(&attrib)
-                .unwrap_or_else(|_| panic!("failed to stringify {attrib}"));
-            let attrib_tt = syn::parse_str::<TokenStream>(&attrib_str)
-                .unwrap_or_else(|_| panic!("failed to stringify {body}"));
-            metamatch_impl::macro_impls::parse_replicate(
-                &mut ctx,
-                attrib_tt.into_vec(),
-                body_tt.into_vec(),
-            )
-        }
+    let body_str = if args.body_stdin {
+        let mut res = String::new();
+        std::io::stdin()
+            .lock()
+            .read_to_string(&mut res)
+            .expect("failed to stringify stdin as body");
+        res
+    } else {
+        std::fs::read_to_string(&body_path)
+            .expect("failed to stringify playground_body.rs")
     };
 
-    if args.print_ast && ctx.errors.is_empty() {
-        println!("{exprs:#?}");
+    let mut attrib_str = None;
+
+    if let MacroKind::Replicate = kind {
+        attrib_str = Some(
+            std::fs::read_to_string(&attrib)
+                .unwrap_or_else(|_| panic!("failed to stringify {attrib}")),
+        );
     }
 
-    let result = ctx.eval_to_token_stream(Span::call_site(), &exprs);
+    let result = eval_strs_to_tt(kind, attrib_str, body_str, args.print_ast);
 
     println!("{}", pretty_print_token_stream(result));
 }

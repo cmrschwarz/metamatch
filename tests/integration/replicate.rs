@@ -69,3 +69,34 @@ fn replicate_with_use() {
     let _b = B;
     let _c = C;
 }
+
+#[test]
+fn raw_expand_not_evaluated() {
+    metamatch::eval! {
+        extern let my_fns = [foo, bar, baz];
+    }
+
+    #[allow(clippy::needless_lifetimes)]
+    #[replicate(for FN in (use my_fns))]
+    fn FN<'a>(x: &'a i32) -> i32 {
+        *x
+    }
+
+    assert_eq!(foo(&1) + bar(&2) + baz(&3), 6);
+}
+
+#[test]
+fn empty_raw_block_preserved() {
+    #![allow(clippy::needless_lifetimes, clippy::unnecessary_mut_passed)]
+
+    metamatch::eval! {
+        extern let my_fns = [(foo_mut, mut), (bar, raw!())];
+    }
+
+    #[replicate(for (FN, MUT) in (use my_fns))]
+    fn FN<'a>(x: &'a i32) -> i32 {
+        *x
+    }
+
+    assert_eq!(foo_mut(&mut 1) + bar(&2), 3);
+}

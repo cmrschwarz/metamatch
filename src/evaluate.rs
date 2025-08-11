@@ -1276,7 +1276,18 @@ impl Context {
                 tgt.push(t.clone());
             }
             MetaValue::Tokens(list) => {
-                tgt.extend(list.iter().cloned());
+                if list.is_empty() && !self.quote_for_rust {
+                    append_ident(tgt, "raw", eval_span);
+                    append_punct(tgt, '!', Spacing::Alone, eval_span);
+                    _ = append_group(
+                        tgt,
+                        Delimiter::Parenthesis,
+                        eval_span,
+                        |_| Ok(()),
+                    );
+                } else {
+                    tgt.extend(list.iter().cloned());
+                }
             }
             MetaValue::Int { value, span } => {
                 let mut lit = Literal::i64_unsuffixed(*value);
