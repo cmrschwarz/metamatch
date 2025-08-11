@@ -30,6 +30,10 @@ pub struct BindingParameter {
 pub enum EvalError {
     PatternMissmatch,
     Error,
+    Return {
+        span: Span,
+        value: Option<Rc<MetaValue>>,
+    },
     Break {
         span: Span,
         value: Option<Rc<MetaValue>>,
@@ -191,6 +195,10 @@ pub struct ExpandPattern {
 #[derive(Debug)]
 pub enum MetaExpr {
     Break {
+        span: Span,
+        expr: Option<Rc<MetaExpr>>,
+    },
+    Return {
         span: Span,
         expr: Option<Rc<MetaExpr>>,
     },
@@ -720,6 +728,7 @@ impl MetaExpr {
     pub fn span(&self) -> Span {
         *match self {
             MetaExpr::Break { span, .. } => span,
+            MetaExpr::Return { span, .. } => span,
             MetaExpr::Continue { span, .. } => span,
             MetaExpr::Literal { span, .. } => span,
             MetaExpr::Ident { span, .. } => span,
@@ -747,8 +756,9 @@ impl MetaExpr {
     }
     pub fn kind_str(&self) -> &'static str {
         match self {
-            MetaExpr::Break { .. } => "continue",
-            MetaExpr::Continue { .. } => "break",
+            MetaExpr::Break { .. } => "break",
+            MetaExpr::Return { .. } => "return",
+            MetaExpr::Continue { .. } => "continue",
             MetaExpr::Literal { .. } => "literal",
             MetaExpr::Ident { .. } => "identifier",
             MetaExpr::LetBinding { .. } => "let binding",
@@ -782,7 +792,10 @@ impl MetaExpr {
             | MetaExpr::WhileLet { .. }
             | MetaExpr::IfExpr { .. }
             | MetaExpr::RawOutputGroup { .. }
-            | MetaExpr::Group { .. } => true,
+            | MetaExpr::Group { .. }
+            | MetaExpr::Break { .. }
+            | MetaExpr::Continue { .. }
+            | MetaExpr::Return { .. } => true,
 
             MetaExpr::Literal { from_raw_block, .. } => *from_raw_block,
 
@@ -797,8 +810,6 @@ impl MetaExpr {
             | MetaExpr::OpBinary { .. }
             | MetaExpr::ListAccess { .. }
             | MetaExpr::Parenthesized { .. }
-            | MetaExpr::Break { .. }
-            | MetaExpr::Continue { .. }
             | MetaExpr::LetBinding { .. }
             | MetaExpr::UseDecl { .. } => false,
         }

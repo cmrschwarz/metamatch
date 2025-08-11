@@ -118,7 +118,7 @@ impl<'a> Callable<'a> {
         span: Span,
         args: &[Rc<MetaValue>],
     ) -> Result<Rc<MetaValue>> {
-        match self {
+        let res = match self {
             Callable::Fn(function) => {
                 if function.params.len() != args.len() {
                     ctx.error(
@@ -189,7 +189,11 @@ impl<'a> Callable<'a> {
                 }
                 (builtin_fn.builtin)(ctx, span, args)
             }
-        }
+        };
+        if let Err(EvalError::Return { span: _, value }) = res {
+            return Ok(value.unwrap_or_else(|| ctx.empty_token_list.clone()));
+        };
+        res
     }
 }
 
@@ -1035,6 +1039,12 @@ impl Context {
         match expr {
             MetaExpr::Break { span, expr } => {
                 append_ident_str(tgt, "break", *span);
+                if let Some(expr) = expr {
+                    self.append_quoted_expression(tgt, expr, true)?;
+                }
+            }
+            MetaExpr::Return { span, expr } => {
+                append_ident_str(tgt, "return", *span);
                 if let Some(expr) = expr {
                     self.append_quoted_expression(tgt, expr, true)?;
                 }
@@ -1904,6 +1914,13 @@ impl Context {
                     .transpose()?,
                 span: *span,
             }),
+            MetaExpr::Return { span, expr } => Err(EvalError::Return {
+                value: expr
+                    .as_ref()
+                    .map(|x| self.eval(x, true))
+                    .transpose()?,
+                span: *span,
+            }),
             MetaExpr::Continue { .. } => Err(EvalError::Continue),
             MetaExpr::Parenthesized { span: _, expr } => {
                 self.eval(expr, is_expression_context)
@@ -2012,9 +2029,15 @@ impl Context {
                     match res {
                         Ok(()) => continue,
                         Err(EvalError::Continue) => continue,
+                        Err(e @ EvalError::Return { .. }) => {
+                            return Err(e);
+                        }
                         Err(EvalError::Break { value, span }) => {
                             if value.is_some() {
-                                self.error(span, "`break` values are not supported in `for`");
+                                self.error(
+                                    span,
+                                    "`break` values are not supported in `for`",
+                                );
                                 return Err(EvalError::Error);
                             }
                             break;
@@ -2037,6 +2060,9 @@ impl Context {
                     match v {
                         Ok(()) => continue,
                         Err(EvalError::Continue) => continue,
+                        Err(e @ EvalError::Return { .. }) => {
+                            return Err(e);
+                        }
                         Err(EvalError::Break { value, span }) => {
                             if let Some(value) = value {
                                 if !res.is_empty() {
@@ -2091,6 +2117,9 @@ impl Context {
                     match res {
                         Ok(()) => continue,
                         Err(EvalError::Continue) => continue,
+                        Err(e @ EvalError::Return { .. }) => {
+                            return Err(e);
+                        }
                         Err(EvalError::Break { value, span }) => {
                             if value.is_some() {
                                 self.error(span, "`break` values are not supported in `while`");
@@ -2143,6 +2172,9 @@ impl Context {
                     match res {
                         Ok(()) => continue,
                         Err(EvalError::Continue) => continue,
+                        Err(e @ EvalError::Return { .. }) => {
+                            return Err(e);
+                        }
                         Err(EvalError::Break { value, span }) => {
                             if value.is_some() {
                                 self.error(span, "`break` values are not supported in `while`");
@@ -2646,6 +2678,7 @@ impl Context {
             | MetaExpr::List { .. }
             | MetaExpr::Tuple { .. }
             | MetaExpr::Break { .. }
+            | MetaExpr::Return { .. }
             | MetaExpr::Continue { .. }
             | MetaExpr::OpUnary { .. }
             | MetaExpr::UseDecl { .. }

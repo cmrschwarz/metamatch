@@ -417,6 +417,22 @@ fn superbound_fn_param() {
 }
 
 #[test]
+fn basic_fn_return() {
+    let res = eval! {
+        fn foo(x) {
+            if x > 3 {
+                return 42;
+            }
+            else {
+                return x;
+            }
+        }
+        (foo(1), foo(17))
+    };
+    assert_eq!(res, (1, 42));
+}
+
+#[test]
 fn raw_idents() {
     let res = eval! {let r#mut = 1; mut};
     let res_2 = eval! {let super r#mut = 1; quote!(mut)};

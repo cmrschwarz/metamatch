@@ -668,6 +668,9 @@ impl Context {
                         "break" => {
                             return self.parse_break(span, &tokens[1..]);
                         }
+                        "return" => {
+                            return self.parse_return(span, &tokens[1..]);
+                        }
                         "continue" => {
                             return self.parse_continue(span, &tokens[1..]);
                         }
@@ -1995,6 +1998,37 @@ impl Context {
 
         Ok((
             Rc::new(MetaExpr::Break {
+                span: break_span,
+                expr: break_val,
+            }),
+            rest,
+            None,
+        ))
+    }
+
+    fn parse_return<'a>(
+        &mut self,
+        break_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        let mut followed_by_semi = false;
+        if let Some(TokenTree::Punct(p)) = tokens.first() {
+            if p.as_char() == ';' {
+                followed_by_semi = true;
+            }
+        }
+        let mut rest = tokens;
+        let mut break_val = None;
+        if !tokens.is_empty() && !followed_by_semi {
+            let (val, rest_new) =
+                self.parse_expr_deny_trailing_block(break_span, tokens, 1)?;
+            break_val = Some(val);
+            rest = rest_new;
+        }
+
+        Ok((
+            Rc::new(MetaExpr::Return {
                 span: break_span,
                 expr: break_val,
             }),
