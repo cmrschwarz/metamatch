@@ -135,3 +135,46 @@ fn replicate_applies_extern_fn() {
 
     assert_eq!(foo_mut(&mut 1), 1);
 }
+
+#[test]
+fn non_mut_generation() {
+    #![allow(clippy::needless_lifetimes)]
+
+    macro_rules! gen_non_mut_impl {
+        (fn get_x_mut<'a>(&'a mut $this:ident) -> &'a mut i32 { $($body:tt)*}) => {
+            fn get_x_mut<'a>(&'a mut $this) -> &'a mut i32 {
+                $($body)*
+            }
+            fn get_x<'a>(&'a $this) -> &'a i32 {
+                metamatch::eval!{
+                    let super r#mut = raw!();
+                    quote!{
+                        $($body)*
+                    }
+                }
+            }
+        };
+    }
+
+    metamatch::eval! {
+        extern fn gen_non_mut(FN) {
+            quote!(gen_non_mut_impl!{FN})
+        };
+    }
+
+    struct Foo {
+        x: i32,
+    }
+
+    impl Foo {
+        #[replicate(use gen_non_mut)]
+        fn get_x_mut<'a>(&'a mut self) -> &'a mut i32 {
+            &mut self.x
+        }
+    }
+
+    let mut foo = Foo { x: 12 };
+
+    assert_eq!(*foo.get_x(), 12);
+    assert_eq!(*foo.get_x_mut(), 12);
+}

@@ -1,4 +1,4 @@
-use metamatch::eval;
+use metamatch::{eval, replicate};
 
 #[test]
 fn quote_stmt() {
@@ -430,6 +430,27 @@ fn basic_fn_return() {
         (foo(1), foo(17))
     };
     assert_eq!(res, (1, 42));
+}
+
+#[test]
+fn quote_self() {
+    struct Foo {
+        x: i32,
+    }
+    metamatch::eval! {
+        let super r#mut = raw!();
+        quote!{
+            impl Foo {
+                fn get_x<'a>(&'a mut self) -> &'a mut i32 {
+                    &mut self.x
+                }
+            }
+        }
+    }
+
+    let foo = Foo { x: 12 };
+
+    assert_eq!(*foo.get_x(), 12);
 }
 
 #[test]
