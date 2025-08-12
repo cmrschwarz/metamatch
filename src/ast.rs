@@ -20,9 +20,7 @@ pub struct ExprBlock {
 
 #[derive(Debug, Clone)]
 pub struct BindingParameter {
-    pub span: Span,
-    pub name: Rc<str>,
-    pub raw: bool,
+    pub ident: MetaIdent,
     pub mutable: bool,
     pub super_bound: bool,
 }
@@ -104,10 +102,8 @@ pub enum Pattern {
 
 #[derive(Debug)]
 pub struct Function {
-    pub span: Span,
+    pub ident: MetaIdent,
     pub visibility: Visibility,
-    pub name: Rc<str>,
-    pub raw: bool,
     pub params: Vec<Pattern>,
     pub body: ExprBlock,
 }
@@ -338,12 +334,11 @@ pub enum BinaryOpKind {
 
 #[derive(Debug)]
 pub struct Binding {
-    #[allow(unused)] // Todo: im sure we will need this at some point?
-    pub span: Span,
+    pub ident: MetaIdent,
     // super bound bindings are available in quoted contexts
     pub super_bound: bool,
     pub mutable: bool,
-    pub raw: bool,
+
     pub value: Rc<MetaValue>,
 }
 
@@ -475,7 +470,7 @@ impl MetaValue {
             MetaValue::Bool { span, .. } => *span,
             MetaValue::Char { span, .. } => *span,
             MetaValue::String { span, .. } => *span,
-            MetaValue::Fn(function) => Some(function.span),
+            MetaValue::Fn(function) => Some(function.ident.span),
             MetaValue::Lambda(lambda) => Some(lambda.span),
             MetaValue::BuiltinFn(_) => None,
             MetaValue::List(_) => None,
@@ -735,7 +730,7 @@ impl MetaExpr {
             MetaExpr::UseDecl(use_decl) => &use_decl.span,
             MetaExpr::Call { span, .. } => span,
             MetaExpr::ExpandPattern(ep) => &ep.span,
-            MetaExpr::FnDecl(function) => &function.span,
+            MetaExpr::FnDecl(function) => &function.ident.span,
             MetaExpr::Lambda(lambda) => &lambda.span,
             MetaExpr::RawOutputGroup { span, .. } => span,
             MetaExpr::IfExpr { span, .. } => span,

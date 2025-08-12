@@ -931,16 +931,14 @@ impl Context {
 
     pub fn insert_dummy_binding(
         &mut self,
-        name: Rc<str>,
-        raw: bool,
+        ident: &MetaIdent,
         super_bound: bool,
     ) {
         // dummy binding during parsing so raw blocks can detect identifiers
         self.scopes.last_mut().unwrap().bindings.insert(
-            name.clone(),
+            ident.name.clone(),
             Binding {
-                span: Span::call_site(),
-                raw,
+                ident: ident.clone(),
                 super_bound,
                 value: self.empty_token_list.clone(),
                 mutable: false,
@@ -950,8 +948,8 @@ impl Context {
 
     pub fn insert_dummy_bindings_for_pattern(&mut self, pattern: &Pattern) {
         match pattern {
-            Pattern::Ident(i) => {
-                self.insert_dummy_binding(i.name.clone(), i.raw, i.super_bound)
+            Pattern::Ident(bp) => {
+                self.insert_dummy_binding(&bp.ident, bp.super_bound)
             }
             Pattern::Tuple { span: _, elems } => {
                 for pat in elems {
@@ -1163,7 +1161,7 @@ impl Context {
         }
 
         if let Some(seg) = path.segments.last() {
-            self.insert_dummy_binding(seg.name.clone(), seg.raw, false);
+            self.insert_dummy_binding(seg, false);
         } else {
             self.error(parent_span, "use path must have at least one segment");
         }
@@ -1481,8 +1479,14 @@ impl Context {
                 self.error(tokens[0].span(), "expected function name");
             })?;
 
-        let superbound = starts_with_uppercase(&name);
-        self.insert_dummy_binding(name.clone(), name_raw, superbound);
+        let fn_ident = MetaIdent {
+            name,
+            raw: name_raw,
+            span: name_span,
+        };
+
+        let superbound = starts_with_uppercase(&fn_ident.name);
+        self.insert_dummy_binding(&fn_ident, superbound);
 
         let Some(TokenTree::Group(param_group)) = tokens.get(1) else {
             self.error(tokens[1].span(), "expected parameter list");
@@ -1582,9 +1586,7 @@ impl Context {
 
         let fn_decl = Rc::new(MetaExpr::FnDecl(Rc::new(Function {
             visibility,
-            span: name_span,
-            name,
-            raw: name_raw,
+            ident: fn_ident,
             params,
             body,
         })));
@@ -2285,11 +2287,13 @@ impl Context {
 
                 Ok((
                     Pattern::Ident(BindingParameter {
-                        span: ident.span(),
-                        name,
+                        ident: MetaIdent {
+                            name,
+                            raw,
+                            span: ident.span(),
+                        },
                         super_bound,
                         mutable,
-                        raw,
                     }),
                     rest,
                 ))
