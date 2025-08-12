@@ -12,8 +12,8 @@ use proc_macro::{
 use super::{
     ast::{
         BinaryOpKind, Binding, BuiltinFn, Context, EvalError, ExprBlock,
-        ExternDecl, Function, Lambda, MetaExpr, MetaValue, Pattern, Scope,
-        ScopeKind, UnaryOpKind, UsePath, UseSegment, UseTree, Visibility,
+        ExternDecl, Function, Lambda, MetaExpr, MetaIdent, MetaValue, Pattern,
+        Scope, ScopeKind, UnaryOpKind, UsePath, UseTree, Visibility,
     },
     token_sink::TokenSink,
 };
@@ -579,7 +579,7 @@ fn append_quoted_use_tree_binding(tgt: &mut TokenSink, tree: &UseTree) {
             append_ident_str_dyn(
                 tgt,
                 &replacement.binding,
-                replacement.raw,
+                replacement.ident.raw,
                 *span,
             );
         }
@@ -601,7 +601,7 @@ fn append_quoted_use_tree_binding(tgt: &mut TokenSink, tree: &UseTree) {
             append_ident_str_dyn(
                 tgt,
                 &replacement.binding,
-                replacement.raw,
+                replacement.ident.raw,
                 *span,
             );
         }
@@ -661,16 +661,9 @@ fn append_use_path(tgt: &mut TokenSink, span: Span, path: &UsePath) {
         if i > 0 || path.leading_double_colon {
             append_double_colon(tgt, span);
         }
-        match seg {
-            UseSegment::Ident { name, raw } => {
-                tgt.push(TokenTree::Ident(
-                    string_to_ident(name, *raw, span).unwrap(),
-                ));
-            }
-            UseSegment::SelfKeyword => append_ident_str(tgt, "self", span),
-            UseSegment::SuperKeyword => append_ident_str(tgt, "super", span),
-            UseSegment::CrateKeyword => append_ident_str(tgt, "crate", span),
-        }
+        tgt.push(TokenTree::Ident(
+            string_to_ident(&seg.name, seg.raw, seg.span).unwrap(),
+        ));
     }
 }
 
@@ -962,14 +955,14 @@ impl Context {
                 replacement, span, ..
             } => {
                 self.insert_dummy_binding(
-                    replacement.name.clone(),
-                    replacement.raw,
+                    replacement.ident.name.clone(),
+                    replacement.ident.raw,
                     false,
                 );
                 append_ident_str_dyn(
                     tgt,
-                    &replacement.name,
-                    replacement.raw,
+                    &replacement.ident.name,
+                    replacement.ident.raw,
                     *span,
                 );
             }
@@ -989,14 +982,14 @@ impl Context {
                 replacement, span, ..
             } => {
                 self.insert_dummy_binding(
-                    replacement.name.clone(),
-                    replacement.raw,
+                    replacement.ident.name.clone(),
+                    replacement.ident.raw,
                     false,
                 );
                 append_ident_str_dyn(
                     tgt,
-                    &replacement.name,
-                    replacement.raw,
+                    &replacement.ident.name,
+                    replacement.ident.raw,
                     *span,
                 );
             }
@@ -1071,14 +1064,14 @@ impl Context {
                 // make sure this gets outputed even if it is an empty raw!{}
                 tgt.force_raw_flush = true;
             }
-            MetaExpr::Ident { span, name, raw } => {
+            MetaExpr::Ident(ident) => {
                 if self.errors.is_empty() && self.extern_uses.is_empty() {
-                    if let Some(val) = self.lookup_as_external_identifier(name)
+                    if let Some(val) = self.lookup_as_external_identifier(&ident.name)
                     {
-                        return self.append_value_to_stream(tgt, *span, &val);
+                        return self.append_value_to_stream(tgt, ident.span, &val);
                     }
                 }
-                append_ident_str_dyn(tgt, name, *raw, *span);
+                append_ident_str_dyn(tgt, &ident.name, ident.raw, ident.span);
                  /*
                 if !tgt.quote_for_rust && !*raw && is_keyword(name) {
                     _ = tgt.append_raw(|tgt| {
@@ -1713,12 +1706,12 @@ impl Context {
         let mut last_span = Span::call_site();
 
         for rep in &self.extern_uses {
-            last_span = rep.span;
+            last_span = rep.ident.span;
             let mut prev_prefix = prefix.take();
             _ = append_group(
                 &mut prefix,
                 Delimiter::Bracket,
-                rep.span,
+                rep.ident.span,
                 |inner| {
                     if prev_prefix.is_empty() {
                         debug_assert!(chain_target.is_empty());
@@ -1767,7 +1760,7 @@ impl Context {
             append_use_path(&mut macro_path, last_span, &rep.target_path);
             append_punct(&mut macro_path, '!', Spacing::Alone, last_span);
             binding_name = rep.binding.clone();
-            binding_name_raw = rep.raw;
+            binding_name_raw = rep.ident.raw;
         }
 
         tgt.extend(macro_path.into_vec());
@@ -1930,13 +1923,13 @@ impl Context {
                 value,
                 from_raw_block: _,
             } => Ok(value.clone()),
-            MetaExpr::Ident { span, name, raw: _ } => {
-                if let Some(expr) = self.lookup(name, false) {
+            MetaExpr::Ident(ident) => {
+                if let Some(expr) = self.lookup(&ident.name, false) {
                     return Ok(expr);
                 }
-                Ok(Rc::new(MetaValue::Token(TokenTree::Ident(Ident::new(
-                    name, *span,
-                )))))
+                Ok(Rc::new(MetaValue::Token(TokenTree::Ident(
+                    ident.to_ident(),
+                ))))
             }
             MetaExpr::LetBinding {
                 visibility,
@@ -2617,19 +2610,18 @@ impl Context {
             MetaExpr::Parenthesized { expr, span: _ } => {
                 self.assign_to_expr(op_base_version, span, expr, rhs)
             }
-            MetaExpr::Ident {
-                span: _,
-                name,
-                raw: _,
-            } => {
+            MetaExpr::Ident(ident) => {
                 for scope_idx in 0..self.scopes.len() {
                     if let Some(binding) =
-                        self.scopes[scope_idx].bindings.get(name)
+                        self.scopes[scope_idx].bindings.get(&ident.name)
                     {
                         if !binding.mutable {
                             self.error(
                                 span,
-                                format!("cannot assign to immutable variable `{name}`"),
+                                format!(
+                                    "cannot assign to immutable variable `{}`",
+                                    &ident.name
+                                ),
                             );
                             return Err(EvalError::Error);
                         }
@@ -2649,7 +2641,7 @@ impl Context {
 
                         self.scopes[scope_idx]
                             .bindings
-                            .get_mut(name)
+                            .get_mut(&ident.name)
                             .unwrap()
                             .value = new_value;
                         return Ok(self.empty_token_list.clone());
@@ -2657,7 +2649,7 @@ impl Context {
                 }
                 self.error(
                     span,
-                    format!("cannot find `{name}` in this scope"),
+                    format!("cannot find `{}` in this scope", ident.name),
                 );
                 Err(EvalError::Error)
             }
@@ -2803,18 +2795,19 @@ impl Context {
         lhs: &MetaExpr,
         arg_exprs: &Vec<Rc<MetaExpr>>,
     ) -> Result<Rc<MetaValue>> {
-        let lhs = if let MetaExpr::Ident { span, name, raw: _ } = lhs {
-            // We could just evaluate but we want a better error message
-            // than "`token` is not callable".
-            if let Some(val) = self.lookup(name, false) {
-                val
+        let lhs =
+            if let MetaExpr::Ident(MetaIdent { name, raw: _, span }) = lhs {
+                // We could just evaluate but we want a better error message
+                // than "`token` is not callable".
+                if let Some(val) = self.lookup(name, false) {
+                    val
+                } else {
+                    self.error(*span, format!("undefined function `{name}`"));
+                    return Err(EvalError::Error);
+                }
             } else {
-                self.error(*span, format!("undefined function `{name}`"));
-                return Err(EvalError::Error);
-            }
-        } else {
-            self.eval(lhs, true)?
-        };
+                self.eval(lhs, true)?
+            };
 
         let Some(callable) = Callable::from_value(&lhs) else {
             self.error(
@@ -2890,11 +2883,13 @@ impl Context {
         match tree {
             UseTree::Path { replacement, .. } => {
                 // Generate a let binding: let <binding> = <original_name>;
-                if let Some(value) = self.lookup(&replacement.name, false) {
+                if let Some(value) =
+                    self.lookup(&replacement.ident.name, false)
+                {
                     self.insert_binding(
-                        replacement.span,
+                        replacement.ident.span,
                         replacement.binding.clone(),
-                        replacement.raw,
+                        replacement.ident.raw,
                         false,
                         false,
                         value,
@@ -2911,11 +2906,13 @@ impl Context {
             }
             UseTree::Rename { replacement, .. } => {
                 // Generate a let binding: let <binding> = <original_name>;
-                if let Some(value) = self.lookup(&replacement.name, false) {
+                if let Some(value) =
+                    self.lookup(&replacement.ident.name, false)
+                {
                     self.insert_binding(
-                        replacement.span,
+                        replacement.ident.span,
                         replacement.binding.clone(),
-                        replacement.raw,
+                        replacement.ident.raw,
                         false,
                         false,
                         value,
@@ -2939,7 +2936,7 @@ impl Context {
         match tree {
             UseTree::Path { replacement, .. } => {
                 // Look up the extern binding by the original name
-                let target_name = &replacement.name;
+                let target_name = &replacement.ident.name;
                 if let Some(value) = self.lookup(target_name, false) {
                     Ok(value)
                 } else {
@@ -2947,7 +2944,7 @@ impl Context {
                     Ok(Rc::new(MetaValue::Token(TokenTree::Ident(
                         proc_macro::Ident::new(
                             &replacement.binding,
-                            replacement.span,
+                            replacement.ident.span,
                         ),
                     ))))
                 }
@@ -2962,7 +2959,7 @@ impl Context {
             }
             UseTree::Rename { replacement, .. } => {
                 // Look up the extern binding by the original name
-                let target_name = &replacement.name;
+                let target_name = &replacement.ident.name;
                 if let Some(value) = self.lookup(target_name, false) {
                     Ok(value)
                 } else {
@@ -2970,7 +2967,7 @@ impl Context {
                     Ok(Rc::new(MetaValue::Token(TokenTree::Ident(
                         proc_macro::Ident::new(
                             &replacement.binding,
-                            replacement.span,
+                            replacement.ident.span,
                         ),
                     ))))
                 }

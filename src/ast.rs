@@ -1,4 +1,4 @@
-use proc_macro::{Delimiter, Span, TokenTree};
+use proc_macro::{Delimiter, Ident, Span, TokenTree};
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -126,30 +126,16 @@ pub enum Visibility {
     Regular,
 }
 
-#[derive(Debug, Clone)]
-pub enum UseSegment {
-    /// Regular identifier
-    Ident { name: Rc<str>, raw: bool },
-    /// `self`
-    SelfKeyword,
-    /// `super`
-    SuperKeyword,
-    /// `crate`
-    CrateKeyword,
-}
-
 #[derive(Clone, Debug)]
 pub struct UsePath {
     pub leading_double_colon: bool,
-    pub segments: Vec<UseSegment>,
+    pub segments: Vec<MetaIdent>,
 }
 
 #[derive(Clone, Debug)]
 pub struct UseReplacement {
+    pub ident: MetaIdent,
     pub target_path: UsePath,
-    pub name: Rc<str>,
-    pub raw: bool,
-    pub span: Span,
     pub binding: Rc<str>,
 }
 
@@ -192,6 +178,13 @@ pub struct ExpandPattern {
     pub match_arm_body: Vec<Rc<MetaExpr>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct MetaIdent {
+    pub name: Rc<str>,
+    pub raw: bool,
+    pub span: Span,
+}
+
 #[derive(Debug)]
 pub enum MetaExpr {
     Break {
@@ -210,11 +203,7 @@ pub enum MetaExpr {
         value: Rc<MetaValue>,
         from_raw_block: bool,
     },
-    Ident {
-        span: Span,
-        name: Rc<str>,
-        raw: bool,
-    },
+    Ident(MetaIdent),
     LetBinding {
         visibility: Visibility,
         span: Span,
@@ -446,6 +435,16 @@ pub enum Kind {
 
     List,
     Tuple,
+}
+
+impl MetaIdent {
+    pub fn to_ident(&self) -> Ident {
+        if self.raw {
+            Ident::new_raw(&self.name, self.span)
+        } else {
+            Ident::new(&self.name, self.span)
+        }
+    }
 }
 
 impl MetaValue {
@@ -731,7 +730,7 @@ impl MetaExpr {
             MetaExpr::Return { span, .. } => span,
             MetaExpr::Continue { span, .. } => span,
             MetaExpr::Literal { span, .. } => span,
-            MetaExpr::Ident { span, .. } => span,
+            MetaExpr::Ident(ident) => &ident.span,
             MetaExpr::LetBinding { span, .. } => span,
             MetaExpr::UseDecl(use_decl) => &use_decl.span,
             MetaExpr::Call { span, .. } => span,
@@ -830,17 +829,6 @@ impl TrailingBlockKind {
             TrailingBlockKind::Template => "quote",
             TrailingBlockKind::Raw => "raw",
             TrailingBlockKind::Call => "",
-        }
-    }
-}
-
-impl UseSegment {
-    pub fn to_str(&self) -> (Rc<str>, bool) {
-        match self {
-            UseSegment::Ident { raw, name } => (name.clone(), *raw),
-            UseSegment::SelfKeyword => ("self".into(), false),
-            UseSegment::SuperKeyword => ("super".into(), false),
-            UseSegment::CrateKeyword => ("crate".into(), false),
         }
     }
 }

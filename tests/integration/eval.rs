@@ -1,4 +1,4 @@
-use metamatch::{eval, replicate};
+use metamatch::eval;
 
 #[test]
 fn quote_stmt() {

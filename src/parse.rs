@@ -4,9 +4,9 @@ use std::{collections::HashMap, fmt::Debug, rc::Rc};
 use super::{
     ast::{
         BinaryOpKind, Binding, BindingParameter, Context, ExpandPattern,
-        ExprBlock, Function, Lambda, MetaError, MetaExpr, MetaValue, Pattern,
-        Scope, ScopeKind, TrailingBlockKind, UnaryOpKind, UseDecl, UsePath,
-        UseReplacement, UseSegment, UseTree, Visibility,
+        ExprBlock, Function, Lambda, MetaError, MetaExpr, MetaIdent,
+        MetaValue, Pattern, Scope, ScopeKind, TrailingBlockKind, UnaryOpKind,
+        UseDecl, UsePath, UseReplacement, UseTree, Visibility,
     },
     macro_impls::IntoVec,
 };
@@ -468,11 +468,11 @@ impl Context {
                             let (name, raw) = ident_to_string(func_name);
                             lhs = Rc::new(MetaExpr::Call {
                                 span: func_name.span(),
-                                lhs: Rc::from(MetaExpr::Ident {
+                                lhs: Rc::from(MetaExpr::Ident(MetaIdent {
                                     span: func_name.span(),
                                     name,
                                     raw,
-                                }),
+                                })),
                                 args: fn_args,
                             });
                             rest = &rest[3..];
@@ -795,11 +795,11 @@ impl Context {
                             return Ok((
                                 Rc::new(MetaExpr::Call {
                                     span,
-                                    lhs: Rc::new(MetaExpr::Ident {
+                                    lhs: Rc::new(MetaExpr::Ident(MetaIdent {
                                         span: ident.span(),
                                         name,
                                         raw,
-                                    }),
+                                    })),
                                     args: fn_args,
                                 }),
                                 &tokens[2..],
@@ -809,7 +809,8 @@ impl Context {
                     }
                 }
 
-                let ident_expr = Rc::new(MetaExpr::Ident { span, name, raw });
+                let ident_expr =
+                    Rc::new(MetaExpr::Ident(MetaIdent { span, name, raw }));
 
                 if tokens.len() == 1 && allow_trailing_block {
                     self.push_dummy_scope(ScopeKind::Eval);
@@ -1064,15 +1065,14 @@ impl Context {
         // Parse path segments
         while let Some(TokenTree::Ident(ident)) = rest.first() {
             let (name, raw) = ident_to_string(ident);
-            let segment = match (&*name, raw) {
-                ("self", false) => UseSegment::SelfKeyword,
-                ("super", false) => UseSegment::SuperKeyword,
-                ("crate", false) => UseSegment::CrateKeyword,
-                // don't interpret rename as path
-                ("as", false) if !raw => break,
-                _ => UseSegment::Ident { name, raw },
-            };
-            segments.push(segment);
+            if !raw && &*name == "as" {
+                break;
+            }
+            segments.push(MetaIdent {
+                name,
+                raw,
+                span: ident.span(),
+            });
             rest = &rest[1..];
 
             // Check for trailing ::
@@ -1153,11 +1153,8 @@ impl Context {
                     UseTree::Rename {
                         span: parent_span,
                         alias,
-                        replacement: self.add_use_replacement(
-                            parent_path,
-                            parent_span,
-                            &path,
-                        ),
+                        replacement: self
+                            .add_use_replacement(parent_path, &path),
                         path,
                     },
                     &rest[2..],
@@ -1166,8 +1163,7 @@ impl Context {
         }
 
         if let Some(seg) = path.segments.last() {
-            let (name, raw) = seg.to_str();
-            self.insert_dummy_binding(name, raw, false);
+            self.insert_dummy_binding(seg.name.clone(), seg.raw, false);
         } else {
             self.error(parent_span, "use path must have at least one segment");
         }
@@ -1175,11 +1171,7 @@ impl Context {
         Ok((
             UseTree::Path {
                 span: parent_span,
-                replacement: self.add_use_replacement(
-                    parent_path,
-                    parent_span,
-                    &path,
-                ),
+                replacement: self.add_use_replacement(parent_path, &path),
                 path,
             },
             rest,
@@ -1189,15 +1181,12 @@ impl Context {
     fn add_use_replacement(
         &mut self,
         parent_path: &UsePath,
-        parent_span: Span,
         path: &UsePath,
     ) -> Rc<UseReplacement> {
-        let (name, raw) = path.segments.last().unwrap().to_str();
+        let seg = path.segments.last().unwrap();
         let repl = Rc::new(UseReplacement {
             target_path: merge_use_path(parent_path, path),
-            name,
-            raw,
-            span: parent_span,
+            ident: seg.clone(),
             binding: Rc::from(format!(
                 "__metamatch_extern_use_{}",
                 self.extern_uses.len() + 1
@@ -2840,11 +2829,11 @@ impl Context {
                             offset,
                             false,
                         );
-                        exprs.push(Rc::new(MetaExpr::Ident {
+                        exprs.push(Rc::new(MetaExpr::Ident(MetaIdent {
                             span: ident.span(),
                             name,
                             raw,
-                        }));
+                        })));
                         raw_token_list_start = i;
                     }
                 }
