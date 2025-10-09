@@ -51,7 +51,7 @@ impl DynVec{
 ```
 
 ## [`eval!`](https://docs.rs/metamatch/latest/metamatch/macro.eval.html)
-Evaluate arbitrary expressions.
+Evaluate simple expressions.
 ```rust
 use metamatch::eval;
 
@@ -144,6 +144,7 @@ Functions support UFCS, so `[1,2,3].len() == len([1,2,3])`
 All `str -> str` functions also work `token -> token`.
 
 - `lowercase(str) -> str`
+- `env(str) -> str`
 - `uppercase(str) -> str`
 - `capitalize(str) -> str`
 - `enumerate([T]) -> [(int, T)]`
@@ -186,7 +187,7 @@ assert_eq!(res, 42);
 
 Extern symbols desugar into a declarative macro (`macro_rules!`).
 
-The therefore follow the same scoping rules as declarative macros do
+They therefore follow the same scoping rules as declarative macros do
 (definitions must come lexically before uses).
 
 You can use `pub extern` to have a `#[macro_export]`

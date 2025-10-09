@@ -139,3 +139,12 @@ fn if_templates_parse() {
 
     assert_eq!(res, 5);
 }
+
+#[test]
+fn get_env() {
+    template! {
+       let res = [<env("CARGO_PKG_NAME")>];
+    };
+
+    assert_eq!(res, "metamatch");
+}

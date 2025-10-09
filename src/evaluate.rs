@@ -495,6 +495,34 @@ fn builtin_fn_ident(
     Ok(Rc::new(MetaValue::Token(TokenTree::Ident(ident))))
 }
 
+fn builtin_fn_env(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    let Some(arg_name) = value_to_str(&args[0]) else {
+        ctx.error(
+            callsite,
+            format!("`env()` expects a str, got `{}``", args[0].kind()),
+        );
+        return Err(EvalError::Error);
+    };
+
+    match std::env::var(&*arg_name) {
+        Ok(val) => Ok(Rc::new(MetaValue::String {
+            value: val.into(),
+            span: Some(callsite),
+        })),
+        Err(e) => {
+            ctx.error(
+                callsite,
+                format!("failed to load env variable: `{arg_name}`: {e}"),
+            );
+            Err(EvalError::Error)
+        }
+    }
+}
+
 fn builtin_fn_str(
     ctx: &mut Context,
     callsite: Span,
@@ -676,6 +704,8 @@ pub fn append_punct(
 
 impl Context {
     pub fn insert_builtins(&mut self) {
+        self.insert_builtin_str_fn("env", |s| std::env::var(s).unwrap());
+
         self.insert_builtin_str_fn("lowercase", |s| s.to_lowercase());
         self.insert_builtin_str_fn("uppercase", |s| s.to_uppercase());
         // TODO: camel_case, pascal_case, ...
@@ -706,6 +736,7 @@ impl Context {
         self.insert_builtin_fn("chars", Some(1), builtin_fn_chars);
         self.insert_builtin_fn("bytes", Some(1), builtin_fn_bytes);
         self.insert_builtin_fn("ident", Some(1), builtin_fn_ident);
+        self.insert_builtin_fn("env", Some(1), builtin_fn_env);
         self.insert_builtin_fn("str", Some(1), builtin_fn_str);
     }
     fn match_and_bind_pattern(
