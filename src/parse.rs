@@ -406,7 +406,7 @@ impl Context {
         loop {
             if rest.is_empty()
                 || trailing.is_some()
-                || lhs.may_drop_semicolon()
+                || lhs.terminates_expression_parsing()
             {
                 return Ok((lhs, rest, trailing));
             }

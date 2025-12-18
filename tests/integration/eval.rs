@@ -480,3 +480,12 @@ fn empty_raw_block_reserved() {
 
     assert_eq!(foo_mut(&mut 1) + bar(&2), 3);
 }
+
+#[test]
+fn raw_plus_var() {
+    let res = eval! {
+        let super x = 10;
+        raw!(5) + x
+    };
+    assert_eq!(res, 15);
+}

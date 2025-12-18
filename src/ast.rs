@@ -808,6 +808,44 @@ impl MetaExpr {
             | MetaExpr::UseDecl { .. } => false,
         }
     }
+
+    /// Returns true if this expression terminates expression parsing
+    /// (i.e., binary operators should not be parsed after it).
+    /// This is different from may_drop_semicolon - literals from raw blocks
+    /// can still be followed by binary operators.
+    pub fn terminates_expression_parsing(&self) -> bool {
+        match self {
+            MetaExpr::FnDecl(..)
+            | MetaExpr::For { .. }
+            | MetaExpr::Loop { .. }
+            | MetaExpr::While { .. }
+            | MetaExpr::WhileLet { .. }
+            | MetaExpr::IfExpr { .. }
+            | MetaExpr::RawOutputGroup { .. }
+            | MetaExpr::Group { .. }
+            | MetaExpr::Break { .. }
+            | MetaExpr::Continue { .. }
+            | MetaExpr::Return { .. } => true,
+
+            // Unlike may_drop_semicolon, literals from raw blocks
+            // do NOT terminate expression parsing - they can be followed
+            // by binary operators like `raw!(5) + x`
+            MetaExpr::Literal { .. }
+            | MetaExpr::Ident { .. }
+            | MetaExpr::Call { .. }
+            | MetaExpr::Lambda(..)
+            | MetaExpr::ExpandPattern(..)
+            | MetaExpr::Block { .. }
+            | MetaExpr::List { .. }
+            | MetaExpr::Tuple { .. }
+            | MetaExpr::OpUnary { .. }
+            | MetaExpr::OpBinary { .. }
+            | MetaExpr::ListAccess { .. }
+            | MetaExpr::Parenthesized { .. }
+            | MetaExpr::LetBinding { .. }
+            | MetaExpr::UseDecl { .. } => false,
+        }
+    }
 }
 
 impl TrailingBlockKind {
