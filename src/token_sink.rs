@@ -1,4 +1,4 @@
-use super::evaluate::{string_to_ident, Result};
+use super::evaluate::Result;
 use proc_macro::{
     Delimiter, Group, Punct, Spacing, Span, TokenStream, TokenTree,
 };
@@ -80,16 +80,12 @@ impl TokenSink {
             return;
         }
         self.force_raw_flush = false;
-        // Create a single raw!{...} block containing all pending raw
-        // content
-        self.data.push(TokenTree::Ident(
-            string_to_ident("raw", false, Span::call_site()).unwrap(),
-        ));
+        // Create a #(...) block containing all pending raw content
         self.data
-            .push(TokenTree::Punct(Punct::new('!', Spacing::Alone)));
+            .push(TokenTree::Punct(Punct::new('#', Spacing::Alone)));
 
         let mut group = Group::new(
-            Delimiter::Brace,
+            Delimiter::Parenthesis,
             TokenStream::from_iter(self.pending_raw.drain(..)),
         );
         group.set_span(Span::call_site());

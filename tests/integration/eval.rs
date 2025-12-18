@@ -485,7 +485,7 @@ fn empty_raw_block_reserved() {
 fn raw_plus_var() {
     let res = eval! {
         let super x = 10;
-        #(5) + x
+        raw!(5) + x
     };
     assert_eq!(res, 15);
 }
