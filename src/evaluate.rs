@@ -2764,6 +2764,13 @@ impl Context {
                     span: None,
                 }))
             }
+            (MetaValue::Tokens(lhs), MetaValue::Tokens(rhs))
+                if op_kind == BinaryOpKind::Add =>
+            {
+                let mut res = lhs.clone();
+                res.extend_from_slice(rhs);
+                Ok(Rc::new(MetaValue::Tokens(res)))
+            }
             _ => {
                 let lhs_kind = lhs.kind();
                 let rhs_kind = rhs.kind();
