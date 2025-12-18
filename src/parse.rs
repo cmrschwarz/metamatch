@@ -138,6 +138,35 @@ fn find_match_arm_bounds(tokens: &[TokenTree]) -> Option<MatchArmEnds> {
     Some(ends)
 }
 
+// Returns (is_range_op, is_inclusive, span, rest) if the tokens start with
+// `..` or `..=`
+fn peek_range_operator(
+    tokens: &[TokenTree],
+) -> Option<(bool, Span, &[TokenTree])> {
+    let Some(TokenTree::Punct(p1)) = tokens.first() else {
+        return None;
+    };
+    if p1.as_char() != '.' || p1.spacing() != Spacing::Joint {
+        return None;
+    }
+    let Some(TokenTree::Punct(p2)) = tokens.get(1) else {
+        return None;
+    };
+    if p2.as_char() != '.' {
+        return None;
+    }
+    // Check for `..=`
+    if p2.spacing() == Spacing::Joint {
+        if let Some(TokenTree::Punct(p3)) = tokens.get(2) {
+            if p3.as_char() == '=' {
+                return Some((true, p1.span(), &tokens[3..]));
+            }
+        }
+    }
+    // Just `..`
+    Some((false, p1.span(), &tokens[2..]))
+}
+
 fn peek_binary_operator(
     tokens: &[TokenTree],
 ) -> Option<(BinaryOpKind, Span, &[TokenTree])> {
@@ -170,8 +199,6 @@ fn peek_binary_operator(
         "=" => BinaryOpKind::Assign,
         "==" => BinaryOpKind::Equal,
         "!=" => BinaryOpKind::NotEqual,
-        ".." => BinaryOpKind::RangeExclusive,
-        "..=" => BinaryOpKind::RangeInclusive,
         "&" => BinaryOpKind::BinaryAnd,
         "|" => BinaryOpKind::BinaryOr,
         "^" => BinaryOpKind::BinaryXor,
@@ -377,6 +404,74 @@ impl Context {
         Ok(expr)
     }
 
+    /// Parse the contents of list access brackets `[...]`
+    /// This handles range expressions like `1..5`, `1..`, `..5`, `..`
+    fn parse_bracket_index(
+        &mut self,
+        span: Span,
+        tokens: &[TokenTree],
+    ) -> Result<Rc<MetaExpr>> {
+        // Check if it starts with `..` (prefix range)
+        if let Some((inclusive, range_span, rest_after_dots)) =
+            peek_range_operator(tokens)
+        {
+            // `..` or `..5` - range with no start
+            let end = if rest_after_dots.is_empty() {
+                None
+            } else {
+                let expr =
+                    self.parse_expr_deny_rest(span, rest_after_dots, 3)?;
+                Some(expr)
+            };
+            return Ok(Rc::new(MetaExpr::Range {
+                span: range_span,
+                start: None,
+                end,
+                inclusive,
+            }));
+        }
+
+        // Try to parse an expression, stopping before range operators (prec 2)
+        // by using min_prec = 3
+        let (expr, rest) =
+            self.parse_expr_deny_trailing_block(span, tokens, 3)?;
+
+        // Check if followed by `..` (infix/postfix range)
+        if let Some((inclusive, range_span, rest_after_dots)) =
+            peek_range_operator(rest)
+        {
+            // `x..` or `x..y`
+            let end = if rest_after_dots.is_empty() {
+                None
+            } else {
+                let end_expr =
+                    self.parse_expr_deny_rest(span, rest_after_dots, 3)?;
+                Some(end_expr)
+            };
+            return Ok(Rc::new(MetaExpr::Range {
+                span: range_span,
+                start: Some(expr),
+                end,
+                inclusive,
+            }));
+        }
+
+        // Not a range - reparse without the restriction to get full expression
+        // (this handles cases like `list[x + y]` where `+` has higher
+        // precedence)
+        if !rest.is_empty() {
+            // There are remaining tokens - reparse with min_prec = 1
+            let (full_expr, final_rest) =
+                self.parse_expr_deny_trailing_block(span, tokens, 1)?;
+            if let Some(stray) = final_rest.first() {
+                self.error(stray.span(), "stray token after expression");
+            }
+            return Ok(full_expr);
+        }
+
+        Ok(expr)
+    }
+
     fn parse_expr_deny_trailing_block<'a>(
         &mut self,
         parent_span: Span,
@@ -420,7 +515,7 @@ impl Context {
                     }
                     rest = &rest[1..];
                     let index = self
-                        .parse_expr_deny_rest(g.span(), &inner, 1)
+                        .parse_bracket_index(g.span(), &inner)
                         .unwrap_or(self.empty_token_list_expr.clone());
                     lhs = Rc::new(MetaExpr::ListAccess {
                         span: g.span(),
@@ -479,6 +574,39 @@ impl Context {
                             continue;
                         }
                     }
+                }
+            }
+
+            // Check for range operator (lowest precedence, level 2)
+            if let Some((inclusive, range_span, rest_after_dots)) =
+                peek_range_operator(rest)
+            {
+                // Range has precedence 2, check if we should handle it
+                if 2 >= min_prec {
+                    // Parse RHS if there is one (for `x..y` or `x..=y`)
+                    let (end, new_rest, new_trailing) =
+                        if rest_after_dots.is_empty() {
+                            (None, rest_after_dots, trailing)
+                        } else {
+                            // Try to parse the end expression
+                            let (end_expr, after_end, end_trailing) = self
+                                .parse_expr(
+                                    parent_span,
+                                    rest_after_dots,
+                                    allow_trailing_block,
+                                    3, // Higher than range precedence
+                                )?;
+                            (Some(end_expr), after_end, end_trailing)
+                        };
+                    lhs = Rc::new(MetaExpr::Range {
+                        span: range_span,
+                        start: Some(lhs),
+                        end,
+                        inclusive,
+                    });
+                    rest = new_rest;
+                    trailing = new_trailing;
+                    continue;
                 }
             }
 
@@ -840,6 +968,41 @@ impl Context {
                     let (expr, rest) =
                         self.parse_lambda(p.span(), &tokens[1..])?;
                     return Ok((expr, rest, None));
+                }
+                // Check for #() raw syntax (sugar for raw!())
+                if p.as_char() == '#' {
+                    if let Some(TokenTree::Group(group)) = tokens.get(1) {
+                        if group.delimiter() == Delimiter::Parenthesis {
+                            // #() is sugar for raw!()
+                            let raw_block_contents = group.stream().into_vec();
+
+                            if raw_block_contents.len() == 1 {
+                                return Ok((
+                                    Rc::new(MetaExpr::Literal {
+                                        span: raw_block_contents[0].span(),
+                                        value: parse_literal(
+                                            &raw_block_contents[0],
+                                        ),
+                                        from_raw_block: true,
+                                    }),
+                                    &tokens[2..],
+                                    None,
+                                ));
+                            }
+
+                            return Ok((
+                                Rc::new(MetaExpr::Literal {
+                                    span: group.span(),
+                                    value: Rc::new(MetaValue::Tokens(
+                                        raw_block_contents,
+                                    )),
+                                    from_raw_block: true,
+                                }),
+                                &tokens[2..],
+                                None,
+                            ));
+                        }
+                    }
                 }
                 if let Some(op_kind) = as_unary_operator(p) {
                     let (operand, rest, _tb) = self.parse_expr(

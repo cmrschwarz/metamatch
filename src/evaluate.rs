@@ -58,6 +58,34 @@ impl<'a> Iterable<'a> {
 
             MetaValue::List(list) => Iterable::List(list.borrow()),
             MetaValue::Tuple(meta_values) => Iterable::Tuple(meta_values),
+            MetaValue::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                let start = start.unwrap_or(0);
+                let end = end.unwrap_or(start); // If no end, just use start (empty range)
+                let values: Vec<Rc<MetaValue>> = if *inclusive {
+                    (start..=end)
+                        .map(|i| {
+                            Rc::new(MetaValue::Int {
+                                value: i,
+                                span: None,
+                            })
+                        })
+                        .collect()
+                } else {
+                    (start..end)
+                        .map(|i| {
+                            Rc::new(MetaValue::Int {
+                                value: i,
+                                span: None,
+                            })
+                        })
+                        .collect()
+                };
+                Iterable::Other(values)
+            }
             MetaValue::Token(_)
             | MetaValue::String { .. }
             | MetaValue::Int { .. }
@@ -107,7 +135,8 @@ impl<'a> Callable<'a> {
             | MetaValue::Bool { .. }
             | MetaValue::String { .. }
             | MetaValue::List(_)
-            | MetaValue::Tuple(_) => return None,
+            | MetaValue::Tuple(_)
+            | MetaValue::Range { .. } => return None,
         };
         Some(res)
     }
@@ -246,6 +275,120 @@ fn builtin_fn_zip(
     Ok(Rc::new(MetaValue::List(RefCell::new(res))))
 }
 
+fn builtin_fn_list(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    let Some(iterable) = Iterable::from_value(&args[0]) else {
+        ctx.error(
+            callsite,
+            format!(
+                "function `list()` expects an iterable, got a {}",
+                args[0].kind()
+            ),
+        );
+        return Err(EvalError::Error);
+    };
+    let list: Vec<Rc<MetaValue>> = iterable.into_iter().cloned().collect();
+    Ok(Rc::new(MetaValue::List(RefCell::new(list))))
+}
+
+fn builtin_fn_tokens(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    fn value_to_token_tree(
+        value: &MetaValue,
+        span: Span,
+    ) -> Option<TokenTree> {
+        match value {
+            MetaValue::Token(t) => Some(t.clone()),
+            MetaValue::Int { value, span: s } => {
+                let mut lit = Literal::i64_unsuffixed(*value);
+                lit.set_span(s.unwrap_or(span));
+                Some(TokenTree::Literal(lit))
+            }
+            MetaValue::Float { value, span: s } => {
+                let mut lit = Literal::f64_unsuffixed(*value);
+                lit.set_span(s.unwrap_or(span));
+                Some(TokenTree::Literal(lit))
+            }
+            MetaValue::Char { value, span: s } => {
+                let mut lit = Literal::character(*value);
+                lit.set_span(s.unwrap_or(span));
+                Some(TokenTree::Literal(lit))
+            }
+            MetaValue::String { value, span: s } => {
+                let mut lit = Literal::string(value);
+                lit.set_span(s.unwrap_or(span));
+                Some(TokenTree::Literal(lit))
+            }
+            MetaValue::Bool { value, span: s } => {
+                let ident = Ident::new(
+                    if *value { "true" } else { "false" },
+                    s.unwrap_or(span),
+                );
+                Some(TokenTree::Ident(ident))
+            }
+            _ => None,
+        }
+    }
+
+    match &*args[0] {
+        MetaValue::Tokens(tokens) => {
+            // Already tokens, just return a clone
+            Ok(Rc::new(MetaValue::Tokens(tokens.clone())))
+        }
+        MetaValue::List(list) => {
+            let mut tokens = Vec::new();
+            for item in list.borrow().iter() {
+                if let Some(t) = value_to_token_tree(item, callsite) {
+                    tokens.push(t);
+                } else {
+                    ctx.error(
+                        callsite,
+                        format!("cannot convert `{}` to token", item.kind()),
+                    );
+                    return Err(EvalError::Error);
+                }
+            }
+            Ok(Rc::new(MetaValue::Tokens(tokens)))
+        }
+        MetaValue::Tuple(tuple) => {
+            let mut tokens = Vec::new();
+            for item in tuple.iter() {
+                if let Some(t) = value_to_token_tree(item, callsite) {
+                    tokens.push(t);
+                } else {
+                    ctx.error(
+                        callsite,
+                        format!("cannot convert `{}` to token", item.kind()),
+                    );
+                    return Err(EvalError::Error);
+                }
+            }
+            Ok(Rc::new(MetaValue::Tokens(tokens)))
+        }
+        other => {
+            // Try to convert single value
+            if let Some(t) = value_to_token_tree(other, callsite) {
+                Ok(Rc::new(MetaValue::Tokens(vec![t])))
+            } else {
+                ctx.error(
+                    callsite,
+                    format!(
+                        "function `tokens()` cannot convert `{}` to tokens",
+                        other.kind()
+                    ),
+                );
+                Err(EvalError::Error)
+            }
+        }
+    }
+}
+
 fn builtin_fn_len(
     ctx: &mut Context,
     callsite: Span,
@@ -263,7 +406,8 @@ fn builtin_fn_len(
         | MetaValue::Float { .. }
         | MetaValue::Fn(_)
         | MetaValue::Lambda(_)
-        | MetaValue::BuiltinFn(_) => {
+        | MetaValue::BuiltinFn(_)
+        | MetaValue::Range { .. } => {
             ctx.error(
                 callsite,
                 format!("value of type `{}` has no len()", args[0].kind()),
@@ -316,7 +460,8 @@ fn builtin_fn_chars(
         | MetaValue::Float { .. }
         | MetaValue::Fn(_)
         | MetaValue::Lambda(_)
-        | MetaValue::BuiltinFn(_) => {
+        | MetaValue::BuiltinFn(_)
+        | MetaValue::Range { .. } => {
             ctx.error(
                 callsite,
                 format!(
@@ -372,7 +517,8 @@ fn builtin_fn_bytes(
         | MetaValue::Float { .. }
         | MetaValue::Fn(_)
         | MetaValue::Lambda(_)
-        | MetaValue::BuiltinFn(_) => {
+        | MetaValue::BuiltinFn(_)
+        | MetaValue::Range { .. } => {
             ctx.error(
                 callsite,
                 format!(
@@ -455,7 +601,8 @@ fn value_to_str(v: &MetaValue) -> Option<Rc<str>> {
 
         MetaValue::Fn(..)
         | MetaValue::Lambda(..)
-        | MetaValue::BuiltinFn(..) => None,
+        | MetaValue::BuiltinFn(..)
+        | MetaValue::Range { .. } => None,
     }
 }
 
@@ -731,6 +878,8 @@ impl Context {
                 .collect::<Vec<_>>()
         });
         self.insert_builtin_fn("len", Some(1), builtin_fn_len);
+        self.insert_builtin_fn("list", Some(1), builtin_fn_list);
+        self.insert_builtin_fn("tokens", Some(1), builtin_fn_tokens);
         self.insert_builtin_fn("zip", None, builtin_fn_zip);
         self.insert_builtin_fn("map", Some(2), builtin_fn_map);
         self.insert_builtin_fn("chars", Some(1), builtin_fn_chars);
@@ -1359,6 +1508,35 @@ impl Context {
                     self.append_quoted_expression(tgt, index, true)
                 })?;
             }
+            MetaExpr::Range {
+                span,
+                start,
+                end,
+                inclusive,
+            } => {
+                if let Some(start) = start {
+                    self.append_quoted_expression(tgt, start, true)?;
+                }
+                let mut p1 = Punct::new('.', Spacing::Joint);
+                p1.set_span(*span);
+                let p2_spacing = if *inclusive {
+                    Spacing::Joint
+                } else {
+                    Spacing::Alone
+                };
+                let mut p2 = Punct::new('.', p2_spacing);
+                p2.set_span(*span);
+                tgt.push(TokenTree::Punct(p1));
+                tgt.push(TokenTree::Punct(p2));
+                if *inclusive {
+                    let mut p3 = Punct::new('=', Spacing::Alone);
+                    p3.set_span(*span);
+                    tgt.push(TokenTree::Punct(p3));
+                }
+                if let Some(end) = end {
+                    self.append_quoted_expression(tgt, end, true)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1458,6 +1636,38 @@ impl Context {
                     }
                     Ok(())
                 })?;
+            }
+            MetaValue::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                // Output as Rust range syntax: start..end or start..=end
+                if let Some(s) = start {
+                    let mut lit = Literal::i64_unsuffixed(*s);
+                    lit.set_span(eval_span);
+                    tgt.push(TokenTree::Literal(lit));
+                }
+                tgt.push(TokenTree::Punct(Punct::new('.', Spacing::Joint)));
+                tgt.push(TokenTree::Punct(Punct::new(
+                    '.',
+                    if *inclusive {
+                        Spacing::Joint
+                    } else {
+                        Spacing::Alone
+                    },
+                )));
+                if *inclusive {
+                    tgt.push(TokenTree::Punct(Punct::new(
+                        '=',
+                        Spacing::Alone,
+                    )));
+                }
+                if let Some(e) = end {
+                    let mut lit = Literal::i64_unsuffixed(*e);
+                    lit.set_span(eval_span);
+                    tgt.push(TokenTree::Literal(lit));
+                }
             }
         }
         Ok(())
@@ -2001,23 +2211,55 @@ impl Context {
                 variants_expr,
                 body,
             } => {
-                let input_list = self.eval(variants_expr, true)?;
-                let MetaValue::List(list_elems) = &*input_list else {
-                    self.error(
-                        variants_expr.span(),
-                        format!("cannot iterate over {}", input_list.kind()),
-                    );
-                    return Err(EvalError::Error);
-                };
+                let input_val = self.eval(variants_expr, true)?;
                 let mut res_tokens = TokenSink::new(true);
 
-                for elem in &*list_elems.borrow() {
+                // Create an iterator based on the value type
+                let iter: Box<dyn Iterator<Item = Rc<MetaValue>>> =
+                    match &*input_val {
+                        MetaValue::List(list_elems) => {
+                            Box::new(list_elems.borrow().clone().into_iter())
+                        }
+                        MetaValue::Range {
+                            start,
+                            end,
+                            inclusive,
+                        } => {
+                            let start = start.unwrap_or(0);
+                            let end = end.unwrap_or_else(|| {
+                                self.error(
+                                    variants_expr.span(),
+                                    "cannot iterate over unbounded range",
+                                );
+                                start // will be caught below
+                            });
+                            let mut end = end;
+                            if *inclusive {
+                                end += 1;
+                            }
+                            Box::new((start..end).map(|i| {
+                                Rc::new(MetaValue::Int {
+                                    value: i,
+                                    span: None,
+                                })
+                            }))
+                        }
+                        _ => {
+                            self.error(
+                                variants_expr.span(),
+                                format!(
+                                    "cannot iterate over {}",
+                                    input_val.kind()
+                                ),
+                            );
+                            return Err(EvalError::Error);
+                        }
+                    };
+
+                for elem in iter {
                     self.push_eval_scope();
-                    let mut res = self.match_and_bind_pattern(
-                        pattern,
-                        elem.clone(),
-                        false,
-                    );
+                    let mut res =
+                        self.match_and_bind_pattern(pattern, elem, false);
                     if res.is_ok() {
                         res = self.eval_block_to_stream(
                             &mut res_tokens,
@@ -2336,59 +2578,218 @@ impl Context {
                 list: lhs,
                 index: rhs,
             } => {
-                let (idx, list) = self.access_list(span, lhs, rhs)?;
-                if let MetaValue::List(list) = &*list {
-                    return Ok(list.borrow()[idx].clone());
+                // First evaluate the index
+                let index_val = self.eval(rhs, true)?;
+
+                // Check if it's a range for slicing
+                if let MetaValue::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = &*index_val
+                {
+                    return self
+                        .eval_slice(*span, lhs, *start, *end, *inclusive);
+                }
+
+                // Otherwise it's a regular index access
+                let list_val = self.eval(lhs, true)?;
+                let MetaValue::List(list) = &*list_val else {
+                    self.error(
+                        *span,
+                        format!("cannot index into `{}`", list_val.kind()),
+                    );
+                    return Err(EvalError::Error);
                 };
-                unreachable!()
+
+                let MetaValue::Int { value: index, .. } = &*index_val else {
+                    self.error(
+                        rhs.span(),
+                        format!(
+                            "cannot use `{}` as an index",
+                            index_val.kind()
+                        ),
+                    );
+                    return Err(EvalError::Error);
+                };
+
+                let idx = usize::try_from(*index).unwrap_or(usize::MAX);
+                let list = list.borrow();
+                if idx >= list.len() {
+                    self.error(
+                        *span,
+                        format!(
+                            "index `{index}` is out of bounds for list of length {}",
+                            list.len()
+                        ),
+                    );
+                    return Err(EvalError::Error);
+                }
+                Ok(list[idx].clone())
+            }
+            MetaExpr::Range {
+                span: _,
+                start,
+                end,
+                inclusive,
+            } => {
+                // Evaluate start and end to integers
+                let start_val = if let Some(start_expr) = start {
+                    let val = self.eval(start_expr, true)?;
+                    let MetaValue::Int { value, .. } = &*val else {
+                        self.error(
+                            start_expr.span(),
+                            format!(
+                                "range start must be an integer, got `{}`",
+                                val.kind()
+                            ),
+                        );
+                        return Err(EvalError::Error);
+                    };
+                    Some(*value)
+                } else {
+                    None
+                };
+
+                let end_val = if let Some(end_expr) = end {
+                    let val = self.eval(end_expr, true)?;
+                    let MetaValue::Int { value, .. } = &*val else {
+                        self.error(
+                            end_expr.span(),
+                            format!(
+                                "range end must be an integer, got `{}`",
+                                val.kind()
+                            ),
+                        );
+                        return Err(EvalError::Error);
+                    };
+                    Some(*value)
+                } else {
+                    None
+                };
+
+                Ok(Rc::new(MetaValue::Range {
+                    start: start_val,
+                    end: end_val,
+                    inclusive: *inclusive,
+                }))
             }
         }
     }
 
-    fn access_list(
+    fn eval_slice(
         &mut self,
-        span: &Span,
+        access_span: Span,
         list_expr: &MetaExpr,
-        index: &MetaExpr,
-    ) -> Result<(usize, Rc<MetaValue>)> {
+        start: Option<i64>,
+        end: Option<i64>,
+        inclusive: bool,
+    ) -> Result<Rc<MetaValue>> {
         let list_val = self.eval(list_expr, true)?;
-        let MetaValue::List(list) = &*list_val else {
-            self.error(
-                *span,
-                format!("cannot index into `{}`", list_val.kind()),
-            );
-            return Err(EvalError::Error);
-        };
 
-        let index_val = self.eval(index, true)?;
-        let MetaValue::Int {
-            value: index,
-            span: _,
-        } = &*index_val
-        else {
-            self.error(
-                list_expr.span(),
-                format!("cannot index into `{}`", index_val.kind()),
-            );
-            return Err(EvalError::Error);
-        };
+        let start_idx = start
+            .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
+            .unwrap_or(0);
 
-        let list = list.borrow();
+        match &*list_val {
+            MetaValue::List(list) => {
+                let list = list.borrow();
+                let len = list.len();
+                let mut end_idx = end
+                    .map(|v| usize::try_from(v).unwrap_or(usize::MAX).min(len))
+                    .unwrap_or(len);
+                if inclusive && end_idx < len {
+                    end_idx += 1;
+                }
 
-        let idx = usize::try_from(*index).unwrap_or(usize::MAX);
+                if start_idx > end_idx {
+                    self.error(
+                        access_span,
+                        format!("slice start ({start_idx}) is greater than end ({end_idx})"),
+                    );
+                    return Err(EvalError::Error);
+                }
+                if start_idx > len {
+                    self.error(
+                        access_span,
+                        format!("slice start ({start_idx}) is out of bounds for list of length {len}"),
+                    );
+                    return Err(EvalError::Error);
+                }
 
-        if idx >= list.len() {
-            self.error(
-                *span,
-                format!(
-                    "index `{index}` is out of bounds for list of length {}",
-                    list.len()
-                ),
-            );
-            return Err(EvalError::Error);
-        };
-        drop(list);
-        Ok((idx, list_val))
+                let sliced: Vec<Rc<MetaValue>> =
+                    list[start_idx..end_idx].to_vec();
+                Ok(Rc::new(MetaValue::List(RefCell::new(sliced))))
+            }
+            MetaValue::Tokens(tokens) => {
+                let len = tokens.len();
+                let mut end_idx = end
+                    .map(|v| usize::try_from(v).unwrap_or(usize::MAX).min(len))
+                    .unwrap_or(len);
+                if inclusive && end_idx < len {
+                    end_idx += 1;
+                }
+
+                if start_idx > end_idx {
+                    self.error(
+                        access_span,
+                        format!("slice start ({start_idx}) is greater than end ({end_idx})"),
+                    );
+                    return Err(EvalError::Error);
+                }
+                if start_idx > len {
+                    self.error(
+                        access_span,
+                        format!("slice start ({start_idx}) is out of bounds for token list of length {len}"),
+                    );
+                    return Err(EvalError::Error);
+                }
+
+                let sliced = tokens[start_idx..end_idx].to_vec();
+                Ok(Rc::new(MetaValue::Tokens(sliced)))
+            }
+            MetaValue::String { value, .. } => {
+                let len = value.chars().count();
+                let mut end_idx = end
+                    .map(|v| usize::try_from(v).unwrap_or(usize::MAX).min(len))
+                    .unwrap_or(len);
+                if inclusive && end_idx < len {
+                    end_idx += 1;
+                }
+
+                if start_idx > end_idx {
+                    self.error(
+                        access_span,
+                        format!("slice start ({start_idx}) is greater than end ({end_idx})"),
+                    );
+                    return Err(EvalError::Error);
+                }
+                if start_idx > len {
+                    self.error(
+                        access_span,
+                        format!("slice start ({start_idx}) is out of bounds for string of length {len}"),
+                    );
+                    return Err(EvalError::Error);
+                }
+
+                let sliced: String = value
+                    .chars()
+                    .skip(start_idx)
+                    .take(end_idx - start_idx)
+                    .collect();
+                Ok(Rc::new(MetaValue::String {
+                    value: Rc::from(sliced),
+                    span: None,
+                }))
+            }
+            _ => {
+                self.error(
+                    access_span,
+                    format!("cannot slice `{}`", list_val.kind()),
+                );
+                Err(EvalError::Error)
+            }
+        }
     }
 
     fn eval_op_unary(
@@ -2421,7 +2822,8 @@ impl Context {
                 | MetaValue::Lambda(..)
                 | MetaValue::BuiltinFn(..)
                 | MetaValue::List(..)
-                | MetaValue::Tuple(..) => {
+                | MetaValue::Tuple(..)
+                | MetaValue::Range { .. } => {
                     self.error(
                         *span,
                         format!(
@@ -2456,7 +2858,8 @@ impl Context {
                 | MetaValue::Lambda(..)
                 | MetaValue::BuiltinFn(..)
                 | MetaValue::List(..)
-                | MetaValue::Tuple(..) => {
+                | MetaValue::Tuple(..)
+                | MetaValue::Range { .. } => {
                     self.error(
                         *span,
                         format!(
@@ -2501,23 +2904,6 @@ impl Context {
             BinaryOpKind::BinaryAnd => res_int(lhs & rhs),
             BinaryOpKind::BinaryOr => res_int(lhs | rhs),
             BinaryOpKind::BinaryXor => res_int(lhs ^ rhs),
-            BinaryOpKind::RangeExclusive | BinaryOpKind::RangeInclusive => {
-                let mut rhs = rhs;
-                if op_kind == BinaryOpKind::RangeInclusive {
-                    rhs += 1;
-                }
-
-                // if its good enough for python 2 it's good enough for us?
-                // TODO: maybe not
-                let mut res = Vec::new();
-                for i in lhs..rhs {
-                    res.push(Rc::new(MetaValue::Int {
-                        value: i,
-                        span: None,
-                    }));
-                }
-                Ok(Rc::new(MetaValue::List(RefCell::new(res))))
-            }
             BinaryOpKind::LogicalAnd | BinaryOpKind::LogicalOr => {
                 self.error(
                     span,
@@ -2571,9 +2957,7 @@ impl Context {
             BinaryOpKind::Div => res_float(lhs / rhs),
             BinaryOpKind::Rem => res_float(lhs % rhs),
 
-            BinaryOpKind::RangeExclusive
-            | BinaryOpKind::RangeInclusive
-            | BinaryOpKind::ShiftLeft
+            BinaryOpKind::ShiftLeft
             | BinaryOpKind::ShiftRight
             | BinaryOpKind::BinaryAnd
             | BinaryOpKind::BinaryOr
@@ -2680,7 +3064,8 @@ impl Context {
             | MetaExpr::Continue { .. }
             | MetaExpr::OpUnary { .. }
             | MetaExpr::UseDecl { .. }
-            | MetaExpr::OpBinary { .. } => {
+            | MetaExpr::OpBinary { .. }
+            | MetaExpr::Range { .. } => {
                 self.error(
                     lhs.span(),
                     format!("{} is not assignable", lhs.kind_str()),
@@ -2688,18 +3073,48 @@ impl Context {
                 Err(EvalError::Error)
             }
             MetaExpr::ListAccess { span, list, index } => {
-                let (idx, list) = self.access_list(span, list, index)?;
-                let MetaValue::List(list) = &*list else {
-                    unreachable!();
+                let list_val = self.eval(list, true)?;
+                let MetaValue::List(list_ref) = &*list_val else {
+                    self.error(
+                        *span,
+                        format!("cannot index into `{}`", list_val.kind()),
+                    );
+                    return Err(EvalError::Error);
                 };
-                let mut list = list.borrow_mut();
-                let v = &mut list[idx];
+
+                let index_val = self.eval(index, true)?;
+                let MetaValue::Int { value: idx_val, .. } = &*index_val else {
+                    self.error(
+                        index.span(),
+                        format!(
+                            "cannot use `{}` as an index",
+                            index_val.kind()
+                        ),
+                    );
+                    return Err(EvalError::Error);
+                };
+
+                let idx = usize::try_from(*idx_val).unwrap_or(usize::MAX);
+                let mut list = list_ref.borrow_mut();
+                if idx >= list.len() {
+                    self.error(
+                        *span,
+                        format!(
+                            "index `{idx_val}` is out of bounds for list of length {}",
+                            list.len()
+                        ),
+                    );
+                    return Err(EvalError::Error);
+                }
+
                 let rhs_val = self.eval(rhs, true)?;
                 if let Some(base) = op_base_version {
-                    *v = self
-                        .eval_binary_op_from_vals(base, *span, v, &rhs_val)?;
+                    let new_val = self.eval_binary_op_from_vals(
+                        base, *span, &list[idx], &rhs_val,
+                    )?;
+                    list[idx] = new_val;
                 } else {
-                    *v = rhs_val;
+                    list[idx] = rhs_val;
                 }
                 Ok(self.empty_token_list.clone())
             }

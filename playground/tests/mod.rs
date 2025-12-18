@@ -10,7 +10,7 @@ fn assert_eval_output(input: &str, expected_output: &str) {
 fn empty_raw_block_preserved() {
     assert_eval_output(
         r#"
-extern let my_fns = raw!();
+extern let my_fns = #();
 "#,
         r#"
 macro_rules! my_fns {

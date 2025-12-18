@@ -220,7 +220,7 @@ fn fn_call_in_expand() {
 
         fn CONCAT(a, b) {
             let len_a = a.len();
-            let res = 0..(len_a + b.len());
+            let res = list(0..(len_a + b.len()));
             for i in 0..len_a {
                 res[i] = a[i];
             }

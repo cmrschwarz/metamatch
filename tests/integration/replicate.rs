@@ -90,7 +90,7 @@ fn empty_raw_block_preserved() {
     #![allow(clippy::needless_lifetimes, clippy::unnecessary_mut_passed)]
 
     metamatch::eval! {
-        extern let my_fns = [(foo_mut, mut), (bar, raw!())];
+        extern let my_fns = [(foo_mut, mut), (bar, #())];
     }
 
     #[replicate(for (FN, super r#mut) in (use my_fns))]
@@ -147,7 +147,7 @@ fn non_mut_generation() {
             }
             fn get_x<'a>(&'a $this) -> &'a i32 {
                 metamatch::eval!{
-                    let super r#mut = raw!();
+                    let super r#mut = #();
                     quote!{
                         $($body)*
                     }

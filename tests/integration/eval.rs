@@ -29,7 +29,7 @@ fn quote_expr() {
 #[test]
 fn raw_expr() {
     let res = eval! {
-        for X in [1, raw!(+2), raw!(+3)] {
+        for X in [1, #(+2), #(+3)] {
             X
         }
     };
@@ -40,7 +40,7 @@ fn raw_expr() {
 #[test]
 fn raw_keeps_token_tokens_ambiguous() {
     let res = eval! {
-        4 * raw!(4);
+        4 * #(4);
     };
 
     assert_eq!(res, 16);
@@ -50,7 +50,7 @@ fn raw_keeps_token_tokens_ambiguous() {
 fn raw_expr_2() {
     const X: i64 = 5;
     let res = eval! {
-        raw!(1);
+        #(1);
         for X in [2, 3, 4] {
             // this will *not* evaluate the X
             raw!{
@@ -65,10 +65,10 @@ fn raw_expr_2() {
 fn raw_stmt() {
     const X: i64 = 5;
     let res = eval! {
-        raw!(1);
+        #(1);
         for X in [2, 3, 4] {
             // this will *not* evaluate the X
-            raw!(+ X);
+            #(+ X);
         }
     };
 
@@ -79,7 +79,7 @@ fn raw_stmt() {
 fn lowercase_vars_not_superbound() {
     let x: i64 = 5;
     let res = eval! {
-        raw!(1);
+        #(1);
         for x in [2, 3, 4] {
             quote!{
                 + x
@@ -438,7 +438,7 @@ fn quote_self() {
         x: i32,
     }
     metamatch::eval! {
-        let super r#mut = raw!();
+        let super r#mut = #();
         quote!{
             impl Foo {
                 fn get_x<'a>(&'a mut self) -> &'a mut i32 {
@@ -465,7 +465,7 @@ fn empty_raw_block_reserved() {
     #![allow(clippy::needless_lifetimes, clippy::unnecessary_mut_passed)]
 
     metamatch::eval! {
-        extern let my_fns = [(foo_mut, mut), (bar, raw!())];
+        extern let my_fns = [(foo_mut, mut), (bar, #())];
     }
 
     metamatch::eval! {
@@ -485,7 +485,7 @@ fn empty_raw_block_reserved() {
 fn raw_plus_var() {
     let res = eval! {
         let super x = 10;
-        raw!(5) + x
+        #(5) + x
     };
     assert_eq!(res, 15);
 }

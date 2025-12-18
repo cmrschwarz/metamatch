@@ -91,6 +91,11 @@ pub enum MetaValue {
     BuiltinFn(Rc<BuiltinFn>),
     List(RefCell<Vec<Rc<MetaValue>>>),
     Tuple(Vec<Rc<MetaValue>>),
+    Range {
+        start: Option<i64>,
+        end: Option<i64>,
+        inclusive: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -283,6 +288,13 @@ pub enum MetaExpr {
         list: Rc<MetaExpr>,
         index: Rc<MetaExpr>,
     },
+    // start..end, start..=end, start.., ..end, ..
+    Range {
+        span: Span,
+        start: Option<Rc<MetaExpr>>,
+        end: Option<Rc<MetaExpr>>,
+        inclusive: bool,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnaryOpKind {
@@ -327,9 +339,6 @@ pub enum BinaryOpKind {
 
     ShiftLeftAssign,
     ShiftRightAssign,
-
-    RangeExclusive,
-    RangeInclusive,
 }
 
 #[derive(Debug)]
@@ -430,6 +439,7 @@ pub enum Kind {
 
     List,
     Tuple,
+    Range,
 }
 
 impl MetaIdent {
@@ -457,6 +467,7 @@ impl MetaValue {
             MetaValue::BuiltinFn(_) => Kind::Fn,
             MetaValue::List(_) => Kind::List,
             MetaValue::Tuple(_) => Kind::Tuple,
+            MetaValue::Range { .. } => Kind::Range,
         }
     }
     pub fn get_span(&self) -> Option<Span> {
@@ -475,6 +486,7 @@ impl MetaValue {
             MetaValue::BuiltinFn(_) => None,
             MetaValue::List(_) => None,
             MetaValue::Tuple(_) => None,
+            MetaValue::Range { .. } => None,
         }
     }
 
@@ -497,6 +509,7 @@ impl Kind {
             Kind::Fn => "fn",
             Kind::List => "list",
             Kind::Tuple => "tuple",
+            Kind::Range => "range",
         }
     }
 }
@@ -549,8 +562,6 @@ impl BinaryOpKind {
             BinaryOpKind::Div => "divide",
             BinaryOpKind::Rem => "remainder",
             BinaryOpKind::Equal => "equals",
-            BinaryOpKind::RangeExclusive => "exclusive range",
-            BinaryOpKind::RangeInclusive => "inclusive range",
             BinaryOpKind::Assign => "assign",
             BinaryOpKind::NotEqual => "not equal",
             BinaryOpKind::BinaryAnd => "binary and",
@@ -584,8 +595,6 @@ impl BinaryOpKind {
             BinaryOpKind::Div => "/",
             BinaryOpKind::Rem => "%",
             BinaryOpKind::Equal => "==",
-            BinaryOpKind::RangeExclusive => "..",
-            BinaryOpKind::RangeInclusive => "..=",
             BinaryOpKind::Assign => "=",
             BinaryOpKind::NotEqual => "!=",
             BinaryOpKind::BinaryAnd => "&",
@@ -627,7 +636,6 @@ impl BinaryOpKind {
             | BinaryOpKind::GreaterThanOrEqual => 5,
             BinaryOpKind::LogicalAnd => 4,
             BinaryOpKind::LogicalOr => 3,
-            BinaryOpKind::RangeExclusive | BinaryOpKind::RangeInclusive => 2,
             BinaryOpKind::Assign
             | BinaryOpKind::AddAssign
             | BinaryOpKind::SubAssign
@@ -652,8 +660,6 @@ impl BinaryOpKind {
             | BinaryOpKind::Div
             | BinaryOpKind::Rem
             | BinaryOpKind::Equal
-            | BinaryOpKind::RangeExclusive
-            | BinaryOpKind::RangeInclusive
             | BinaryOpKind::NotEqual
             | BinaryOpKind::BinaryAnd
             | BinaryOpKind::BinaryOr
@@ -690,8 +696,6 @@ impl BinaryOpKind {
             | BinaryOpKind::Rem
             | BinaryOpKind::Equal
             | BinaryOpKind::NotEqual
-            | BinaryOpKind::RangeExclusive
-            | BinaryOpKind::RangeInclusive
             | BinaryOpKind::BinaryAnd
             | BinaryOpKind::BinaryOr
             | BinaryOpKind::BinaryXor
@@ -746,6 +750,7 @@ impl MetaExpr {
             MetaExpr::While { span, .. } => span,
             MetaExpr::WhileLet { span, .. } => span,
             MetaExpr::Group { span, .. } => span,
+            MetaExpr::Range { span, .. } => span,
         }
     }
     pub fn kind_str(&self) -> &'static str {
@@ -775,6 +780,7 @@ impl MetaExpr {
             MetaExpr::OpBinary { .. } => "binary operator",
             MetaExpr::ListAccess { .. } => "property access",
             MetaExpr::Parenthesized { .. } => "parentheses",
+            MetaExpr::Range { .. } => "range",
         }
     }
     pub fn may_drop_semicolon(&self) -> bool {
@@ -805,7 +811,8 @@ impl MetaExpr {
             | MetaExpr::ListAccess { .. }
             | MetaExpr::Parenthesized { .. }
             | MetaExpr::LetBinding { .. }
-            | MetaExpr::UseDecl { .. } => false,
+            | MetaExpr::UseDecl { .. }
+            | MetaExpr::Range { .. } => false,
         }
     }
 
@@ -843,7 +850,8 @@ impl MetaExpr {
             | MetaExpr::ListAccess { .. }
             | MetaExpr::Parenthesized { .. }
             | MetaExpr::LetBinding { .. }
-            | MetaExpr::UseDecl { .. } => false,
+            | MetaExpr::UseDecl { .. }
+            | MetaExpr::Range { .. } => false,
         }
     }
 }

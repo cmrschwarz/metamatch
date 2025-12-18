@@ -155,10 +155,12 @@ All `str -> str` functions also work `token -> token`.
 - `ident(str) -> token`
 - `str(any) -> str`
 - `len([T]) -> int`
+- `list(iterable) -> [T]`: Convert a range or other iterable to a mutable list
+- `tokens([T]) -> tokens`: Convert a list of values back to raw tokens
 
 ## Special Purpose 'Macros'
 - `quote!(..) -> [token]`: Like a nested `template!`, this evaluates to a list of raw tokens.
-- `raw!(..) -> [token]`: like `quote!`, but no meta variable expansion or template tags.
+- `raw!(..) -> [token]` or `#(..)`: Like `quote!`, but no meta variable expansion or template tags.
 
 Just like Rust macros, you can use any of `{}`, `[]`, and `()`
 interchangably for these macro invocations.
