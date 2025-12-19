@@ -702,13 +702,32 @@ fn value_to_str(v: &MetaValue) -> Option<Rc<str>> {
         MetaValue::Token(t) => match t {
             TokenTree::Ident(i) => Some(Rc::from(i.to_string())),
             TokenTree::Literal(literal) => Some(Rc::from(literal.to_string())),
-            TokenTree::Group(_) => None, // TODO:?
+            TokenTree::Group(g) => {
+                let inner: String =
+                    g.stream().into_iter().map(|t| t.to_string()).collect();
+                let (open, close) = match g.delimiter() {
+                    Delimiter::Parenthesis => ("(", ")"),
+                    Delimiter::Brace => ("{", "}"),
+                    Delimiter::Bracket => ("[", "]"),
+                    Delimiter::None => ("", ""),
+                };
+                Some(Rc::from(format!("{}{}{}", open, inner, close)))
+            }
             TokenTree::Punct(punct) => Some(Rc::from(
                 punct.as_char().encode_utf8(&mut [0; 4]).to_string(),
             )),
         },
-        MetaValue::List(..) => None,  // TODO: ?
-        MetaValue::Tuple(..) => None, // TODO: ?
+        MetaValue::List(list) => {
+            let list = list.borrow();
+            let parts: Option<Vec<_>> =
+                list.iter().map(|v| value_to_str(v)).collect();
+            parts.map(|p| Rc::from(format!("[{}]", p.join(", "))))
+        }
+        MetaValue::Tuple(tuple) => {
+            let parts: Option<Vec<_>> =
+                tuple.iter().map(|v| value_to_str(v)).collect();
+            parts.map(|p| Rc::from(format!("({})", p.join(", "))))
+        }
         MetaValue::Int { value, span: _ } => Some(Rc::from(value.to_string())),
         MetaValue::Tokens(token_trees) => Some(Rc::from(
             token_trees
@@ -722,11 +741,21 @@ fn value_to_str(v: &MetaValue) -> Option<Rc<str>> {
         MetaValue::Bool { value, span: _ } => {
             Some(Rc::from(value.to_string()))
         }
-
-        MetaValue::Fn(..)
-        | MetaValue::Lambda(..)
-        | MetaValue::BuiltinFn(..)
-        | MetaValue::Range { .. } => None,
+        MetaValue::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let start_str = start.map(|v| v.to_string()).unwrap_or_default();
+            let end_str = end.map(|v| v.to_string()).unwrap_or_default();
+            let op = if *inclusive { "..=" } else { ".." };
+            Some(Rc::from(format!("{}{}{}", start_str, op, end_str)))
+        }
+        MetaValue::Fn(f) => Some(Rc::from(format!("fn {}", f.ident.name))),
+        MetaValue::Lambda(_) => Some(Rc::from("<lambda>")),
+        MetaValue::BuiltinFn(f) => {
+            Some(Rc::from(format!("<builtin fn {}>", f.name)))
+        }
     }
 }
 
@@ -811,6 +840,30 @@ fn builtin_fn_str(
         value: s,
         span: args[0].get_span(),
     }))
+}
+
+fn builtin_fn_tokenize(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    let Some(s) = value_to_str(&args[0]) else {
+        ctx.error(
+            callsite,
+            format!("`tokenize()` expects a str, got `{}`", args[0].kind()),
+        );
+        return Err(EvalError::Error);
+    };
+
+    let tokens: TokenStream = match s.parse() {
+        Ok(ts) => ts,
+        Err(e) => {
+            ctx.error(callsite, format!("failed to parse tokens: {e}"));
+            return Err(EvalError::Error);
+        }
+    };
+
+    Ok(Rc::new(MetaValue::Tokens(tokens.into_iter().collect())))
 }
 
 fn append_group(
@@ -1004,6 +1057,7 @@ impl Context {
         self.insert_builtin_fn("len", Some(1), builtin_fn_len);
         self.insert_builtin_fn("list", Some(1), builtin_fn_list);
         self.insert_builtin_fn("tokens", Some(1), builtin_fn_tokens);
+        self.insert_builtin_fn("tokenize", Some(1), builtin_fn_tokenize);
         self.insert_builtin_fn("zip", None, builtin_fn_zip);
         self.insert_builtin_fn("flatten", Some(1), builtin_fn_flatten);
         self.insert_builtin_fn("combinations", None, builtin_fn_combinations);

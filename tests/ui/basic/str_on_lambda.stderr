@@ -1,5 +1,0 @@
-error: cannot cast `fn` to `str`
- --> tests/ui/basic/str_on_lambda.rs:6:9
-  |
-6 |         str(|x| x)
-  |         ^^^

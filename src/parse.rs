@@ -1039,35 +1039,29 @@ impl Context {
                         self.parse_lambda(p.span(), &tokens[1..])?;
                     return Ok((expr, rest, None));
                 }
-                // Check for #() raw syntax (sugar for raw!())
+                // Check for #() quote syntax (sugar for quote!())
                 if p.as_char() == '#' {
                     if let Some(TokenTree::Group(group)) = tokens.get(1) {
                         if group.delimiter() == Delimiter::Parenthesis {
-                            // #() is sugar for raw!()
-                            let raw_block_contents = group.stream().into_vec();
+                            // #() is sugar for quote!()
+                            let span = group.span();
+                            let quote_contents = group.stream().into_vec();
 
-                            if raw_block_contents.len() == 1 {
-                                return Ok((
-                                    Rc::new(MetaExpr::Literal {
-                                        span: raw_block_contents[0].span(),
-                                        value: parse_literal(
-                                            &raw_block_contents[0],
-                                        ),
-                                        from_raw_block: true,
-                                    }),
-                                    &tokens[2..],
-                                    None,
-                                ));
-                            }
+                            self.push_dummy_scope(ScopeKind::Quote);
+                            let contents = self
+                                .parse_raw_block_to_exprs(
+                                    span,
+                                    &quote_contents,
+                                )
+                                .unwrap_or_default();
+                            self.pop_scope();
 
                             return Ok((
-                                Rc::new(MetaExpr::Literal {
-                                    span: group.span(),
-                                    value: Rc::new(MetaValue::Tokens(
-                                        raw_block_contents,
-                                    )),
-                                    from_raw_block: true,
-                                }),
+                                Rc::new(MetaExpr::Block(ExprBlock {
+                                    span,
+                                    stmts: contents,
+                                    trailing_semi: false,
+                                })),
                                 &tokens[2..],
                                 None,
                             ));

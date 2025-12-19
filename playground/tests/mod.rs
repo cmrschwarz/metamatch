@@ -10,12 +10,12 @@ fn assert_eval_output(input: &str, expected_output: &str) {
 fn empty_raw_block_preserved() {
     assert_eval_output(
         r#"
-extern let my_fns = #();
+extern let my_fns = raw!();
 "#,
         r#"
 macro_rules! my_fns {
     ($alias:ident, ($($chain:tt)*), [$($prefix:tt)*], $($rest:tt)*) => {
-        $($chain)* { $($prefix)* let $alias = # (); $($rest)* }
+        $($chain)* { $($prefix)* let $alias = raw! {}; $($rest)* }
     };
 }"#,
     )

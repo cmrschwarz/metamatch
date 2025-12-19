@@ -1,6 +1,6 @@
 use super::evaluate::Result;
 use proc_macro::{
-    Delimiter, Group, Punct, Spacing, Span, TokenStream, TokenTree,
+    Delimiter, Group, Ident, Punct, Spacing, Span, TokenStream, TokenTree,
 };
 
 pub struct TokenSink {
@@ -80,12 +80,14 @@ impl TokenSink {
             return;
         }
         self.force_raw_flush = false;
-        // Create a #(...) block containing all pending raw content
+        // Create a raw! {...} block containing all pending raw content
         self.data
-            .push(TokenTree::Punct(Punct::new('#', Spacing::Alone)));
+            .push(TokenTree::Ident(Ident::new("raw", Span::call_site())));
+        self.data
+            .push(TokenTree::Punct(Punct::new('!', Spacing::Alone)));
 
         let mut group = Group::new(
-            Delimiter::Parenthesis,
+            Delimiter::Brace,
             TokenStream::from_iter(self.pending_raw.drain(..)),
         );
         group.set_span(Span::call_site());
