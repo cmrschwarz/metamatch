@@ -1,0 +1,5 @@
+error: index `-1` is out of bounds (negative indices are not supported)
+ --> tests/ui/basic/negative_index.rs:6:10
+  |
+6 |         x[-1]
+  |          ^^^^

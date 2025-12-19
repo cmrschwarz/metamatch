@@ -1,0 +1,5 @@
+error: first argument to `map()` must be iterable, `str` is not
+ --> tests/ui/weird_edge_cases/string_not_iterable.rs:5:16
+  |
+5 |         "asdf".map(|x|x)
+  |                ^^^

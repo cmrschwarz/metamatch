@@ -1,0 +1,5 @@
+error: second argument to `map()` must be callable, `int` is not
+ --> tests/ui/weird_edge_cases/chained_method_error.rs:6:31
+  |
+6 |         [1, 2, 3].enumerate().map(42)
+  |                               ^^^

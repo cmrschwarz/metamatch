@@ -1,0 +1,5 @@
+error: `zip()` arguments must be iterable, `int` is not (argument 1)
+ --> tests/ui/weird_edge_cases/zip_non_iterable.rs:6:9
+  |
+6 |         zip(42, [1, 2, 3])
+  |         ^^^

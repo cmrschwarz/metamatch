@@ -1,0 +1,5 @@
+error: cannot assign to immutable variable `x`
+ --> tests/ui/basic/assign_to_immutable.rs:6:11
+  |
+6 |         x = 10;
+  |           ^

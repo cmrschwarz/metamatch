@@ -1,0 +1,5 @@
+error: cannot index into `int`
+ --> tests/ui/basic/index_non_list.rs:6:10
+  |
+6 |         x[0]
+  |          ^^^

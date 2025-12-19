@@ -1,0 +1,5 @@
+error: `break` value in `loop` with non empty output token list
+ --> tests/ui/weird_edge_cases/break_out_of_loop_with_output_tokens.rs:9:17
+  |
+9 |                 break X;
+  |                 ^^^^^

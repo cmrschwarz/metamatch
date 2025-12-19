@@ -1,0 +1,5 @@
+error: value of type `token` has no len()
+ --> tests/ui/weird_edge_cases/method_on_undefined.rs:6:27
+  |
+6 |             undefined_var.len()
+  |                           ^^^

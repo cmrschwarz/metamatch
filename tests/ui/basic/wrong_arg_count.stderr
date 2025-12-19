@@ -1,0 +1,5 @@
+error: function `foo` expects 1 parameter, called with 3
+ --> tests/ui/basic/wrong_arg_count.rs:6:9
+  |
+6 |         foo(1, 2, 3)
+  |         ^^^

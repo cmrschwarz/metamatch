@@ -1,0 +1,5 @@
+error: `zip()` argument 2 has length 2, but the previous arguments have length 3
+ --> tests/ui/weird_edge_cases/zip_mismatched_lengths.rs:6:21
+  |
+6 |         for pair in zip([1, 2, 3], [4, 5]) { }
+  |                     ^^^

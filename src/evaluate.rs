@@ -12,8 +12,8 @@ use proc_macro::{
 use super::{
     ast::{
         BinaryOpKind, Binding, BuiltinFn, Context, EvalError, ExprBlock,
-        ExternDecl, Function, Lambda, MetaExpr, MetaIdent, MetaValue, Pattern,
-        Scope, ScopeKind, UnaryOpKind, UsePath, UseTree, Visibility,
+        ExternDecl, Function, Kind, Lambda, MetaExpr, MetaIdent, MetaValue,
+        Pattern, Scope, ScopeKind, UnaryOpKind, UsePath, UseTree, Visibility,
     },
     token_sink::TokenSink,
 };
@@ -254,10 +254,10 @@ fn builtin_fn_zip(
             ctx.error(
                     callsite,
                     format!(
-                        "`zip()` argument {} has length {}, the previous arguments have length {}",
-                       first_len,
+                        "`zip()` argument {} has length {}, but the previous arguments have length {}",
                        i + 1,
-                       len
+                       len,
+                       first_len
                     ),
                 );
             return Err(EvalError::Error);
@@ -553,7 +553,7 @@ fn builtin_fn_map(
             callsite,
             format!(
                 "second argument to `map()` must be callable, `{}` is not",
-                args[0].kind()
+                args[1].kind()
             ),
         );
         return Err(EvalError::Error);
@@ -926,7 +926,7 @@ impl Context {
                         self.error(
                             *span,
                             format!(
-                                "tuple pattern missmatch: expected length {}, got {}",
+                                "tuple pattern mismatch: expected {} elements, got {}",
                                 pat_bindings.len(),
                                 val_elems.len()
                             ),
@@ -966,7 +966,7 @@ impl Context {
                         self.error(
                         *span,
                         format!(
-                            "list pattern missmatch: expected length {}, got {}",
+                            "list pattern mismatch: expected {} elements, got {}",
                             pat_bindings.len(),
                             list.len()
                         ),
@@ -2245,13 +2245,17 @@ impl Context {
                             }))
                         }
                         _ => {
-                            self.error(
-                                variants_expr.span(),
-                                format!(
-                                    "cannot iterate over {}",
-                                    input_val.kind()
-                                ),
-                            );
+                            let kind = input_val.kind();
+                            let mut msg =
+                                format!("cannot iterate over {}", kind);
+                            if kind == Kind::String {
+                                msg.push_str(
+                                    "\n\nhelp: use `chars()` to \
+                                              convert a string to a list \
+                                              of characters",
+                                );
+                            }
+                            self.error(variants_expr.span(), msg);
                             return Err(EvalError::Error);
                         }
                     };
@@ -2386,10 +2390,15 @@ impl Context {
             } => {
                 let input_list = self.eval(expr, true)?;
                 let MetaValue::List(list_elems) = &*input_list else {
-                    self.error(
-                        expr.span(),
-                        format!("cannot iterate over {}", input_list.kind()),
-                    );
+                    let kind = input_list.kind();
+                    let mut msg = format!("cannot iterate over {}", kind);
+                    if kind == Kind::String {
+                        msg.push_str(
+                            "\n\nhelp: use `chars()` to convert \
+                                      a string to a list of characters",
+                        );
+                    }
+                    self.error(expr.span(), msg);
                     return Err(EvalError::Error);
                 };
                 let mut res_tokens = TokenSink::new(true);
@@ -2527,10 +2536,15 @@ impl Context {
             MetaExpr::ExpandPattern(ep) => {
                 let input_list = self.eval(&ep.for_expr, true)?;
                 let MetaValue::List(list_elems) = &*input_list else {
-                    self.error(
-                        ep.for_expr.span(),
-                        format!("cannot iterate over {}", input_list.kind()),
-                    );
+                    let kind = input_list.kind();
+                    let mut msg = format!("cannot iterate over {}", kind);
+                    if kind == Kind::String {
+                        msg.push_str(
+                            "\n\nhelp: use `chars()` to convert \
+                                      a string to a list of characters",
+                        );
+                    }
+                    self.error(ep.for_expr.span(), msg);
                     return Err(EvalError::Error);
                 };
                 let mut res_tokens = TokenSink::new(true);
@@ -2594,13 +2608,6 @@ impl Context {
 
                 // Otherwise it's a regular index access
                 let list_val = self.eval(lhs, true)?;
-                let MetaValue::List(list) = &*list_val else {
-                    self.error(
-                        *span,
-                        format!("cannot index into `{}`", list_val.kind()),
-                    );
-                    return Err(EvalError::Error);
-                };
 
                 let MetaValue::Int { value: index, .. } = &*index_val else {
                     self.error(
@@ -2614,18 +2621,73 @@ impl Context {
                 };
 
                 let idx = usize::try_from(*index).unwrap_or(usize::MAX);
-                let list = list.borrow();
-                if idx >= list.len() {
-                    self.error(
-                        *span,
-                        format!(
-                            "index `{index}` is out of bounds for list of length {}",
-                            list.len()
-                        ),
-                    );
-                    return Err(EvalError::Error);
+
+                match &*list_val {
+                    MetaValue::List(list) => {
+                        let list = list.borrow();
+                        if idx >= list.len() {
+                            let msg = if *index < 0 {
+                                format!(
+                                    "index `{index}` is out of bounds (negative indices are not supported)"
+                                )
+                            } else {
+                                format!(
+                                    "index `{index}` is out of bounds for list of length {}",
+                                    list.len()
+                                )
+                            };
+                            self.error(*span, msg);
+                            return Err(EvalError::Error);
+                        }
+                        Ok(list[idx].clone())
+                    }
+                    MetaValue::String { value, .. } => {
+                        // Allow indexing strings by byte position
+                        if *index < 0 {
+                            self.error(
+                                *span,
+                                format!(
+                                    "index `{index}` is out of bounds (negative indices are not supported)"
+                                ),
+                            );
+                            return Err(EvalError::Error);
+                        }
+                        if idx >= value.len() {
+                            self.error(
+                                *span,
+                                format!(
+                                    "index `{index}` is out of bounds for string of byte length {}",
+                                    value.len()
+                                ),
+                            );
+                            return Err(EvalError::Error);
+                        }
+                        // Check for valid UTF-8 boundary
+                        if !value.is_char_boundary(idx) {
+                            self.error(
+                                *span,
+                                format!(
+                                    "byte index {idx} is not a char boundary; \
+                                     it is inside a multi-byte character"
+                                ),
+                            );
+                            return Err(EvalError::Error);
+                        }
+                        // Get the character at this position
+                        let ch = value[idx..].chars().next().unwrap();
+                        Ok(Rc::new(MetaValue::Char {
+                            value: ch,
+                            span: None,
+                        }))
+                    }
+                    _ => {
+                        self.error(
+                            *span,
+                            format!("cannot index into `{}`", list_val.kind()),
+                        );
+                        Err(EvalError::Error)
+                    }
                 }
-                Ok(list[idx].clone())
             }
             MetaExpr::Range {
                 span: _,
@@ -2749,12 +2811,22 @@ impl Context {
                 Ok(Rc::new(MetaValue::Tokens(sliced)))
             }
             MetaValue::String { value, .. } => {
-                let len = value.chars().count();
+                let byte_len = value.len();
                 let mut end_idx = end
-                    .map(|v| usize::try_from(v).unwrap_or(usize::MAX).min(len))
-                    .unwrap_or(len);
-                if inclusive && end_idx < len {
-                    end_idx += 1;
+                    .map(|v| {
+                        usize::try_from(v).unwrap_or(usize::MAX).min(byte_len)
+                    })
+                    .unwrap_or(byte_len);
+                if inclusive {
+                    // For inclusive slices, we need to include the character
+                    // at end_idx First check if end_idx is
+                    // a valid char boundary
+                    if end_idx < byte_len && value.is_char_boundary(end_idx) {
+                        // Move end_idx to the next char boundary
+                        if let Some(ch) = value[end_idx..].chars().next() {
+                            end_idx += ch.len_utf8();
+                        }
+                    }
                 }
 
                 if start_idx > end_idx {
@@ -2764,19 +2836,37 @@ impl Context {
                     );
                     return Err(EvalError::Error);
                 }
-                if start_idx > len {
+                if start_idx > byte_len {
                     self.error(
                         access_span,
-                        format!("slice start ({start_idx}) is out of bounds for string of length {len}"),
+                        format!("slice start ({start_idx}) is out of bounds for string of byte length {byte_len}"),
                     );
                     return Err(EvalError::Error);
                 }
 
-                let sliced: String = value
-                    .chars()
-                    .skip(start_idx)
-                    .take(end_idx - start_idx)
-                    .collect();
+                // Check UTF-8 boundaries
+                if !value.is_char_boundary(start_idx) {
+                    self.error(
+                        access_span,
+                        format!(
+                            "byte index {start_idx} is not a char boundary; \
+                             it is inside a multi-byte character"
+                        ),
+                    );
+                    return Err(EvalError::Error);
+                }
+                if !value.is_char_boundary(end_idx) {
+                    self.error(
+                        access_span,
+                        format!(
+                            "byte index {end_idx} is not a char boundary; \
+                             it is inside a multi-byte character"
+                        ),
+                    );
+                    return Err(EvalError::Error);
+                }
+
+                let sliced = &value[start_idx..end_idx];
                 Ok(Rc::new(MetaValue::String {
                     value: Rc::from(sliced),
                     span: None,
@@ -2897,10 +2987,32 @@ impl Context {
             BinaryOpKind::Add => res_int(lhs + rhs),
             BinaryOpKind::Sub => res_int(lhs - rhs),
             BinaryOpKind::Mul => res_int(lhs * rhs),
-            BinaryOpKind::Div => res_int(lhs / rhs),
-            BinaryOpKind::Rem => res_int(lhs % rhs),
-            BinaryOpKind::ShiftLeft => res_int(lhs << rhs),
-            BinaryOpKind::ShiftRight => res_int(lhs >> rhs),
+            BinaryOpKind::Div => {
+                if rhs == 0 {
+                    self.error(span, "division by zero");
+                    Err(EvalError::Error)
+                } else {
+                    res_int(lhs / rhs)
+                }
+            }
+            BinaryOpKind::Rem => {
+                if rhs == 0 {
+                    self.error(span, "remainder by zero");
+                    Err(EvalError::Error)
+                } else {
+                    res_int(lhs % rhs)
+                }
+            }
+            BinaryOpKind::ShiftLeft => {
+                // Use wrapping shift to match Rust's behavior
+                let shift = (rhs as u32) & 63;
+                res_int(lhs.wrapping_shl(shift))
+            }
+            BinaryOpKind::ShiftRight => {
+                // Use wrapping shift to match Rust's behavior
+                let shift = (rhs as u32) & 63;
+                res_int(lhs.wrapping_shr(shift))
+            }
             BinaryOpKind::BinaryAnd => res_int(lhs & rhs),
             BinaryOpKind::BinaryOr => res_int(lhs | rhs),
             BinaryOpKind::BinaryXor => res_int(lhs ^ rhs),
@@ -3075,10 +3187,15 @@ impl Context {
             MetaExpr::ListAccess { span, list, index } => {
                 let list_val = self.eval(list, true)?;
                 let MetaValue::List(list_ref) = &*list_val else {
-                    self.error(
-                        *span,
-                        format!("cannot index into `{}`", list_val.kind()),
-                    );
+                    let kind = list_val.kind();
+                    let mut msg = format!("cannot index into `{}`", kind);
+                    if kind == Kind::String {
+                        msg.push_str(
+                            "\n\nhelp: use `chars()` to convert \
+                                      a string to a list of characters",
+                        );
+                    }
+                    self.error(*span, msg);
                     return Err(EvalError::Error);
                 };
 
@@ -3097,13 +3214,17 @@ impl Context {
                 let idx = usize::try_from(*idx_val).unwrap_or(usize::MAX);
                 let mut list = list_ref.borrow_mut();
                 if idx >= list.len() {
-                    self.error(
-                        *span,
+                    let msg = if *idx_val < 0 {
+                        format!(
+                            "index `{idx_val}` is out of bounds (negative indices are not supported)"
+                        )
+                    } else {
                         format!(
                             "index `{idx_val}` is out of bounds for list of length {}",
                             list.len()
-                        ),
-                    );
+                        )
+                    };
+                    self.error(*span, msg);
                     return Err(EvalError::Error);
                 }
 
@@ -3189,29 +3310,26 @@ impl Context {
             _ => {
                 let lhs_kind = lhs.kind();
                 let rhs_kind = rhs.kind();
-                if lhs_kind != rhs_kind {
-                    self.error(
-                        op_span,
-                        format!(
-                            "operands for `{}` differ in type: `{}` {} `{}`",
-                            op_kind.to_str(),
-                            lhs_kind,
-                            op_kind.symbol(),
-                            rhs_kind
-                        ),
-                    );
+                let op_sym = op_kind.symbol();
+                let mut msg = if lhs_kind != rhs_kind {
+                    format!(
+                        "operands for `{}` differ in type: `{}` {} `{}`",
+                        op_sym, lhs_kind, op_sym, rhs_kind
+                    )
                 } else {
-                    self.error(
-                        op_span,
-                        format!(
-                            "invalid operand types for `{}`: `{}` {} `{}`",
-                            op_kind.to_str(),
-                            lhs_kind,
-                            op_kind.symbol(),
-                            rhs_kind
-                        ),
+                    format!(
+                        "invalid operand types for `{}`: `{}` {} `{}`",
+                        op_sym, lhs_kind, op_sym, rhs_kind
+                    )
+                };
+                // Add helpful hint when a token is involved
+                if lhs_kind == Kind::Token || rhs_kind == Kind::Token {
+                    msg.push_str(
+                        "\n\nnote: a `token` here usually means an undefined \
+                         variable that was passed through as-is",
                     );
                 }
+                self.error(op_span, msg);
                 Err(EvalError::Error)
             }
         }

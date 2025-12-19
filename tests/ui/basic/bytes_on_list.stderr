@@ -1,0 +1,5 @@
+error: function `bytes()` is not applicable to `list`
+ --> tests/ui/basic/bytes_on_list.rs:6:19
+  |
+6 |         [1, 2, 3].bytes()
+  |                   ^^^^^

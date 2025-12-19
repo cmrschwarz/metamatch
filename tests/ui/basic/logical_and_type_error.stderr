@@ -1,0 +1,5 @@
+error: operands for `&&` differ in type: `int` && `bool`
+ --> tests/ui/basic/logical_and_type_error.rs:5:11
+  |
+5 |         5 && true
+  |           ^

@@ -1,0 +1,5 @@
+error: list pattern mismatch: expected 2 elements, got 4
+ --> tests/ui/basic/list_pattern_size_mismatch.rs:6:13
+  |
+6 |         let [a, b] = [1, 2, 3, 4];
+  |             ^^^^^^

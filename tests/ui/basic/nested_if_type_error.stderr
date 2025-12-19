@@ -1,0 +1,5 @@
+error: if expression must result in `bool`, not `str`
+ --> tests/ui/basic/nested_if_type_error.rs:7:16
+  |
+7 |             if "not a bool" {
+  |                ^^^^^^^^^^^^

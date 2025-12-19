@@ -1,5 +1,0 @@
-error: template tags are not supported in eval mode
- --> tests/ui/template_tag_in_eval_mode.rs:5:9
-  |
-5 |         [<eval>]
-  |         ^^^^^^^^

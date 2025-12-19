@@ -1,0 +1,5 @@
+error: cannot assign to immutable variable `x`
+ --> tests/ui/basic/super_then_assign.rs:7:11
+  |
+7 |         x = 10;
+  |           ^

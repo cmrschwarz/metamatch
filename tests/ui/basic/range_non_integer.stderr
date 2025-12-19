@@ -1,0 +1,5 @@
+error: range start must be an integer, got `str`
+ --> tests/ui/basic/range_non_integer.rs:5:9
+  |
+5 |         "foo"..10
+  |         ^^^^^

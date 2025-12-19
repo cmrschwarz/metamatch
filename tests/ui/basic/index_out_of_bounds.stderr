@@ -1,0 +1,5 @@
+error: index `10` is out of bounds for list of length 3
+ --> tests/ui/basic/index_out_of_bounds.rs:5:18
+  |
+5 |         [1, 2, 3][10]
+  |                  ^^^^

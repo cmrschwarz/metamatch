@@ -1,0 +1,5 @@
+error: operands for `==` differ in type: `int` == `str`
+ --> tests/ui/basic/compare_different_types.rs:6:11
+  |
+6 |         5 == "5"
+  |           ^

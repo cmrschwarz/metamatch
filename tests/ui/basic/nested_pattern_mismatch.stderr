@@ -1,0 +1,5 @@
+error: tuple pattern mismatch: expected 2 elements, got 3
+ --> tests/ui/basic/nested_pattern_mismatch.rs:6:14
+  |
+6 |         let ((a, b), c) = ((1, 2, 3), 4);
+  |              ^^^^^^

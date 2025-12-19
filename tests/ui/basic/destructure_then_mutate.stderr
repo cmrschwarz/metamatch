@@ -1,0 +1,5 @@
+error: cannot assign to immutable variable `a`
+ --> tests/ui/basic/destructure_then_mutate.rs:7:11
+  |
+7 |         a = 10;
+  |           ^

@@ -1,0 +1,5 @@
+error: undefined function `push`
+ --> tests/ui/basic/method_on_non_list.rs:6:11
+  |
+6 |         x.push(1)
+  |           ^^^^

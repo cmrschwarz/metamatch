@@ -1,0 +1,5 @@
+error: cannot iterate over int
+ --> tests/ui/basic/iterate_non_iterable.rs:5:18
+  |
+5 |         for x in 42 {
+  |                  ^^

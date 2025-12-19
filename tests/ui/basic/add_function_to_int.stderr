@@ -1,0 +1,5 @@
+error: operands for `+` differ in type: `fn` + `int`
+ --> tests/ui/basic/add_function_to_int.rs:7:13
+  |
+7 |         foo + 5
+  |             ^

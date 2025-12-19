@@ -1,0 +1,5 @@
+error: if expression must result in `bool`, not `int`
+ --> tests/ui/basic/non_bool_condition.rs:5:12
+  |
+5 |         if 42 { }
+  |            ^^

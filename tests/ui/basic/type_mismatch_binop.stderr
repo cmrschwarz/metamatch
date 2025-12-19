@@ -1,0 +1,5 @@
+error: operands for `+` differ in type: `int` + `str`
+ --> tests/ui/basic/type_mismatch_binop.rs:5:11
+  |
+5 |         1 + "hello"
+  |           ^

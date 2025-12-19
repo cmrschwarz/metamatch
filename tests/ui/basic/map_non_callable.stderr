@@ -1,0 +1,5 @@
+error: second argument to `map()` must be callable, `int` is not
+ --> tests/ui/basic/map_non_callable.rs:7:17
+  |
+7 |         [1,2,3].map(42)
+  |                 ^^^

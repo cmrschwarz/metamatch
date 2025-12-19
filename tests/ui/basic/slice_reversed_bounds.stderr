@@ -1,0 +1,5 @@
+error: slice start (3) is greater than end (1)
+ --> tests/ui/basic/slice_reversed_bounds.rs:7:10
+  |
+7 |         x[3..1]
+  |          ^^^^^^

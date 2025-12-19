@@ -87,6 +87,25 @@ pub fn parse_replicate(
 }
 
 pub fn parse_metamatch(ctx: &mut Context, body: Vec<TokenTree>) -> ExprBlock {
+    // Validate that the body starts with `match`
+    let first_token = body.first();
+    let is_match = matches!(
+        first_token,
+        Some(TokenTree::Ident(i)) if i.to_string() == "match"
+    );
+    if !is_match {
+        let span = first_token
+            .map(|t| t.span())
+            .unwrap_or_else(Span::call_site);
+        let msg = if first_token.is_some() {
+            "metamatch! body must start with a `match` expression\n\n\
+             help: did you mean to use `eval!` or `template!` instead?"
+        } else {
+            "metamatch! body is empty, expected `match` expression"
+        };
+        ctx.error(span, msg);
+    }
+
     ctx.push_dummy_scope(ScopeKind::Metamatch);
 
     let stmts = ctx

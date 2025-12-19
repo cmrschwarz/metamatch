@@ -1,0 +1,5 @@
+error: undefined function `foo`
+ --> tests/ui/basic/call_before_declare.rs:6:17
+  |
+6 |         let x = foo(1);
+  |                 ^^^

@@ -1,0 +1,5 @@
+error: division by zero
+ --> tests/ui/basic/divide_by_zero.rs:5:11
+  |
+5 |         1 / 0
+  |           ^

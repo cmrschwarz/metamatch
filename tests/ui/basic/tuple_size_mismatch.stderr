@@ -1,0 +1,5 @@
+error: tuple pattern mismatch: expected 3 elements, got 2
+ --> tests/ui/basic/tuple_size_mismatch.rs:5:13
+  |
+5 |         let (a, b, c) = (1, 2);
+  |             ^^^^^^^^^

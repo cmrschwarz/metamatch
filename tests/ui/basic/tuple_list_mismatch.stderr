@@ -1,0 +1,5 @@
+error: tuple pattern does not match `list`
+ --> tests/ui/basic/tuple_list_mismatch.rs:5:13
+  |
+5 |         let (a, b) = [1, 2, 3];
+  |             ^^^^^^

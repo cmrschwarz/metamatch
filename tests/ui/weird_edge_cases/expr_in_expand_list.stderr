@@ -1,0 +1,5 @@
+error: undefined function `as_bytes`
+ --> tests/ui/weird_edge_cases/expr_in_expand_list.rs:6:32
+  |
+6 |         #[expand(for FOO in [v.as_bytes()])],
+  |                                ^^^^^^^^

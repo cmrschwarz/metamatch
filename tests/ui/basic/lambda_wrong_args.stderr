@@ -1,0 +1,5 @@
+error: lambda expects 2 parameters, called with 1
+ --> tests/ui/basic/lambda_wrong_args.rs:7:9
+  |
+7 |         f(1)
+  |         ^

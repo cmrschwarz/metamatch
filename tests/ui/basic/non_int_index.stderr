@@ -1,0 +1,5 @@
+error: cannot use `str` as an index
+ --> tests/ui/basic/non_int_index.rs:6:11
+  |
+6 |         x["hello"]
+  |           ^^^^^^^

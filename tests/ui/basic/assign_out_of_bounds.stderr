@@ -1,0 +1,5 @@
+error: index `10` is out of bounds for list of length 3
+ --> tests/ui/basic/assign_out_of_bounds.rs:7:10
+  |
+7 |         x[10] = 5;
+  |          ^^^^

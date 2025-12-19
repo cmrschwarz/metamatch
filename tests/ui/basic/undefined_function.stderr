@@ -1,0 +1,5 @@
+error: undefined function `foo`
+ --> tests/ui/basic/undefined_function.rs:5:9
+  |
+5 |         foo()
+  |         ^^^

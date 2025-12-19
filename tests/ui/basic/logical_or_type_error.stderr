@@ -1,0 +1,5 @@
+error: operands for `||` differ in type: `bool` || `int`
+ --> tests/ui/basic/logical_or_type_error.rs:6:15
+  |
+6 |         false || 42
+  |               ^

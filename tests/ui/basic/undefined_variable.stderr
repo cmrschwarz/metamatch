@@ -1,0 +1,7 @@
+error: operands for `+` differ in type: `token` + `int`
+
+       note: a `token` here usually means an undefined variable that was passed through as-is
+ --> tests/ui/basic/undefined_variable.rs:5:11
+  |
+5 |         x + 1
+  |           ^

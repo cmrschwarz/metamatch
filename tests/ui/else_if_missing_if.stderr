@@ -1,5 +1,0 @@
-error: unmatched closing tag `/if`
-  --> tests/ui/else_if_missing_if.rs:12:9
-   |
-12 |         [</if>]
-   |         ^^^^^^^

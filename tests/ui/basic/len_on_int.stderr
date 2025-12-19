@@ -1,0 +1,5 @@
+error: value of type `int` has no len()
+ --> tests/ui/basic/len_on_int.rs:6:9
+  |
+6 |         len(42)
+  |         ^^^

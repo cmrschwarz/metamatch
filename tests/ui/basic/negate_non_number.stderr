@@ -1,0 +1,5 @@
+error: unary minus `-` is not applicable to `str`
+ --> tests/ui/basic/negate_non_number.rs:5:9
+  |
+5 |         -"hello"
+  |         ^

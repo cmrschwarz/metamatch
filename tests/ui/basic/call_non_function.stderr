@@ -1,0 +1,5 @@
+error: value of type `int` is not callable
+ --> tests/ui/basic/call_non_function.rs:6:9
+  |
+6 |         x()
+  |         ^

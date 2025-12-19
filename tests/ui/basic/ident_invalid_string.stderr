@@ -1,0 +1,5 @@
+error: cast failed: invalid identifier `123invalid`
+ --> tests/ui/basic/ident_invalid_string.rs:6:9
+  |
+6 |         ident("123invalid")
+  |         ^^^^^

@@ -1,0 +1,5 @@
+error: `while` expression must evaluate as `bool`, not `str`
+ --> tests/ui/basic/while_non_bool.rs:6:15
+  |
+6 |         while "hello" {
+  |               ^^^^^^^

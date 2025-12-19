@@ -1,0 +1,5 @@
+error: cannot slice `int`
+ --> tests/ui/weird_edge_cases/slice_non_sliceable.rs:6:11
+  |
+6 |         42[0..2]
+  |           ^^^^^^

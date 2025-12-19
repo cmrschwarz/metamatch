@@ -1,0 +1,5 @@
+error: cast failed: invalid identifier `3`
+ --> tests/ui/weird_edge_cases/invalid_ident.rs:5:8
+  |
+5 |        ident("3")
+  |        ^^^^^

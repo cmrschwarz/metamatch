@@ -1,0 +1,7 @@
+error: metamatch! body must start with a `match` expression
+
+       help: did you mean to use `eval!` or `template!` instead?
+ --> tests/ui/basic/enumerate_on_int.rs:4:16
+  |
+4 |     metamatch!(42.enumerate());
+  |                ^^
