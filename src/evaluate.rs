@@ -1722,58 +1722,28 @@ impl Context {
                     self.append_quoted_expression(tgt, end, true)?;
                 }
             }
-            MetaExpr::FormatString { span, parts } => {
-                // Quote format string as format!("...", args...)
+            MetaExpr::FormatString {
+                span,
+                original_tokens,
+                ..
+            } => {
+                // Quote format string by emitting format!(...) with original
+                // tokens
                 append_ident_str(tgt, "format", *span);
                 let mut p = Punct::new('!', Spacing::Alone);
                 p.set_span(*span);
                 tgt.push(TokenTree::Punct(p));
 
                 append_group(tgt, Delimiter::Parenthesis, *span, |tgt| {
-                    // Build the format string and collect expressions
-                    let mut fmt_str = String::new();
-                    let mut exprs = Vec::new();
-
-                    for part in parts {
-                        match part {
-                            FormatPart::Literal(s) => {
-                                // Escape { and } in literals
-                                for c in s.chars() {
-                                    if c == '{' {
-                                        fmt_str.push_str("{{");
-                                    } else if c == '}' {
-                                        fmt_str.push_str("}}");
-                                    } else {
-                                        fmt_str.push(c);
-                                    }
-                                }
-                            }
-                            FormatPart::Expr(expr) => {
-                                fmt_str.push_str("{}");
-                                exprs.push(expr.clone());
-                            }
-                        }
-                    }
-
-                    // Output format string literal
-                    let lit = Literal::string(&fmt_str);
-                    tgt.push(TokenTree::Literal(lit));
-
-                    // Output expressions as arguments
-                    for expr in &exprs {
-                        tgt.push(TokenTree::Punct(Punct::new(
-                            ',',
-                            Spacing::Alone,
-                        )));
-                        self.append_quoted_expression(tgt, expr, true)?;
-                    }
+                    tgt.extend(original_tokens.iter().cloned());
                     Ok(())
                 })?;
             }
             MetaExpr::Assert {
                 span,
                 condition,
-                message,
+                message_tokens,
+                ..
             } => {
                 // Quote assert as assert!(cond) or assert!(cond, msg)
                 append_ident_str(tgt, "assert", *span);
@@ -1783,66 +1753,42 @@ impl Context {
 
                 append_group(tgt, Delimiter::Parenthesis, *span, |tgt| {
                     self.append_quoted_expression(tgt, condition, true)?;
-                    if let Some(message_parts) = message {
+                    if !message_tokens.is_empty() {
                         tgt.push(TokenTree::Punct(Punct::new(
                             ',',
                             Spacing::Alone,
                         )));
+                        tgt.extend(message_tokens.iter().cloned());
+                    }
+                    Ok(())
+                })?;
+            }
+            MetaExpr::AssertEq {
+                span,
+                left,
+                right,
+                message_tokens,
+                ..
+            } => {
+                // Quote assert_eq as assert_eq!(left, right, msg)
+                append_ident_str(tgt, "assert_eq", *span);
+                let mut p = Punct::new('!', Spacing::Alone);
+                p.set_span(*span);
+                tgt.push(TokenTree::Punct(p));
 
-                        // Build format string for message
-                        let mut fmt_str = String::new();
-                        let mut exprs = Vec::new();
-
-                        for part in message_parts {
-                            match part {
-                                FormatPart::Literal(s) => {
-                                    for c in s.chars() {
-                                        if c == '{' {
-                                            fmt_str.push_str("{{");
-                                        } else if c == '}' {
-                                            fmt_str.push_str("}}");
-                                        } else {
-                                            fmt_str.push(c);
-                                        }
-                                    }
-                                }
-                                FormatPart::Expr(expr) => {
-                                    fmt_str.push_str("{}");
-                                    exprs.push(expr.clone());
-                                }
-                            }
-                        }
-
-                        if exprs.is_empty() {
-                            // Just a simple string literal
-                            let lit = Literal::string(&fmt_str);
-                            tgt.push(TokenTree::Literal(lit));
-                        } else {
-                            // Output format!("...", args)
-                            append_ident_str(tgt, "format", *span);
-                            tgt.push(TokenTree::Punct(Punct::new(
-                                '!',
-                                Spacing::Alone,
-                            )));
-                            append_group(
-                                tgt,
-                                Delimiter::Parenthesis,
-                                *span,
-                                |tgt| {
-                                    let lit = Literal::string(&fmt_str);
-                                    tgt.push(TokenTree::Literal(lit));
-                                    for expr in &exprs {
-                                        tgt.push(TokenTree::Punct(
-                                            Punct::new(',', Spacing::Alone),
-                                        ));
-                                        self.append_quoted_expression(
-                                            tgt, expr, true,
-                                        )?;
-                                    }
-                                    Ok(())
-                                },
-                            )?;
-                        }
+                append_group(tgt, Delimiter::Parenthesis, *span, |tgt| {
+                    self.append_quoted_expression(tgt, left, true)?;
+                    tgt.push(TokenTree::Punct(Punct::new(
+                        ',',
+                        Spacing::Alone,
+                    )));
+                    self.append_quoted_expression(tgt, right, true)?;
+                    if !message_tokens.is_empty() {
+                        tgt.push(TokenTree::Punct(Punct::new(
+                            ',',
+                            Spacing::Alone,
+                        )));
+                        tgt.extend(message_tokens.iter().cloned());
                     }
                     Ok(())
                 })?;
@@ -3046,14 +2992,27 @@ impl Context {
                     inclusive: *inclusive,
                 }))
             }
-            MetaExpr::FormatString { span, parts } => {
+            MetaExpr::FormatString { span, parts, .. } => {
                 self.eval_format_string(*span, parts)
             }
             MetaExpr::Assert {
                 span,
                 condition,
                 message,
+                ..
             } => self.eval_assert_expr(*span, condition, message.as_deref()),
+            MetaExpr::AssertEq {
+                span,
+                left,
+                right,
+                message,
+                ..
+            } => self.eval_assert_eq_expr(
+                *span,
+                left,
+                right,
+                message.as_deref(),
+            ),
         }
     }
 
@@ -3497,7 +3456,8 @@ impl Context {
             | MetaExpr::OpBinary { .. }
             | MetaExpr::Range { .. }
             | MetaExpr::FormatString { .. }
-            | MetaExpr::Assert { .. } => {
+            | MetaExpr::Assert { .. }
+            | MetaExpr::AssertEq { .. } => {
                 self.error(
                     lhs.span(),
                     format!("{} is not assignable", lhs.kind_str()),
@@ -3804,6 +3764,72 @@ impl Context {
                 format!("assertion failed: {}", user_msg)
             } else {
                 "assertion failed".to_string()
+            };
+
+            self.error(span, msg);
+            return Err(EvalError::Error);
+        }
+
+        Ok(self.empty_token_list.clone())
+    }
+
+    fn eval_assert_eq_expr(
+        &mut self,
+        span: Span,
+        left: &MetaExpr,
+        right: &MetaExpr,
+        message: Option<&[FormatPart]>,
+    ) -> Result<Rc<MetaValue>> {
+        let left_val = self.eval(left, true)?;
+        let right_val = self.eval(right, true)?;
+
+        let are_equal = values_eq(&left_val, &right_val, false);
+
+        if !are_equal {
+            // Build message if provided
+            let user_msg = if let Some(parts) = message {
+                let mut msg = String::new();
+                for part in parts {
+                    match part {
+                        FormatPart::Literal(s) => {
+                            msg.push_str(s);
+                        }
+                        FormatPart::Expr(expr) => {
+                            let val = self.eval(expr, true)?;
+                            let Some(s) = value_to_str(&val) else {
+                                self.error(
+                                    expr.span(),
+                                    format!(
+                                        "cannot format `{}` as string",
+                                        val.kind()
+                                    ),
+                                );
+                                return Err(EvalError::Error);
+                            };
+                            msg.push_str(&s);
+                        }
+                    }
+                }
+                Some(msg)
+            } else {
+                None
+            };
+
+            let left_str =
+                value_to_str(&left_val).unwrap_or_else(|| "<?>".into());
+            let right_str =
+                value_to_str(&right_val).unwrap_or_else(|| "<?>".into());
+
+            let msg = if let Some(user_msg) = user_msg {
+                format!(
+                    "assertion `left == right` failed: {}\n  left: {}\n right: {}",
+                    user_msg, left_str, right_str
+                )
+            } else {
+                format!(
+                    "assertion `left == right` failed\n  left: {}\n right: {}",
+                    left_str, right_str
+                )
             };
 
             self.error(span, msg);

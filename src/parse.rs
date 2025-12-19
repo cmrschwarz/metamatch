@@ -947,6 +947,10 @@ impl Context {
                         "assert" => {
                             return self.parse_assert_expr(span, &tokens[1..])
                         }
+                        "assert_eq" => {
+                            return self
+                                .parse_assert_eq_expr(span, &tokens[1..])
+                        }
                         "format" => {
                             return self.parse_format_expr(span, &tokens[1..])
                         }
@@ -1667,20 +1671,15 @@ impl Context {
         tokens: &'a [TokenTree],
     ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
     {
-        // Expect `!` after `assert`
-        let mut has_exclam = false;
-        if let Some(TokenTree::Punct(p)) = tokens.first() {
-            has_exclam = p.as_char() == '!';
-        }
-
-        if !has_exclam {
-            self.error(
-                tokens.first().map(|t| t.span()).unwrap_or(assert_span),
-                "expected `!` after `assert`",
-            );
+        // Expect `!`
+        let Some(TokenTree::Punct(p)) = tokens.first() else {
+            self.error(assert_span, "expected `!` after `assert`");
+            return Err(());
+        };
+        if p.as_char() != '!' {
+            self.error(p.span(), "expected `!` after `assert`");
             return Err(());
         }
-
         let tokens = &tokens[1..];
 
         // Expect parentheses group
@@ -1691,92 +1690,43 @@ impl Context {
             );
             return Err(());
         };
-
         if group.delimiter() != Delimiter::Parenthesis {
             self.error(group.span(), "expected `(...)` after `assert!`");
             return Err(());
         }
 
-        // Parse the arguments inside the parentheses
         let args_tokens: Vec<TokenTree> = group.stream().into_iter().collect();
+        let args = self.parse_comma_separated(
+            Some("assert! arguments"),
+            Delimiter::Parenthesis,
+            group.span(),
+            &args_tokens,
+        )?;
 
-        // Find first comma to split condition from message
-        let mut paren_depth = 0;
-        let mut bracket_depth = 0;
-        let mut brace_depth = 0;
-        let mut comma_pos = None;
-
-        for (i, token) in args_tokens.iter().enumerate() {
-            match token {
-                TokenTree::Group(g) => match g.delimiter() {
-                    Delimiter::Parenthesis => paren_depth += 1,
-                    Delimiter::Bracket => bracket_depth += 1,
-                    Delimiter::Brace => brace_depth += 1,
-                    Delimiter::None => {}
-                },
-                TokenTree::Punct(p) => {
-                    if p.as_char() == ','
-                        && paren_depth == 0
-                        && bracket_depth == 0
-                        && brace_depth == 0
-                    {
-                        comma_pos = Some(i);
-                        break;
-                    }
-                    // Track closing delimiters via group exit
-                }
-                _ => {}
-            }
-            // Handle group exit
-            if let TokenTree::Group(g) = token {
-                match g.delimiter() {
-                    Delimiter::Parenthesis => paren_depth -= 1,
-                    Delimiter::Bracket => bracket_depth -= 1,
-                    Delimiter::Brace => brace_depth -= 1,
-                    Delimiter::None => {}
-                }
-                // Re-add since we just subtracted
-                match g.delimiter() {
-                    Delimiter::Parenthesis => paren_depth += 1,
-                    Delimiter::Bracket => bracket_depth += 1,
-                    Delimiter::Brace => brace_depth += 1,
-                    Delimiter::None => {}
-                }
-            }
-        }
-
-        // Parse condition
-        let (condition_tokens, message_tokens) = if let Some(pos) = comma_pos {
-            (&args_tokens[..pos], Some(&args_tokens[pos + 1..]))
-        } else {
-            (&args_tokens[..], None)
-        };
-
-        if condition_tokens.is_empty() {
+        if args.is_empty() {
             self.error(group.span(), "`assert!` requires a condition");
             return Err(());
         }
 
-        let (condition, remaining, _) =
-            self.parse_expr(group.span(), condition_tokens, false, 0)?;
+        let condition = args[0].clone();
 
-        if !remaining.is_empty() {
-            self.error(
-                remaining[0].span(),
-                "unexpected tokens after condition",
-            );
-            return Err(());
-        }
-
-        // Parse message if present (as a format string)
-        let message = if let Some(msg_tokens) = message_tokens {
-            if msg_tokens.is_empty() {
-                self.error(group.span(), "expected message after comma");
-                return Err(());
-            }
-            Some(self.parse_format_string_parts(group.span(), msg_tokens)?)
+        // Message tokens are everything after first comma
+        let (message, message_tokens) = if args.len() > 1 {
+            let comma_pos = args_tokens
+                .iter()
+                .position(
+                    |t| matches!(t, TokenTree::Punct(p) if p.as_char() == ','),
+                )
+                .unwrap_or(0);
+            let msg_tokens: Vec<_> = args_tokens[comma_pos + 1..].to_vec();
+            (
+                Some(
+                    self.parse_format_string_parts(group.span(), &msg_tokens)?,
+                ),
+                msg_tokens,
+            )
         } else {
-            None
+            (None, vec![])
         };
 
         Ok((
@@ -1784,6 +1734,95 @@ impl Context {
                 span: group.span(),
                 condition,
                 message,
+                message_tokens,
+            }),
+            &tokens[1..],
+            None,
+        ))
+    }
+
+    fn parse_assert_eq_expr<'a>(
+        &mut self,
+        assert_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        // Expect `!`
+        let Some(TokenTree::Punct(p)) = tokens.first() else {
+            self.error(assert_span, "expected `!` after `assert_eq`");
+            return Err(());
+        };
+        if p.as_char() != '!' {
+            self.error(p.span(), "expected `!` after `assert_eq`");
+            return Err(());
+        }
+        let tokens = &tokens[1..];
+
+        // Expect parentheses group
+        let Some(TokenTree::Group(group)) = tokens.first() else {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(assert_span),
+                "expected `(...)` after `assert_eq!`",
+            );
+            return Err(());
+        };
+        if group.delimiter() != Delimiter::Parenthesis {
+            self.error(group.span(), "expected `(...)` after `assert_eq!`");
+            return Err(());
+        }
+
+        let args_tokens: Vec<TokenTree> = group.stream().into_iter().collect();
+        let args = self.parse_comma_separated(
+            Some("assert_eq! arguments"),
+            Delimiter::Parenthesis,
+            group.span(),
+            &args_tokens,
+        )?;
+
+        if args.len() < 2 {
+            self.error(
+                group.span(),
+                "`assert_eq!` requires two arguments: left and right",
+            );
+            return Err(());
+        }
+
+        let left = args[0].clone();
+        let right = args[1].clone();
+
+        // Message tokens are everything after second comma
+        let (message, message_tokens) = if args.len() > 2 {
+            let mut comma_count = 0;
+            let msg_start = args_tokens
+                .iter()
+                .position(|t| {
+                    if matches!(t, TokenTree::Punct(p) if p.as_char() == ',') {
+                        comma_count += 1;
+                        comma_count == 2
+                    } else {
+                        false
+                    }
+                })
+                .map(|p| p + 1)
+                .unwrap_or(args_tokens.len());
+            let msg_tokens: Vec<_> = args_tokens[msg_start..].to_vec();
+            (
+                Some(
+                    self.parse_format_string_parts(group.span(), &msg_tokens)?,
+                ),
+                msg_tokens,
+            )
+        } else {
+            (None, vec![])
+        };
+
+        Ok((
+            Rc::new(MetaExpr::AssertEq {
+                span: group.span(),
+                left,
+                right,
+                message,
+                message_tokens,
             }),
             &tokens[1..],
             None,
@@ -1994,6 +2033,7 @@ impl Context {
             Rc::new(MetaExpr::FormatString {
                 span: group.span(),
                 parts,
+                original_tokens: args_tokens,
             }),
             &tokens[1..],
             None,

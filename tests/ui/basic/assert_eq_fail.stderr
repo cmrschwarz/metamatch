@@ -1,0 +1,7 @@
+error: assertion `left == right` failed
+         left: 1
+        right: 2
+ --> tests/ui/basic/assert_eq_fail.rs:5:19
+  |
+5 |         assert_eq!(1, 2)
+  |                   ^^^^^^

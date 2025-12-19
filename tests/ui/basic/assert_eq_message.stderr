@@ -1,0 +1,7 @@
+error: assertion `left == right` failed: x should be 10 but got 5
+         left: 5
+        right: 10
+ --> tests/ui/basic/assert_eq_message.rs:6:19
+  |
+6 |         assert_eq!(x, 10, "x should be 10 but got {x}")
+  |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

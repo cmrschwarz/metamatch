@@ -309,6 +309,8 @@ pub enum MetaExpr {
     FormatString {
         span: Span,
         parts: Vec<FormatPart>,
+        /// Original tokens for quoting (avoids re-escaping)
+        original_tokens: Vec<TokenTree>,
     },
     /// assert!(condition) or assert!(condition, "msg {expr}")
     Assert {
@@ -316,6 +318,18 @@ pub enum MetaExpr {
         condition: Rc<MetaExpr>,
         /// If present, format string parts for the message
         message: Option<Vec<FormatPart>>,
+        /// Original message tokens for quoting
+        message_tokens: Vec<TokenTree>,
+    },
+    /// assert_eq!(left, right) or assert_eq!(left, right, "msg {expr}")
+    AssertEq {
+        span: Span,
+        left: Rc<MetaExpr>,
+        right: Rc<MetaExpr>,
+        /// If present, format string parts for the message
+        message: Option<Vec<FormatPart>>,
+        /// Original message tokens for quoting
+        message_tokens: Vec<TokenTree>,
     },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -775,6 +789,7 @@ impl MetaExpr {
             MetaExpr::Range { span, .. } => span,
             MetaExpr::FormatString { span, .. } => span,
             MetaExpr::Assert { span, .. } => span,
+            MetaExpr::AssertEq { span, .. } => span,
         }
     }
     pub fn kind_str(&self) -> &'static str {
@@ -807,6 +822,7 @@ impl MetaExpr {
             MetaExpr::Range { .. } => "range",
             MetaExpr::FormatString { .. } => "format string",
             MetaExpr::Assert { .. } => "assert",
+            MetaExpr::AssertEq { .. } => "assert_eq",
         }
     }
     pub fn may_drop_semicolon(&self) -> bool {
@@ -840,7 +856,8 @@ impl MetaExpr {
             | MetaExpr::UseDecl { .. }
             | MetaExpr::Range { .. }
             | MetaExpr::FormatString { .. }
-            | MetaExpr::Assert { .. } => false,
+            | MetaExpr::Assert { .. }
+            | MetaExpr::AssertEq { .. } => false,
         }
     }
 
@@ -881,7 +898,8 @@ impl MetaExpr {
             | MetaExpr::UseDecl { .. }
             | MetaExpr::Range { .. }
             | MetaExpr::FormatString { .. }
-            | MetaExpr::Assert { .. } => false,
+            | MetaExpr::Assert { .. }
+            | MetaExpr::AssertEq { .. } => false,
         }
     }
 }

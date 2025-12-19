@@ -143,6 +143,27 @@ fn assert_macro() {
         let value = 42;
         assert!(value > 0, "value for {name} should be positive, got {value}");
     };
+
+    // assert_eq! - basic usage
+    eval! {
+        assert_eq!(1, 1);
+        assert_eq!("hello", "hello");
+        assert_eq!([1, 2, 3], [1, 2, 3]);
+    };
+
+    // assert_eq! with variables
+    eval! {
+        let x = 42;
+        let y = 42;
+        assert_eq!(x, y);
+    };
+
+    // assert_eq! with message (this should pass)
+    eval! {
+        let expected = 10;
+        let actual = 10;
+        assert_eq!(actual, expected, "value mismatch");
+    };
 }
 
 #[test]
