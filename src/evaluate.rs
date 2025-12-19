@@ -12,8 +12,9 @@ use proc_macro::{
 use super::{
     ast::{
         BinaryOpKind, Binding, BuiltinFn, Context, EvalError, ExprBlock,
-        ExternDecl, Function, Kind, Lambda, MetaExpr, MetaIdent, MetaValue,
-        Pattern, Scope, ScopeKind, UnaryOpKind, UsePath, UseTree, Visibility,
+        ExternDecl, FormatPart, Function, Kind, Lambda, MetaExpr, MetaIdent,
+        MetaValue, Pattern, Scope, ScopeKind, UnaryOpKind, UsePath, UseTree,
+        Visibility,
     },
     token_sink::TokenSink,
 };
@@ -1667,6 +1668,131 @@ impl Context {
                     self.append_quoted_expression(tgt, end, true)?;
                 }
             }
+            MetaExpr::FormatString { span, parts } => {
+                // Quote format string as format!("...", args...)
+                append_ident_str(tgt, "format", *span);
+                let mut p = Punct::new('!', Spacing::Alone);
+                p.set_span(*span);
+                tgt.push(TokenTree::Punct(p));
+
+                append_group(tgt, Delimiter::Parenthesis, *span, |tgt| {
+                    // Build the format string and collect expressions
+                    let mut fmt_str = String::new();
+                    let mut exprs = Vec::new();
+
+                    for part in parts {
+                        match part {
+                            FormatPart::Literal(s) => {
+                                // Escape { and } in literals
+                                for c in s.chars() {
+                                    if c == '{' {
+                                        fmt_str.push_str("{{");
+                                    } else if c == '}' {
+                                        fmt_str.push_str("}}");
+                                    } else {
+                                        fmt_str.push(c);
+                                    }
+                                }
+                            }
+                            FormatPart::Expr(expr) => {
+                                fmt_str.push_str("{}");
+                                exprs.push(expr.clone());
+                            }
+                        }
+                    }
+
+                    // Output format string literal
+                    let lit = Literal::string(&fmt_str);
+                    tgt.push(TokenTree::Literal(lit));
+
+                    // Output expressions as arguments
+                    for expr in &exprs {
+                        tgt.push(TokenTree::Punct(Punct::new(
+                            ',',
+                            Spacing::Alone,
+                        )));
+                        self.append_quoted_expression(tgt, expr, true)?;
+                    }
+                    Ok(())
+                })?;
+            }
+            MetaExpr::Assert {
+                span,
+                condition,
+                message,
+            } => {
+                // Quote assert as assert!(cond) or assert!(cond, msg)
+                append_ident_str(tgt, "assert", *span);
+                let mut p = Punct::new('!', Spacing::Alone);
+                p.set_span(*span);
+                tgt.push(TokenTree::Punct(p));
+
+                append_group(tgt, Delimiter::Parenthesis, *span, |tgt| {
+                    self.append_quoted_expression(tgt, condition, true)?;
+                    if let Some(message_parts) = message {
+                        tgt.push(TokenTree::Punct(Punct::new(
+                            ',',
+                            Spacing::Alone,
+                        )));
+
+                        // Build format string for message
+                        let mut fmt_str = String::new();
+                        let mut exprs = Vec::new();
+
+                        for part in message_parts {
+                            match part {
+                                FormatPart::Literal(s) => {
+                                    for c in s.chars() {
+                                        if c == '{' {
+                                            fmt_str.push_str("{{");
+                                        } else if c == '}' {
+                                            fmt_str.push_str("}}");
+                                        } else {
+                                            fmt_str.push(c);
+                                        }
+                                    }
+                                }
+                                FormatPart::Expr(expr) => {
+                                    fmt_str.push_str("{}");
+                                    exprs.push(expr.clone());
+                                }
+                            }
+                        }
+
+                        if exprs.is_empty() {
+                            // Just a simple string literal
+                            let lit = Literal::string(&fmt_str);
+                            tgt.push(TokenTree::Literal(lit));
+                        } else {
+                            // Output format!("...", args)
+                            append_ident_str(tgt, "format", *span);
+                            tgt.push(TokenTree::Punct(Punct::new(
+                                '!',
+                                Spacing::Alone,
+                            )));
+                            append_group(
+                                tgt,
+                                Delimiter::Parenthesis,
+                                *span,
+                                |tgt| {
+                                    let lit = Literal::string(&fmt_str);
+                                    tgt.push(TokenTree::Literal(lit));
+                                    for expr in &exprs {
+                                        tgt.push(TokenTree::Punct(
+                                            Punct::new(',', Spacing::Alone),
+                                        ));
+                                        self.append_quoted_expression(
+                                            tgt, expr, true,
+                                        )?;
+                                    }
+                                    Ok(())
+                                },
+                            )?;
+                        }
+                    }
+                    Ok(())
+                })?;
+            }
         }
         Ok(())
     }
@@ -2866,6 +2992,14 @@ impl Context {
                     inclusive: *inclusive,
                 }))
             }
+            MetaExpr::FormatString { span, parts } => {
+                self.eval_format_string(*span, parts)
+            }
+            MetaExpr::Assert {
+                span,
+                condition,
+                message,
+            } => self.eval_assert_expr(*span, condition, message.as_deref()),
         }
     }
 
@@ -3307,7 +3441,9 @@ impl Context {
             | MetaExpr::OpUnary { .. }
             | MetaExpr::UseDecl { .. }
             | MetaExpr::OpBinary { .. }
-            | MetaExpr::Range { .. } => {
+            | MetaExpr::Range { .. }
+            | MetaExpr::FormatString { .. }
+            | MetaExpr::Assert { .. } => {
                 self.error(
                     lhs.span(),
                     format!("{} is not assignable", lhs.kind_str()),
@@ -3491,13 +3627,6 @@ impl Context {
         lhs: &MetaExpr,
         arg_exprs: &Vec<Rc<MetaExpr>>,
     ) -> Result<Rc<MetaValue>> {
-        // Handle assert! as a special pseudo-macro
-        if let MetaExpr::Ident(MetaIdent { name, .. }) = lhs {
-            if &**name == "assert" {
-                return self.eval_assert(span, arg_exprs);
-            }
-        }
-
         let lhs =
             if let MetaExpr::Ident(MetaIdent { name, raw: _, span }) = lhs {
                 // We could just evaluate but we want a better error message
@@ -3531,28 +3660,54 @@ impl Context {
         callable.call(self, span, &args)
     }
 
-    fn eval_assert(
+    /// Evaluate a format string with inline expressions
+    fn eval_format_string(
         &mut self,
-        span: Span,
-        arg_exprs: &Vec<Rc<MetaExpr>>,
+        _span: Span,
+        parts: &[FormatPart],
     ) -> Result<Rc<MetaValue>> {
-        if arg_exprs.is_empty() || arg_exprs.len() > 2 {
-            self.error(
-                span,
-                format!(
-                    "`assert!` expects 1 or 2 arguments, got {}",
-                    arg_exprs.len()
-                ),
-            );
-            return Err(EvalError::Error);
+        let mut result = String::new();
+
+        for part in parts {
+            match part {
+                FormatPart::Literal(s) => {
+                    result.push_str(s);
+                }
+                FormatPart::Expr(expr) => {
+                    let val = self.eval(expr, true)?;
+                    let Some(s) = value_to_str(&val) else {
+                        self.error(
+                            expr.span(),
+                            format!(
+                                "cannot format `{}` as string",
+                                val.kind()
+                            ),
+                        );
+                        return Err(EvalError::Error);
+                    };
+                    result.push_str(&s);
+                }
+            }
         }
 
-        let condition_expr = &arg_exprs[0];
-        let condition_val = self.eval(condition_expr, true)?;
+        Ok(Rc::new(MetaValue::String {
+            value: Rc::from(result),
+            span: None,
+        }))
+    }
+
+    /// Evaluate an assert expression with optional format message
+    fn eval_assert_expr(
+        &mut self,
+        span: Span,
+        condition: &MetaExpr,
+        message: Option<&[FormatPart]>,
+    ) -> Result<Rc<MetaValue>> {
+        let condition_val = self.eval(condition, true)?;
 
         let MetaValue::Bool { value: cond, .. } = &*condition_val else {
             self.error(
-                condition_expr.span(),
+                condition.span(),
                 format!(
                     "`assert!` condition must be a `bool`, got `{}`",
                     condition_val.kind()
@@ -3562,19 +3717,35 @@ impl Context {
         };
 
         if !cond {
-            // Get user message if provided
-            let user_msg = if arg_exprs.len() == 2 {
-                let msg_val = self.eval(&arg_exprs[1], true)?;
-                if let MetaValue::String { value, .. } = &*msg_val {
-                    Some(value.to_string())
-                } else {
-                    Some(format!("{}", msg_val.kind()))
+            // Build message if provided
+            let user_msg = if let Some(parts) = message {
+                let mut msg = String::new();
+                for part in parts {
+                    match part {
+                        FormatPart::Literal(s) => {
+                            msg.push_str(s);
+                        }
+                        FormatPart::Expr(expr) => {
+                            let val = self.eval(expr, true)?;
+                            let Some(s) = value_to_str(&val) else {
+                                self.error(
+                                    expr.span(),
+                                    format!(
+                                        "cannot format `{}` as string",
+                                        val.kind()
+                                    ),
+                                );
+                                return Err(EvalError::Error);
+                            };
+                            msg.push_str(&s);
+                        }
+                    }
                 }
+                Some(msg)
             } else {
                 None
             };
 
-            // Format the assertion failure message
             let msg = if let Some(user_msg) = user_msg {
                 format!("assertion failed: {}", user_msg)
             } else {

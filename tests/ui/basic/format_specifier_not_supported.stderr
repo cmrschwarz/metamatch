@@ -1,0 +1,5 @@
+error: format specifiers (`:`) are not supported
+ --> tests/ui/basic/format_specifier_not_supported.rs:5:27
+  |
+5 |     let _ = eval!(format!("{x:?}"));
+  |                           ^^^^^^^

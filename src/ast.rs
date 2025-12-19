@@ -179,6 +179,16 @@ pub struct ExpandPattern {
     pub match_arm_body: Vec<Rc<MetaExpr>>,
 }
 
+/// Part of a format string: either literal text or an expression to be
+/// evaluated
+#[derive(Debug)]
+pub enum FormatPart {
+    /// Literal string segment
+    Literal(String),
+    /// Expression to be formatted as string
+    Expr(Rc<MetaExpr>),
+}
+
 #[derive(Debug, Clone)]
 pub struct MetaIdent {
     pub name: Rc<str>,
@@ -294,6 +304,18 @@ pub enum MetaExpr {
         start: Option<Rc<MetaExpr>>,
         end: Option<Rc<MetaExpr>>,
         inclusive: bool,
+    },
+    /// format!("..{expr}..")
+    FormatString {
+        span: Span,
+        parts: Vec<FormatPart>,
+    },
+    /// assert!(condition) or assert!(condition, "msg {expr}")
+    Assert {
+        span: Span,
+        condition: Rc<MetaExpr>,
+        /// If present, format string parts for the message
+        message: Option<Vec<FormatPart>>,
     },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -751,6 +773,8 @@ impl MetaExpr {
             MetaExpr::WhileLet { span, .. } => span,
             MetaExpr::Group { span, .. } => span,
             MetaExpr::Range { span, .. } => span,
+            MetaExpr::FormatString { span, .. } => span,
+            MetaExpr::Assert { span, .. } => span,
         }
     }
     pub fn kind_str(&self) -> &'static str {
@@ -781,6 +805,8 @@ impl MetaExpr {
             MetaExpr::ListAccess { .. } => "property access",
             MetaExpr::Parenthesized { .. } => "parentheses",
             MetaExpr::Range { .. } => "range",
+            MetaExpr::FormatString { .. } => "format string",
+            MetaExpr::Assert { .. } => "assert",
         }
     }
     pub fn may_drop_semicolon(&self) -> bool {
@@ -812,7 +838,9 @@ impl MetaExpr {
             | MetaExpr::Parenthesized { .. }
             | MetaExpr::LetBinding { .. }
             | MetaExpr::UseDecl { .. }
-            | MetaExpr::Range { .. } => false,
+            | MetaExpr::Range { .. }
+            | MetaExpr::FormatString { .. }
+            | MetaExpr::Assert { .. } => false,
         }
     }
 
@@ -851,7 +879,9 @@ impl MetaExpr {
             | MetaExpr::Parenthesized { .. }
             | MetaExpr::LetBinding { .. }
             | MetaExpr::UseDecl { .. }
-            | MetaExpr::Range { .. } => false,
+            | MetaExpr::Range { .. }
+            | MetaExpr::FormatString { .. }
+            | MetaExpr::Assert { .. } => false,
         }
     }
 }

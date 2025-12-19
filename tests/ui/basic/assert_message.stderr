@@ -1,0 +1,5 @@
+error: assertion failed: lul: 42
+ --> tests/ui/basic/assert_message.rs:5:16
+  |
+5 |         assert!(false, "lul: {21*2}")
+  |                ^^^^^^^^^^^^^^^^^^^^^^

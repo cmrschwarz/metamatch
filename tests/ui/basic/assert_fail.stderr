@@ -1,0 +1,5 @@
+error: assertion failed
+ --> tests/ui/basic/assert_fail.rs:5:16
+  |
+5 |         assert!(false)
+  |                ^^^^^^^

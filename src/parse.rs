@@ -1,12 +1,14 @@
-use proc_macro::{Delimiter, Group, Ident, Spacing, Span, TokenTree};
+use proc_macro::{
+    Delimiter, Group, Ident, Spacing, Span, TokenStream, TokenTree,
+};
 use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
 use super::{
     ast::{
         BinaryOpKind, Binding, BindingParameter, Context, ExpandPattern,
-        ExprBlock, Function, Lambda, MetaError, MetaExpr, MetaIdent,
-        MetaValue, Pattern, Scope, ScopeKind, TrailingBlockKind, UnaryOpKind,
-        UseDecl, UsePath, UseReplacement, UseTree, Visibility,
+        ExprBlock, FormatPart, Function, Lambda, MetaError, MetaExpr,
+        MetaIdent, MetaValue, Pattern, Scope, ScopeKind, TrailingBlockKind,
+        UnaryOpKind, UseDecl, UsePath, UseReplacement, UseTree, Visibility,
     },
     macro_impls::IntoVec,
 };
@@ -268,6 +270,68 @@ fn append_token_list(
             from_raw_block,
         }));
     }
+}
+
+/// Unescape a Rust string literal's content (backslash escapes).
+fn unescape_string(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('r') => result.push('\r'),
+                Some('t') => result.push('\t'),
+                Some('\\') => result.push('\\'),
+                Some('0') => result.push('\0'),
+                Some('\'') => result.push('\''),
+                Some('"') => result.push('"'),
+                Some('x') => {
+                    // \xNN hex escape
+                    let mut hex = String::new();
+                    for _ in 0..2 {
+                        if let Some(h) = chars.next() {
+                            hex.push(h);
+                        }
+                    }
+                    if let Ok(n) = u8::from_str_radix(&hex, 16) {
+                        result.push(n as char);
+                    }
+                }
+                Some('u') => {
+                    // \u{NNNN} unicode escape
+                    if chars.next() == Some('{') {
+                        let mut hex = String::new();
+                        while let Some(&c) = chars.peek() {
+                            if c == '}' {
+                                chars.next();
+                                break;
+                            }
+                            hex.push(chars.next().unwrap());
+                        }
+                        if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                            if let Some(ch) = char::from_u32(n) {
+                                result.push(ch);
+                            }
+                        }
+                    }
+                }
+                Some(other) => {
+                    // Unknown escape - just pass through
+                    result.push('\\');
+                    result.push(other);
+                }
+                None => {
+                    result.push('\\');
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
 }
 
 fn parse_literal(token: &TokenTree) -> Rc<MetaValue> {
@@ -882,6 +946,9 @@ impl Context {
                         }
                         "assert" => {
                             return self.parse_assert_expr(span, &tokens[1..])
+                        }
+                        "format" => {
+                            return self.parse_format_expr(span, &tokens[1..])
                         }
                         "group" => {
                             return self.parse_group_expr(span, &tokens[1..])
@@ -1632,32 +1699,307 @@ impl Context {
         };
 
         if group.delimiter() != Delimiter::Parenthesis {
-            self.error(
-                group.span(),
-                "expected `(...)` after `assert!`",
-            );
+            self.error(group.span(), "expected `(...)` after `assert!`");
             return Err(());
         }
 
         // Parse the arguments inside the parentheses
-        let args_tokens = group.stream().into_vec();
-        let args = self.parse_comma_separated(
-            Some("assert arguments"),
-            Delimiter::Parenthesis,
-            group.span(),
-            &args_tokens,
-        )?;
+        let args_tokens: Vec<TokenTree> = group.stream().into_iter().collect();
 
-        // Create a Call expression with `assert` as the function name
+        // Find first comma to split condition from message
+        let mut paren_depth = 0;
+        let mut bracket_depth = 0;
+        let mut brace_depth = 0;
+        let mut comma_pos = None;
+
+        for (i, token) in args_tokens.iter().enumerate() {
+            match token {
+                TokenTree::Group(g) => match g.delimiter() {
+                    Delimiter::Parenthesis => paren_depth += 1,
+                    Delimiter::Bracket => bracket_depth += 1,
+                    Delimiter::Brace => brace_depth += 1,
+                    Delimiter::None => {}
+                },
+                TokenTree::Punct(p) => {
+                    if p.as_char() == ','
+                        && paren_depth == 0
+                        && bracket_depth == 0
+                        && brace_depth == 0
+                    {
+                        comma_pos = Some(i);
+                        break;
+                    }
+                    // Track closing delimiters via group exit
+                }
+                _ => {}
+            }
+            // Handle group exit
+            if let TokenTree::Group(g) = token {
+                match g.delimiter() {
+                    Delimiter::Parenthesis => paren_depth -= 1,
+                    Delimiter::Bracket => bracket_depth -= 1,
+                    Delimiter::Brace => brace_depth -= 1,
+                    Delimiter::None => {}
+                }
+                // Re-add since we just subtracted
+                match g.delimiter() {
+                    Delimiter::Parenthesis => paren_depth += 1,
+                    Delimiter::Bracket => bracket_depth += 1,
+                    Delimiter::Brace => brace_depth += 1,
+                    Delimiter::None => {}
+                }
+            }
+        }
+
+        // Parse condition
+        let (condition_tokens, message_tokens) = if let Some(pos) = comma_pos {
+            (&args_tokens[..pos], Some(&args_tokens[pos + 1..]))
+        } else {
+            (&args_tokens[..], None)
+        };
+
+        if condition_tokens.is_empty() {
+            self.error(group.span(), "`assert!` requires a condition");
+            return Err(());
+        }
+
+        let (condition, remaining, _) =
+            self.parse_expr(group.span(), condition_tokens, false, 0)?;
+
+        if !remaining.is_empty() {
+            self.error(
+                remaining[0].span(),
+                "unexpected tokens after condition",
+            );
+            return Err(());
+        }
+
+        // Parse message if present (as a format string)
+        let message = if let Some(msg_tokens) = message_tokens {
+            if msg_tokens.is_empty() {
+                self.error(group.span(), "expected message after comma");
+                return Err(());
+            }
+            Some(self.parse_format_string_parts(group.span(), msg_tokens)?)
+        } else {
+            None
+        };
+
         Ok((
-            Rc::new(MetaExpr::Call {
+            Rc::new(MetaExpr::Assert {
                 span: group.span(),
-                lhs: Rc::new(MetaExpr::Ident(MetaIdent {
-                    name: Rc::from("assert"),
-                    raw: false,
-                    span: assert_span,
-                })),
-                args,
+                condition,
+                message,
+            }),
+            &tokens[1..],
+            None,
+        ))
+    }
+
+    /// Parse a format string with inline expressions.
+    /// Input: a string literal token followed by optional expression args.
+    /// Returns the format parts (literals and expressions).
+    fn parse_format_string_parts(
+        &mut self,
+        span: Span,
+        tokens: &[TokenTree],
+    ) -> Result<Vec<FormatPart>> {
+        // First token should be a string literal
+        let Some(TokenTree::Literal(lit)) = tokens.first() else {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(span),
+                "expected format string literal",
+            );
+            return Err(());
+        };
+
+        let lit_str = lit.to_string();
+        if !lit_str.starts_with('"') {
+            self.error(lit.span(), "expected string literal for format");
+            return Err(());
+        }
+
+        // Remove quotes and unescape the content
+        let raw_content = &lit_str[1..lit_str.len() - 1];
+        let content = unescape_string(raw_content);
+        let lit_span = lit.span();
+
+        // Parse the format string content
+        let mut parts = Vec::new();
+        let mut current_literal = String::new();
+        let mut chars = content.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            if c == '{' {
+                if chars.peek() == Some(&'{') {
+                    // Escaped {{ -> literal {
+                    chars.next();
+                    current_literal.push('{');
+                } else {
+                    // Start of expression - collect until closing }
+                    // Push current literal if non-empty
+                    if !current_literal.is_empty() {
+                        parts.push(FormatPart::Literal(std::mem::take(
+                            &mut current_literal,
+                        )));
+                    }
+
+                    let mut expr_str = String::new();
+                    let mut brace_depth = 1;
+
+                    for c in chars.by_ref() {
+                        if c == '{' {
+                            brace_depth += 1;
+                            expr_str.push(c);
+                        } else if c == '}' {
+                            brace_depth -= 1;
+                            if brace_depth == 0 {
+                                break;
+                            }
+                            expr_str.push(c);
+                        } else if c == ':' && brace_depth == 1 {
+                            // Format specifier - not supported
+                            self.error(
+                                lit_span,
+                                "format specifiers (`:`) are not supported",
+                            );
+                            return Err(());
+                        } else {
+                            expr_str.push(c);
+                        }
+                    }
+
+                    if brace_depth != 0 {
+                        self.error(lit_span, "unclosed `{` in format string");
+                        return Err(());
+                    }
+
+                    // Empty {} means use next positional argument
+                    if expr_str.is_empty() {
+                        self.error(
+                            lit_span,
+                            "empty `{}` not supported, use `{expr}` syntax",
+                        );
+                        return Err(());
+                    }
+
+                    // Parse the expression (already unescaped)
+                    let expr_tokens: TokenStream = match expr_str.parse() {
+                        Ok(ts) => ts,
+                        Err(_) => {
+                            self.error(
+                                lit_span,
+                                format!(
+                                    "failed to tokenize expression: `{}`",
+                                    expr_str
+                                ),
+                            );
+                            return Err(());
+                        }
+                    };
+
+                    let expr_vec: Vec<TokenTree> =
+                        expr_tokens.into_iter().collect();
+
+                    if expr_vec.is_empty() {
+                        self.error(
+                            lit_span,
+                            "empty expression in format string",
+                        );
+                        return Err(());
+                    }
+
+                    let (expr, remaining, _) =
+                        self.parse_expr(lit_span, &expr_vec, false, 0)?;
+
+                    if !remaining.is_empty() {
+                        self.error(
+                            remaining[0].span(),
+                            "unexpected tokens in format expression",
+                        );
+                        return Err(());
+                    }
+
+                    parts.push(FormatPart::Expr(expr));
+                }
+            } else if c == '}' {
+                if chars.peek() == Some(&'}') {
+                    // Escaped }} -> literal }
+                    chars.next();
+                    current_literal.push('}');
+                } else {
+                    self.error(lit_span, "unmatched `}` in format string");
+                    return Err(());
+                }
+            } else {
+                current_literal.push(c);
+            }
+        }
+
+        // Push any remaining literal
+        if !current_literal.is_empty() {
+            parts.push(FormatPart::Literal(current_literal));
+        }
+
+        // Check for extra tokens after the format string (not allowed now)
+        if tokens.len() > 1 {
+            self.error(
+                tokens[1].span(),
+                "extra arguments after format string not allowed; \
+                 use `{expr}` syntax inside the string",
+            );
+            return Err(());
+        }
+
+        Ok(parts)
+    }
+
+    fn parse_format_expr<'a>(
+        &mut self,
+        format_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        // Expect `!` after `format`
+        let mut has_exclam = false;
+        if let Some(TokenTree::Punct(p)) = tokens.first() {
+            has_exclam = p.as_char() == '!';
+        }
+
+        if !has_exclam {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(format_span),
+                "expected `!` after `format`",
+            );
+            return Err(());
+        }
+
+        let tokens = &tokens[1..];
+
+        // Expect parentheses group
+        let Some(TokenTree::Group(group)) = tokens.first() else {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(format_span),
+                "expected `(...)` after `format!`",
+            );
+            return Err(());
+        };
+
+        if group.delimiter() != Delimiter::Parenthesis {
+            self.error(group.span(), "expected `(...)` after `format!`");
+            return Err(());
+        }
+
+        // Parse the format string inside the parentheses
+        let args_tokens: Vec<TokenTree> = group.stream().into_iter().collect();
+
+        let parts =
+            self.parse_format_string_parts(group.span(), &args_tokens)?;
+
+        Ok((
+            Rc::new(MetaExpr::FormatString {
+                span: group.span(),
+                parts,
             }),
             &tokens[1..],
             None,

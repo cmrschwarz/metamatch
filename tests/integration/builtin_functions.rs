@@ -129,6 +129,20 @@ fn assert_macro() {
     eval! {
         assert!("hello" == "hello");
     };
+
+    // Assert with format message containing expressions
+    eval! {
+        let x = 5;
+        let y = 5;
+        assert!(x == y, "expected {x} to equal {y}");
+    };
+
+    // Assert with computed format message
+    eval! {
+        let name = "test";
+        let value = 42;
+        assert!(value > 0, "value for {name} should be positive, got {value}");
+    };
 }
 
 #[test]
@@ -215,5 +229,46 @@ fn eq_same_span_fn() {
         let x = raw!(hello);
         let y = raw!(hello);
         assert!(x == y);
+    };
+}
+
+#[test]
+fn format_macro() {
+    // Basic string
+    let result: &str = eval!(format!("hello"));
+    assert_eq!(result, "hello");
+
+    // Single inline expression
+    let result: &str = eval!(format!("hello {\"world\"}"));
+    assert_eq!(result, "hello world");
+
+    // Multiple inline expressions
+    let result: &str = eval!(format!("{1} + {2} = {1 + 2}"));
+    assert_eq!(result, "1 + 2 = 3");
+
+    // Escaped braces
+    let result: &str = eval!(format!("{{}}"));
+    assert_eq!(result, "{}");
+
+    // Mixed escapes and expressions
+    let result: &str = eval!(format!("{{{\"x\"}}} = {42}"));
+    assert_eq!(result, "{x} = 42");
+
+    // Different types
+    let result: &str =
+        eval!(format!("bool: {true}, char: {'a'}, float: {3.14}"));
+    assert_eq!(result, "bool: true, char: a, float: 3.14");
+
+    // Variable references
+    eval! {
+        let x = "hello";
+        let y = "world";
+        assert!(format!("{x} {y}") == "hello world");
+    };
+
+    // Complex expressions
+    eval! {
+        let nums = [1, 2, 3];
+        assert!(format!("len = {len(nums)}") == "len = 3");
     };
 }

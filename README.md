@@ -164,7 +164,8 @@ All `str -> str` functions also work `token -> token`.
 ## Special Purpose 'Macros'
 - `quote!(..) -> [token]`: Like a nested `template!`, this evaluates to a list of raw tokens.
 - `raw!(..) -> [token]` or `#(..)`: Like `quote!`, but no meta variable expansion or template tags.
-- `assert!(cond[, msg])`: Compile-time assertion - fails compilation if `cond` is false.
+- `assert!(cond[, "message {expr}"])`: Compile-time assertion - fails compilation if `cond` is false. Supports format-style message with inline expressions.
+- `format!("text {expr}")`: String formatting with inline expressions. Use `{{` and `}}` for literal braces. Format specifiers (`:`) are not supported.
 
 Just like Rust macros, you can use any of `{}`, `[]`, and `()`
 interchangably for these macro invocations.
