@@ -149,6 +149,8 @@ All `str -> str` functions also work `token -> token`.
 - `capitalize(str) -> str`
 - `enumerate([T]) -> [(int, T)]`
 - `zip([A], [B], ..) -> [(A, B, ..)]`
+- `flatten([[T]]) -> [T]`: Flatten nested iterables into a single list
+- `combinations([A], [B], ..) -> [(A, B, ..)]`: Cartesian product of iterables
 - `map([T], Fn(T) -> U) -> [U]`
 - `chars(str) -> [char]`
 - `bytes(str) -> [int]`

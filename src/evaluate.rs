@@ -275,6 +275,90 @@ fn builtin_fn_zip(
     Ok(Rc::new(MetaValue::List(RefCell::new(res))))
 }
 
+fn builtin_fn_flatten(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    let Some(outer) = Iterable::from_value(&args[0]) else {
+        ctx.error(
+            callsite,
+            format!(
+                "`flatten()` expects an iterable, got `{}`",
+                args[0].kind()
+            ),
+        );
+        return Err(EvalError::Error);
+    };
+
+    let mut result = Vec::new();
+    for item in &outer {
+        let Some(inner) = Iterable::from_value(item) else {
+            ctx.error(
+                callsite,
+                format!(
+                    "`flatten()` expects an iterable of iterables, \
+                     but found element of type `{}`",
+                    item.kind()
+                ),
+            );
+            return Err(EvalError::Error);
+        };
+        for elem in &inner {
+            result.push(elem.clone());
+        }
+    }
+
+    Ok(Rc::new(MetaValue::List(RefCell::new(result))))
+}
+
+fn builtin_fn_combinations(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    if args.is_empty() {
+        return Ok(Rc::new(MetaValue::List(RefCell::new(vec![]))));
+    }
+
+    let mut iterables: Vec<Vec<Rc<MetaValue>>> = Vec::new();
+    for (i, arg) in args.iter().enumerate() {
+        let Some(iterable) = Iterable::from_value(arg) else {
+            ctx.error(
+                callsite,
+                format!(
+                    "`combinations()` arguments must be iterable, \
+                     `{}` is not (argument {})",
+                    arg.kind(),
+                    i + 1
+                ),
+            );
+            return Err(EvalError::Error);
+        };
+        iterables.push(iterable.into_iter().cloned().collect());
+    }
+
+    // Compute cartesian product
+    let mut result: Vec<Rc<MetaValue>> =
+        vec![Rc::new(MetaValue::Tuple(vec![]))];
+    for iterable in iterables {
+        let mut new_result = Vec::new();
+        for existing in &result {
+            let MetaValue::Tuple(existing_elems) = &**existing else {
+                unreachable!()
+            };
+            for elem in &iterable {
+                let mut new_tuple = existing_elems.clone();
+                new_tuple.push(elem.clone());
+                new_result.push(Rc::new(MetaValue::Tuple(new_tuple)));
+            }
+        }
+        result = new_result;
+    }
+
+    Ok(Rc::new(MetaValue::List(RefCell::new(result))))
+}
+
 fn builtin_fn_list(
     ctx: &mut Context,
     callsite: Span,
@@ -881,6 +965,8 @@ impl Context {
         self.insert_builtin_fn("list", Some(1), builtin_fn_list);
         self.insert_builtin_fn("tokens", Some(1), builtin_fn_tokens);
         self.insert_builtin_fn("zip", None, builtin_fn_zip);
+        self.insert_builtin_fn("flatten", Some(1), builtin_fn_flatten);
+        self.insert_builtin_fn("combinations", None, builtin_fn_combinations);
         self.insert_builtin_fn("map", Some(2), builtin_fn_map);
         self.insert_builtin_fn("chars", Some(1), builtin_fn_chars);
         self.insert_builtin_fn("bytes", Some(1), builtin_fn_bytes);

@@ -489,3 +489,55 @@ fn raw_plus_var() {
     };
     assert_eq!(res, 15);
 }
+
+// Stubs for the wtf test
+trait BasicTransformInput {
+    type UpdateData<'x>;
+}
+trait BasicOperatorInput {
+    type TransformData;
+}
+struct FieldIter<'x>(&'x ());
+struct ArcVecMut<T>(T);
+struct IndexVec<I, T>(I, T);
+struct IndexArcVecMut<I, T>(I, T);
+
+#[test]
+fn wtf() {
+    #[metamatch::replicate(
+    let generics = #(
+        D: for<'x> BasicTransformInput<UpdateData<'x> = &'x mut [FieldIter<'x>]>,
+        T: BasicOperatorInput<TransformData = D>
+    );
+    let generics_i = #(
+        D: for<'x> BasicTransformInput<UpdateData<'x> = &'x mut [FieldIter<'x>]>,
+        T: BasicOperatorInput<TransformData = D>,
+        I: 'static
+    );
+    for (GENERICS, TY, TF_DATA) in [
+        (
+            generics,
+            raw!(Vec<T>),
+            raw!(Vec<T::TransformData>)
+        ),
+        (
+            generics,
+            raw!(ArcVecMut<T>),
+            raw!(ArcVecMut<T::TransformData>)
+        ),
+        (
+            generics_i,
+            raw!(IndexVec<I, T>),
+            raw!(IndexVec<I, T::TransformData>)
+        ),
+        (
+            generics_i,
+            raw!(IndexArcVecMut<I, T>),
+            raw!(IndexArcVecMut<I, T::TransformData>)
+        )
+    ]
+)]
+    impl<GENERICS> BasicOperatorInput for TY {
+        type TransformData = TF_DATA;
+    }
+}
