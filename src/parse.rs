@@ -880,6 +880,9 @@ impl Context {
                                 allow_trailing_block,
                             )
                         }
+                        "assert" => {
+                            return self.parse_assert_expr(span, &tokens[1..])
+                        }
                         "group" => {
                             return self.parse_group_expr(span, &tokens[1..])
                         }
@@ -1591,6 +1594,70 @@ impl Context {
                 span: group.span(),
                 value: Rc::new(MetaValue::Tokens(raw_block_contents)),
                 from_raw_block: true,
+            }),
+            &tokens[1..],
+            None,
+        ))
+    }
+
+    fn parse_assert_expr<'a>(
+        &mut self,
+        assert_span: Span,
+        tokens: &'a [TokenTree],
+    ) -> Result<(Rc<MetaExpr>, &'a [TokenTree], Option<TrailingBlockKind>)>
+    {
+        // Expect `!` after `assert`
+        let mut has_exclam = false;
+        if let Some(TokenTree::Punct(p)) = tokens.first() {
+            has_exclam = p.as_char() == '!';
+        }
+
+        if !has_exclam {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(assert_span),
+                "expected `!` after `assert`",
+            );
+            return Err(());
+        }
+
+        let tokens = &tokens[1..];
+
+        // Expect parentheses group
+        let Some(TokenTree::Group(group)) = tokens.first() else {
+            self.error(
+                tokens.first().map(|t| t.span()).unwrap_or(assert_span),
+                "expected `(...)` after `assert!`",
+            );
+            return Err(());
+        };
+
+        if group.delimiter() != Delimiter::Parenthesis {
+            self.error(
+                group.span(),
+                "expected `(...)` after `assert!`",
+            );
+            return Err(());
+        }
+
+        // Parse the arguments inside the parentheses
+        let args_tokens = group.stream().into_vec();
+        let args = self.parse_comma_separated(
+            Some("assert arguments"),
+            Delimiter::Parenthesis,
+            group.span(),
+            &args_tokens,
+        )?;
+
+        // Create a Call expression with `assert` as the function name
+        Ok((
+            Rc::new(MetaExpr::Call {
+                span: group.span(),
+                lhs: Rc::new(MetaExpr::Ident(MetaIdent {
+                    name: Rc::from("assert"),
+                    raw: false,
+                    span: assert_span,
+                })),
+                args,
             }),
             &tokens[1..],
             None,

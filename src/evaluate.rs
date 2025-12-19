@@ -26,6 +26,118 @@ fn comma_token(span: Span) -> TokenTree {
     TokenTree::Punct(punct)
 }
 
+/// Compare two MetaValues for equality.
+/// If `check_spans` is true, spans must also match for the values to be equal.
+fn values_eq(lhs: &MetaValue, rhs: &MetaValue, check_spans: bool) -> bool {
+    match (lhs, rhs) {
+        (
+            MetaValue::Int { value: l, span: ls },
+            MetaValue::Int { value: r, span: rs },
+        ) => l == r && (!check_spans || spans_eq(ls, rs)),
+        (
+            MetaValue::Float { value: l, span: ls },
+            MetaValue::Float { value: r, span: rs },
+        ) => l == r && (!check_spans || spans_eq(ls, rs)),
+        (
+            MetaValue::Bool { value: l, span: ls },
+            MetaValue::Bool { value: r, span: rs },
+        ) => l == r && (!check_spans || spans_eq(ls, rs)),
+        (
+            MetaValue::Char { value: l, span: ls },
+            MetaValue::Char { value: r, span: rs },
+        ) => l == r && (!check_spans || spans_eq(ls, rs)),
+        (
+            MetaValue::String { value: l, span: ls },
+            MetaValue::String { value: r, span: rs },
+        ) => l == r && (!check_spans || spans_eq(ls, rs)),
+        (MetaValue::List(l), MetaValue::List(r)) => {
+            let l = l.borrow();
+            let r = r.borrow();
+            l.len() == r.len()
+                && l.iter()
+                    .zip(r.iter())
+                    .all(|(a, b)| values_eq(a, b, check_spans))
+        }
+        (MetaValue::Tuple(l), MetaValue::Tuple(r)) => {
+            l.len() == r.len()
+                && l.iter()
+                    .zip(r.iter())
+                    .all(|(a, b)| values_eq(a, b, check_spans))
+        }
+        (MetaValue::Tokens(l), MetaValue::Tokens(r)) => {
+            tokens_eq(l, r, check_spans)
+        }
+        (MetaValue::Token(l), MetaValue::Token(r)) => {
+            token_eq(l, r, check_spans)
+        }
+        (
+            MetaValue::Range {
+                start: ls,
+                end: le,
+                inclusive: li,
+            },
+            MetaValue::Range {
+                start: rs,
+                end: re,
+                inclusive: ri,
+            },
+        ) => ls == rs && le == re && li == ri,
+        // Functions compare by identity (pointer equality)
+        (MetaValue::Fn(l), MetaValue::Fn(r)) => Rc::ptr_eq(l, r),
+        (MetaValue::Lambda(l), MetaValue::Lambda(r)) => Rc::ptr_eq(l, r),
+        (MetaValue::BuiltinFn(l), MetaValue::BuiltinFn(r)) => l.name == r.name,
+        _ => false,
+    }
+}
+
+fn spans_eq(l: &Option<Span>, r: &Option<Span>) -> bool {
+    match (l, r) {
+        (Some(l), Some(r)) => {
+            // Span doesn't implement Eq, so we use debug representation
+            format!("{:?}", l) == format!("{:?}", r)
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn span_eq(l: Span, r: Span) -> bool {
+    format!("{:?}", l) == format!("{:?}", r)
+}
+
+fn token_eq(l: &TokenTree, r: &TokenTree, check_spans: bool) -> bool {
+    if check_spans && !span_eq(l.span(), r.span()) {
+        return false;
+    }
+    match (l, r) {
+        (TokenTree::Ident(l), TokenTree::Ident(r)) => {
+            l.to_string() == r.to_string()
+        }
+        (TokenTree::Punct(l), TokenTree::Punct(r)) => {
+            l.as_char() == r.as_char() && l.spacing() == r.spacing()
+        }
+        (TokenTree::Literal(l), TokenTree::Literal(r)) => {
+            l.to_string() == r.to_string()
+        }
+        (TokenTree::Group(l), TokenTree::Group(r)) => {
+            l.delimiter() == r.delimiter()
+                && tokens_eq(
+                    &l.stream().into_iter().collect::<Vec<_>>(),
+                    &r.stream().into_iter().collect::<Vec<_>>(),
+                    check_spans,
+                )
+        }
+        _ => false,
+    }
+}
+
+fn tokens_eq(l: &[TokenTree], r: &[TokenTree], check_spans: bool) -> bool {
+    l.len() == r.len()
+        && l.iter()
+            .zip(r.iter())
+            .all(|(a, b)| token_eq(a, b, check_spans))
+}
+
 enum Iterable<'a> {
     Tuple(&'a [Rc<MetaValue>]),
     List(Ref<'a, Vec<Rc<MetaValue>>>),
@@ -383,94 +495,21 @@ fn builtin_fn_tokens(
     callsite: Span,
     args: &[Rc<MetaValue>],
 ) -> Result<Rc<MetaValue>> {
-    fn value_to_token_tree(
-        value: &MetaValue,
-        span: Span,
-    ) -> Option<TokenTree> {
-        match value {
-            MetaValue::Token(t) => Some(t.clone()),
-            MetaValue::Int { value, span: s } => {
-                let mut lit = Literal::i64_unsuffixed(*value);
-                lit.set_span(s.unwrap_or(span));
-                Some(TokenTree::Literal(lit))
-            }
-            MetaValue::Float { value, span: s } => {
-                let mut lit = Literal::f64_unsuffixed(*value);
-                lit.set_span(s.unwrap_or(span));
-                Some(TokenTree::Literal(lit))
-            }
-            MetaValue::Char { value, span: s } => {
-                let mut lit = Literal::character(*value);
-                lit.set_span(s.unwrap_or(span));
-                Some(TokenTree::Literal(lit))
-            }
-            MetaValue::String { value, span: s } => {
-                let mut lit = Literal::string(value);
-                lit.set_span(s.unwrap_or(span));
-                Some(TokenTree::Literal(lit))
-            }
-            MetaValue::Bool { value, span: s } => {
-                let ident = Ident::new(
-                    if *value { "true" } else { "false" },
-                    s.unwrap_or(span),
-                );
-                Some(TokenTree::Ident(ident))
-            }
-            _ => None,
-        }
-    }
+    let mut sink = TokenSink::new(true);
+    ctx.append_value_to_stream(&mut sink, callsite, &args[0])?;
+    Ok(Rc::new(MetaValue::Tokens(sink.into_vec())))
+}
 
-    match &*args[0] {
-        MetaValue::Tokens(tokens) => {
-            // Already tokens, just return a clone
-            Ok(Rc::new(MetaValue::Tokens(tokens.clone())))
-        }
-        MetaValue::List(list) => {
-            let mut tokens = Vec::new();
-            for item in list.borrow().iter() {
-                if let Some(t) = value_to_token_tree(item, callsite) {
-                    tokens.push(t);
-                } else {
-                    ctx.error(
-                        callsite,
-                        format!("cannot convert `{}` to token", item.kind()),
-                    );
-                    return Err(EvalError::Error);
-                }
-            }
-            Ok(Rc::new(MetaValue::Tokens(tokens)))
-        }
-        MetaValue::Tuple(tuple) => {
-            let mut tokens = Vec::new();
-            for item in tuple.iter() {
-                if let Some(t) = value_to_token_tree(item, callsite) {
-                    tokens.push(t);
-                } else {
-                    ctx.error(
-                        callsite,
-                        format!("cannot convert `{}` to token", item.kind()),
-                    );
-                    return Err(EvalError::Error);
-                }
-            }
-            Ok(Rc::new(MetaValue::Tokens(tokens)))
-        }
-        other => {
-            // Try to convert single value
-            if let Some(t) = value_to_token_tree(other, callsite) {
-                Ok(Rc::new(MetaValue::Tokens(vec![t])))
-            } else {
-                ctx.error(
-                    callsite,
-                    format!(
-                        "function `tokens()` cannot convert `{}` to tokens",
-                        other.kind()
-                    ),
-                );
-                Err(EvalError::Error)
-            }
-        }
-    }
+fn builtin_fn_eq_same_span(
+    _ctx: &mut Context,
+    _callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    let result = values_eq(&args[0], &args[1], true);
+    Ok(Rc::new(MetaValue::Bool {
+        value: result,
+        span: None,
+    }))
 }
 
 fn builtin_fn_len(
@@ -973,6 +1012,11 @@ impl Context {
         self.insert_builtin_fn("ident", Some(1), builtin_fn_ident);
         self.insert_builtin_fn("env", Some(1), builtin_fn_env);
         self.insert_builtin_fn("str", Some(1), builtin_fn_str);
+        self.insert_builtin_fn(
+            "eq_same_span",
+            Some(2),
+            builtin_fn_eq_same_span,
+        );
     }
     fn match_and_bind_pattern(
         &mut self,
@@ -3355,6 +3399,26 @@ impl Context {
         lhs: &MetaValue,
         rhs: &MetaValue,
     ) -> Result<Rc<MetaValue>> {
+        // Handle equality/inequality for same-type comparisons
+        if op_kind == BinaryOpKind::Equal || op_kind == BinaryOpKind::NotEqual
+        {
+            if lhs.kind() != rhs.kind() {
+                // Different types -> error (fall through to error handling
+                // below)
+            } else {
+                let eq = values_eq(lhs, rhs, false);
+                let result = if op_kind == BinaryOpKind::Equal {
+                    eq
+                } else {
+                    !eq
+                };
+                return Ok(Rc::new(MetaValue::Bool {
+                    value: result,
+                    span: None,
+                }));
+            }
+        }
+
         match (lhs, rhs) {
             (
                 MetaValue::Int { value: lhs, .. },
@@ -3427,6 +3491,13 @@ impl Context {
         lhs: &MetaExpr,
         arg_exprs: &Vec<Rc<MetaExpr>>,
     ) -> Result<Rc<MetaValue>> {
+        // Handle assert! as a special pseudo-macro
+        if let MetaExpr::Ident(MetaIdent { name, .. }) = lhs {
+            if &**name == "assert" {
+                return self.eval_assert(span, arg_exprs);
+            }
+        }
+
         let lhs =
             if let MetaExpr::Ident(MetaIdent { name, raw: _, span }) = lhs {
                 // We could just evaluate but we want a better error message
@@ -3458,6 +3529,63 @@ impl Context {
         }
 
         callable.call(self, span, &args)
+    }
+
+    fn eval_assert(
+        &mut self,
+        span: Span,
+        arg_exprs: &Vec<Rc<MetaExpr>>,
+    ) -> Result<Rc<MetaValue>> {
+        if arg_exprs.is_empty() || arg_exprs.len() > 2 {
+            self.error(
+                span,
+                format!(
+                    "`assert!` expects 1 or 2 arguments, got {}",
+                    arg_exprs.len()
+                ),
+            );
+            return Err(EvalError::Error);
+        }
+
+        let condition_expr = &arg_exprs[0];
+        let condition_val = self.eval(condition_expr, true)?;
+
+        let MetaValue::Bool { value: cond, .. } = &*condition_val else {
+            self.error(
+                condition_expr.span(),
+                format!(
+                    "`assert!` condition must be a `bool`, got `{}`",
+                    condition_val.kind()
+                ),
+            );
+            return Err(EvalError::Error);
+        };
+
+        if !cond {
+            // Get user message if provided
+            let user_msg = if arg_exprs.len() == 2 {
+                let msg_val = self.eval(&arg_exprs[1], true)?;
+                if let MetaValue::String { value, .. } = &*msg_val {
+                    Some(value.to_string())
+                } else {
+                    Some(format!("{}", msg_val.kind()))
+                }
+            } else {
+                None
+            };
+
+            // Format the assertion failure message
+            let msg = if let Some(user_msg) = user_msg {
+                format!("assertion failed: {}", user_msg)
+            } else {
+                "assertion failed".to_string()
+            };
+
+            self.error(span, msg);
+            return Err(EvalError::Error);
+        }
+
+        Ok(self.empty_token_list.clone())
     }
 
     fn insert_binding(

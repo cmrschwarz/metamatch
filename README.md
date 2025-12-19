@@ -159,10 +159,12 @@ All `str -> str` functions also work `token -> token`.
 - `len([T]) -> int`
 - `list(iterable) -> [T]`: Convert a range or other iterable to a mutable list
 - `tokens([T]) -> tokens`: Convert a list of values back to raw tokens
+- `eq_same_span(a, b) -> bool`: Like `==` but also requires spans to match
 
 ## Special Purpose 'Macros'
 - `quote!(..) -> [token]`: Like a nested `template!`, this evaluates to a list of raw tokens.
 - `raw!(..) -> [token]` or `#(..)`: Like `quote!`, but no meta variable expansion or template tags.
+- `assert!(cond[, msg])`: Compile-time assertion - fails compilation if `cond` is false.
 
 Just like Rust macros, you can use any of `{}`, `[]`, and `()`
 interchangably for these macro invocations.

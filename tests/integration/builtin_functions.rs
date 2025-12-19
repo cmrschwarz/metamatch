@@ -79,14 +79,141 @@ fn combinations() {
     let result = eval! {
         combinations(['a', 'b'], ['c'], ['d', 'e'])
     };
-    assert_eq!(result, [
-        ('a', 'c', 'd'), ('a', 'c', 'e'),
-        ('b', 'c', 'd'), ('b', 'c', 'e')
-    ]);
+    assert_eq!(
+        result,
+        [
+            ('a', 'c', 'd'),
+            ('a', 'c', 'e'),
+            ('b', 'c', 'd'),
+            ('b', 'c', 'e')
+        ]
+    );
 
     // With UFCS on first argument
     let result = eval! {
         [1, 2].combinations([10, 20])
     };
     assert_eq!(result, [(1, 10), (1, 20), (2, 10), (2, 20)]);
+}
+
+#[test]
+fn assert_macro() {
+    // Basic assert with true condition
+    eval! {
+        assert!(true);
+    };
+
+    // Assert with expression
+    eval! {
+        assert!(1 + 1 == 2);
+    };
+
+    // Assert with lists
+    eval! {
+        assert!([1, 2, 3] == [1, 2, 3]);
+    };
+
+    // Assert with tuples
+    eval! {
+        assert!((1, "a") == (1, "a"));
+    };
+
+    // Assert with token list comparison
+    eval! {
+        let x = raw!(hello world);
+        let y = raw!(hello world);
+        assert!(x == y);
+    };
+
+    // Assert with strings
+    eval! {
+        assert!("hello" == "hello");
+    };
+}
+
+#[test]
+fn equality_same_types() {
+    // Integers
+    let result: bool = eval!(1 == 1);
+    assert!(result);
+    let result: bool = eval!(1 == 2);
+    assert!(!result);
+
+    // Floats
+    let result: bool = eval!(1.5 == 1.5);
+    assert!(result);
+
+    // Booleans
+    let result: bool = eval!(true == true);
+    assert!(result);
+    let result: bool = eval!(true == false);
+    assert!(!result);
+
+    // Characters
+    let result: bool = eval!('a' == 'a');
+    assert!(result);
+    let result: bool = eval!('a' == 'b');
+    assert!(!result);
+
+    // Strings
+    let result: bool = eval!("hello" == "hello");
+    assert!(result);
+    let result: bool = eval!("hello" == "world");
+    assert!(!result);
+
+    // Lists
+    let result: bool = eval!([1, 2, 3] == [1, 2, 3]);
+    assert!(result);
+    let result: bool = eval!([1, 2, 3] == [1, 2, 4]);
+    assert!(!result);
+    let result: bool = eval!([1, 2] == [1, 2, 3]);
+    assert!(!result);
+
+    // Tuples
+    let result: bool = eval!((1, 2) == (1, 2));
+    assert!(result);
+    let result: bool = eval!((1, 2) == (1, 3));
+    assert!(!result);
+
+    // Nested structures
+    let result: bool = eval!([(1, 2), (3, 4)] == [(1, 2), (3, 4)]);
+    assert!(result);
+
+    // Tokens
+    let result: bool = eval!(raw!(foo bar) == raw!(foo bar));
+    assert!(result);
+    let result: bool = eval!(raw!(foo) == raw!(bar));
+    assert!(!result);
+
+    // Ranges
+    let result: bool = eval!((1..5) == (1..5));
+    assert!(result);
+    let result: bool = eval!((1..=5) == (1..=5));
+    assert!(result);
+    let result: bool = eval!((1..5) == (1..6));
+    assert!(!result);
+}
+
+#[test]
+fn eq_same_span_fn() {
+    // Same value, same span (from same raw block)
+    eval! {
+        let x = raw!(hello);
+        assert!(eq_same_span(x, x));
+    };
+
+    // Same value content but different sources
+    eval! {
+        let x = raw!(hello);
+        let y = raw!(hello);
+        // Different spans, so should be false
+        assert!(!eq_same_span(x, y));
+    };
+
+    // Regular equality ignores spans
+    eval! {
+        let x = raw!(hello);
+        let y = raw!(hello);
+        assert!(x == y);
+    };
 }
