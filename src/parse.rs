@@ -2255,6 +2255,12 @@ impl Context {
             return Err(());
         }
 
+        // Register lambda parameters as bindings so they can be resolved in
+        // #() / quote!()
+        for pat in &params {
+            self.insert_dummy_bindings_for_pattern(pat);
+        }
+
         let Ok((body, rest)) =
             self.parse_expr_deny_trailing_block(fn_span, &rest[1..], 1)
         else {

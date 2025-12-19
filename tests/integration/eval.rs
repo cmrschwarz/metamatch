@@ -489,3 +489,21 @@ fn raw_plus_var() {
     };
     assert_eq!(res, 15);
 }
+
+#[test]
+fn hash_paren_supports_quotes() {
+    let res = eval! {
+        let super x = 10;
+        #(x)
+    };
+    assert_eq!(res, 10);
+}
+
+#[test]
+fn quote_in_lambda() {
+    eval! {
+        let foo = [1,2,3];
+        let res = foo.map(|X|#(X));
+        assert_eq!(res, [1,2,3]);
+    }
+}
