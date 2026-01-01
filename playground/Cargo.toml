@@ -6,10 +6,10 @@ version = "0.0.0"
 rust-version = "1.85"
 
 [dependencies]
-proc-macro2 = "1.0.95"
-syn = "2.0.104"
-prettyplease = "0.2.36"
-clap = { version = "4.5.42", features = ["derive"] }
+proc-macro2 = "1.0.104"
+syn = "2.0.112"
+prettyplease = "0.2.37"
+clap = { version = "4.5.53", features = ["derive"] }
 metamatch = { path = ".."}
 
 [features]
