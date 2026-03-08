@@ -866,6 +866,67 @@ fn builtin_fn_tokenize(
     Ok(Rc::new(MetaValue::Tokens(tokens.into_iter().collect())))
 }
 
+fn builtin_fn_replace(
+    ctx: &mut Context,
+    callsite: Span,
+    args: &[Rc<MetaValue>],
+) -> Result<Rc<MetaValue>> {
+    let Some(pattern) = value_to_str(&args[1]) else {
+        ctx.error(
+            callsite,
+            format!(
+                "`replace()` expects `pat` as str, got `{}`",
+                args[1].kind()
+            ),
+        );
+        return Err(EvalError::Error);
+    };
+    let Some(replacement) = value_to_str(&args[2]) else {
+        ctx.error(
+            callsite,
+            format!(
+                "`replace()` expects `replacement` as str, got `{}`",
+                args[2].kind()
+            ),
+        );
+        return Err(EvalError::Error);
+    };
+
+    match &*args[0] {
+        MetaValue::String {
+            value: src,
+            span: _,
+        } => Ok(Rc::new(MetaValue::String {
+            value: Rc::from(src.replace(&*pattern, &replacement)),
+            span: None,
+        })),
+        MetaValue::Token(src) => {
+            let replaced = src.to_string().replace(&*pattern, &replacement);
+            let Some(ident) = string_to_ident(&replaced, false, src.span())
+            else {
+                ctx.error(
+                    callsite,
+                    format!(
+                        "`replace()` produced invalid identifier `{replaced}`"
+                    ),
+                );
+                return Err(EvalError::Error);
+            };
+            Ok(Rc::new(MetaValue::Token(TokenTree::Ident(ident))))
+        }
+        _ => {
+            ctx.error(
+                callsite,
+                format!(
+                    "`replace()` expects `src` as str or token, got `{}`",
+                    args[0].kind()
+                ),
+            );
+            Err(EvalError::Error)
+        }
+    }
+}
+
 fn append_group(
     tgt: &mut TokenSink,
     delim: Delimiter,
@@ -1067,6 +1128,7 @@ impl Context {
         self.insert_builtin_fn("ident", Some(1), builtin_fn_ident);
         self.insert_builtin_fn("env", Some(1), builtin_fn_env);
         self.insert_builtin_fn("str", Some(1), builtin_fn_str);
+        self.insert_builtin_fn("replace", Some(3), builtin_fn_replace);
         self.insert_builtin_fn(
             "eq_same_span",
             Some(2),

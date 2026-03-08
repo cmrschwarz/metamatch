@@ -47,6 +47,17 @@ fn str() {
 }
 
 #[test]
+fn replace() {
+    let x: &str = eval!(replace("foo_bar", "_", "-"));
+    assert_eq!(x, "foo-bar");
+
+    template! {
+        let [< replace(FOO_BAR, "_", "") >] = 123;
+    }
+    assert_eq!(FOOBAR, 123);
+}
+
+#[test]
 fn flatten() {
     // Flatten nested lists
     let result = eval! {
