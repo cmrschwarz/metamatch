@@ -2188,15 +2188,11 @@ impl Context {
                             &binding.ident,
                             span,
                             |this, tgt| {
-                                let q4r = tgt.quote_for_rust;
-                                tgt.quote_for_rust = false;
-                                this.append_value_to_stream(
+                                this.append_extern_binding_value_to_stream(
                                     tgt,
                                     span,
                                     &binding.value,
-                                )?;
-                                tgt.quote_for_rust = q4r;
-                                Ok(())
+                                )
                             },
                         )?;
                     }
@@ -3076,6 +3072,67 @@ impl Context {
                 message.as_deref(),
             ),
         }
+    }
+
+    fn append_extern_binding_value_to_stream(
+        &mut self,
+        tgt: &mut TokenSink,
+        eval_span: Span,
+        value: &MetaValue,
+    ) -> Result<()> {
+        let q4r = tgt.quote_for_rust;
+        tgt.quote_for_rust = false;
+
+        let res = match value {
+            MetaValue::Token(_) | MetaValue::Tokens(_) => {
+                tgt.append_raw(|tgt| {
+                    self.append_value_to_stream(tgt, eval_span, value)
+                })
+            }
+            MetaValue::List(vals) => {
+                tgt.append_group(Delimiter::Bracket, eval_span, |tgt| {
+                    for (i, e) in vals.borrow().iter().enumerate() {
+                        if i > 0 {
+                            tgt.push(comma_token(eval_span));
+                        }
+                        self.append_extern_binding_value_to_stream(
+                            tgt, eval_span, e,
+                        )?;
+                    }
+                    Ok(())
+                })
+            }
+            MetaValue::Tuple(vals) => {
+                tgt.append_group(Delimiter::Parenthesis, eval_span, |tgt| {
+                    for (i, e) in vals.iter().enumerate() {
+                        if i > 0 {
+                            tgt.push(comma_token(eval_span));
+                        }
+                        self.append_extern_binding_value_to_stream(
+                            tgt, eval_span, e,
+                        )?;
+                    }
+                    if vals.len() == 1 {
+                        tgt.push(comma_token(eval_span));
+                    }
+                    Ok(())
+                })
+            }
+            MetaValue::Int { .. }
+            | MetaValue::Float { .. }
+            | MetaValue::Bool { .. }
+            | MetaValue::Char { .. }
+            | MetaValue::String { .. }
+            | MetaValue::Range { .. }
+            | MetaValue::BuiltinFn(_)
+            | MetaValue::Fn(_)
+            | MetaValue::Lambda(_) => {
+                self.append_value_to_stream(tgt, eval_span, value)
+            }
+        };
+
+        tgt.quote_for_rust = q4r;
+        res
     }
 
     fn eval_slice(

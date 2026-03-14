@@ -20,3 +20,34 @@ macro_rules! my_fns {
 }"#,
     )
 }
+
+#[test]
+fn lifetime_bound_gets_raw_block() {
+    assert_eval_output(
+        r#"
+extern let FOO = #(T: 'static);
+"#,
+        r#"
+macro_rules! FOO {
+    ($alias:ident, ($($chain:tt)*), [$($prefix:tt)*], $($rest:tt)*) => {
+        $($chain)* { $($prefix)* let $alias = raw! { T : 'static }; $($rest)* }
+    };
+}"#,
+    )
+}
+
+#[test]
+fn nested_lifetime_bound_gets_raw_block() {
+    assert_eval_output(
+        r#"
+pub extern let FOO = [ #(T: 'static) ];
+"#,
+        r#"
+#[macro_export]
+macro_rules! FOO {
+    ($alias:ident, ($($chain:tt)*), [$($prefix:tt)*], $($rest:tt)*) => {
+        $($chain)* { $($prefix)* let $alias = [raw! { T : 'static }]; $($rest)* }
+    };
+}"#,
+    )
+}
