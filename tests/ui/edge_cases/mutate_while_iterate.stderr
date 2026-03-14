@@ -1,5 +1,5 @@
 error: undefined function `push`
- --> tests/ui/weird_edge_cases/mutate_while_iterate.rs:9:15
+ --> tests/ui/edge_cases/mutate_while_iterate.rs:9:15
   |
 9 |             x.push(i);
   |               ^^^^

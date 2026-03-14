@@ -147,7 +147,7 @@ All `str -> str` functions also work `token -> token`.
 - `env(str) -> str`
 - `uppercase(str) -> str`
 - `capitalize(str) -> str`
-- `replace(src, pat, replacement) -> src`: String replacement (`str -> str`, `token -> token`)
+- `replace(src, pat, replacement) -> src`: String replacement
 - `enumerate([T]) -> [(int, T)]`
 - `zip([A], [B], ..) -> [(A, B, ..)]`
 - `flatten([[T]]) -> [T]`: Flatten nested iterables into a single list

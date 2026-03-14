@@ -1,5 +1,5 @@
 error: unmatched closing tag `/if`
-  --> tests/ui/weird_edge_cases/else_if_missing_if.rs:12:9
+  --> tests/ui/edge_cases/else_if_missing_if.rs:12:9
    |
 12 |         [</if>]
    |         ^^^^^^^
