@@ -28,7 +28,7 @@ keywords = ["match", "macro", "generator", "boilerplate", "repetition"]
 # None!
 
 [dev-dependencies]
-trybuild = "1.0.110"
+trybuild = "1.0.114"
 
 [lib]
 proc-macro = true
